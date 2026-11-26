@@ -310,12 +310,14 @@ const axidpsCustom = (() => {
       const now = ring[ring.length - 1];
       if (!now) return {players: [], seconds: 0};
       const target = now.ms - n * 1000;
-      let ref = null;
-      for (let i = ring.length - 1; i >= 0; i--) if (ring[i].ms <= target) { ref = ring[i]; break; }
+      let refIdx = -1;
+      for (let i = ring.length - 1; i >= 0; i--) if (ring[i].ms <= target) { refIdx = i; break; }
+      const ref = refIdx >= 0 ? ring[refIdx] : null;
       const out = [], d = new Float64Array(NK);
       for (const [k, e] of now.map) {
         let r = ref && ref.map.get(k);
-        if (!r) for (const s of ring) { r = s.map.get(k); if (r) break; }
+        // Not at the reference (joined or came back): the first snapshot inside the span.
+        if (!r) for (let i = refIdx + 1; i < ring.length; i++) { r = ring[i].map.get(k); if (r) break; }
         for (let i = 0; i < NK; i++) d[i] = e.v[i] - r.v[i];
         out.push(player(e.id, d));
       }
