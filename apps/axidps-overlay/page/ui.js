@@ -614,7 +614,10 @@ const NO_VIEW = {players: [], seconds: 0};
 const baseOf = k => STATS[k].rate || [k];
 // A custom window cell's text: a share in % ("–" when the sum is zero), counted totals as whole
 // numbers, everything else with fmt.
-function customText(s, v) {
+// A boon stat reads as % (stacks for Might and Stability); key is the boon's own key in a boons
+// window, whose cells are measures.
+function customText(s, v, key) {
+  if (STATS[s.key].kind === "boon" || STATS[s.key].kind === "boons") return axidpsCustom.formatBoon(key || s.key, v);
   if (s.as === "share") return v == null ? "–" : fmt(v) + "%";
   return STATS[s.key].count && s.as === "total" ? int(v) : fmt(v);
 }
@@ -784,6 +787,11 @@ function renderCustom(w) {
   } else {
     w.body.querySelector("tbody").innerHTML = shown.map((r, i) => {
       const p = r.p;
+      // A boons window's rows are boons: the name only (the page has no boon icons), one cell per measure.
+      if (spec.rows === "boons") {
+        return `<tr class="p"><td>${w.offset + i + 1}</td><td class="l name">${esc(p.name)}</td>` +
+          spec.stats.map((s, j) => `<td>${esc(customText(s, r.values[j], r.keys[j]))}</td>`).join("") + `</tr>`;
+      }
       return `<tr class="p${p.me ? " me" : ""}"><td>${w.offset + i + 1}</td>${nameCell(p, frac(r))}` +
         spec.stats.map((s, j) => `<td${part(s, p) ? ' class="part"' : ""}>${esc(customText(s, r.values[j]))}</td>`).join("") +
         `</tr>`;
@@ -855,6 +863,7 @@ function updateSpec(id, patch) {
   if (!next) return;
   saved.custom[i] = next;
   syncCustom(); save(); renderAll();
+  return next;
 }
 // The hub's name field: focus enters on a click in it (caret at the end) and leaves on Enter
 // (commit), Esc (cancel), a click elsewhere or the hub closing (commit).
@@ -1068,7 +1077,7 @@ const PROF_NAMES = ["", "Guardian", "Warrior", "Engineer", "Ranger", "Thief", "E
 const FILTER_MAX = 9;
 const filterLabel = f => f.startsWith("prof:") ? (PROF_NAMES[Number(f.slice(5))] || f) : f.slice(5);
 const SEG_TEXT = {
-  rows: [["players", "players"], ["total", "total"]],
+  rows: [["players", "players"], ["total", "total"], ["boons", "boons"]],
   who: [["squad", "squad"], ["group", "my subgroup"], ["me", "me"]],
   span: [["fight", "fight"], ["last:10", "10s"], ["last:30", "30s"], ["last:60", "60s"], ["session", "session"]],
   look: [["table", "table"], ["bars", "bars"], ["number", "number"], ["chart", "chart"]],
@@ -1086,7 +1095,8 @@ function filterChoices(spec) {
   for (const f of specs.map(x => "spec:" + x).concat(spec.who.filters)) if (!out.includes(f)) out.push(f);
   return out;
 }
-const seg = (f, cur) => `<div class="seg" data-f="${f}">` + SEG_TEXT[f].map(([v, t]) =>
+// only: the values offered (default: all of them).
+const seg = (f, cur, only) => `<div class="seg" data-f="${f}">` + SEG_TEXT[f].filter(([v]) => !only || only.includes(v)).map(([v, t]) =>
   `<button data-cact="set" data-v="${v}"${v === cur ? ' class="on"' : ""}>${t}</button>`).join("") + `</div>`;
 const crow = (label, body) => `<div class="crow"><span>${label}</span><div>${body}</div></div>`;
 
@@ -1101,18 +1111,41 @@ function builtinCard(t, full) {
     `<button data-cact="copy"${full ? " disabled" : ""} data-tip="a custom window with its columns">Copy</button></div></div>`;
 }
 // A custom window's card: every part of its spec.
-function customCard(spec, full, filterOpen) {
-  const C = axidpsCustom, n = spec.stats.length, chart = spec.look === "chart";
+function customCard(spec, full, filterOpen, boonOpen, note) {
+  const C = axidpsCustom, n = spec.stats.length, chart = spec.look === "chart", boons = spec.rows === "boons";
   const chips = spec.stats.map((s, i) => {
-    const as = STATS[s.key].rate || chart ? "" :
+    const as = STATS[s.key].rate || STATS[s.key].noAs || chart ? "" :
       `<button data-cact="as" class="as" data-tip="total, per second or % of everyone shown">${AS_TEXT[s.as]}</button>`;
     return `<span class="chip on" data-k="${s.key}" data-i="${i}" data-tip="${esc(statTip(s))}">` +
       `<button data-cact="left"${i ? "" : " disabled"}>&lsaquo;</button>${esc(STATS[s.key].label)}` +
       `<button data-cact="right"${i < n - 1 ? "" : " disabled"}>&rsaquo;</button>${as}` +
       `<button data-cact="rm"${n > 1 ? "" : " disabled"}>&times;</button></span>`;
-  }).join("") + Object.keys(STATS).filter(k => !spec.stats.some(s => s.key === k)).map(k =>
-    `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"${n >= C.MAX_STATS ? " disabled" : ""}>` +
-    `+ ${esc(STATS[k].label)}</button></span>`).join("");
+  }).join("");
+  const addChip = k => `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"` +
+    `${n >= C.MAX_STATS ? " disabled" : ""}>+ ${esc(STATS[k].label.replace(/ \(.*\)$/, ""))}</button></span>`;
+  const free = k => !spec.stats.some(s => s.key === k);
+  const group = (name, body) => `<span class="grp">${name}</span>${body ? `<div class="chips">${body}</div>` : ""}`;
+  let picker;
+  if (boons) {
+    // A boons window picks measures only: its rows are the boons.
+    picker = Object.keys(STATS).filter(k => STATS[k].kind === "boons" && free(k)).map(addChip).join("");
+  } else {
+    picker = group("Fight", Object.keys(STATS).filter(k => !STATS[k].kind && free(k)).map(addChip).join(""));
+    // Boon stats are not for charts (summing uptime over players over time means nothing).
+    if (!chart) {
+      const names = C.SQUAD_BOONS.map(b => {
+        const k = `boon:${b}:up`;
+        return `<span class="chip${boonOpen === b ? " on" : ""}"><button data-cact="boonopen" data-v="${b}">` +
+          `${esc(STATS[k].label)}${boonOpen === b ? " &times;" : ""}</button></span>`;
+      }).join("");
+      const measures = boonOpen ? ["up", "self", "group", "squad"].map(m => `boon:${boonOpen}:${m}`).filter(free).map(k =>
+        `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"` +
+        `${n >= C.MAX_STATS ? " disabled" : ""}>+ ${esc(({up: "Uptime", self: "Self", group: "Group", squad: "Squad"})[STATS[k].measure])}` +
+        `</button></span>`).join("") : "";
+      picker += group("Boons", names) + (boonOpen ? group(`${esc(STATS[`boon:${boonOpen}:up`].label)}: pick a measure`, measures || "") : "");
+    }
+  }
+  const chipsHtml = `<div class="chips">${chips}</div>` + picker;
   const fl = spec.who.filters;
   const filters = (filterOpen ? filterChoices(spec) : fl).map(f => {
     const on = fl.includes(f);
@@ -1121,15 +1154,17 @@ function customCard(spec, full, filterOpen) {
       `${on ? " &times;" : ""}</button></span>`;
   }).join("") + `<span class="chip"><button data-cact="filters"${filterOpen ? ' class="on"' : ""}>` +
     `${filterOpen ? "done" : "+ spec&hellip;"}</button></span>`;
-  const sortName = spec.sort.key === "name" ? "Name" : STATS[spec.sort.key].label;
+  const sortName = spec.sort.key === "name" ? "Name" : spec.sort.key ? STATS[spec.sort.key].label : "Default";
   return `<div class="tbl cw" data-c="${spec.id}"><div class="tbl-h"><b>${esc(spec.name)}</b><span class="grow"></span>` +
     `<button data-cact="copy"${full ? " disabled" : ""}>Copy</button><button data-cact="del">Remove</button></div>` +
     crow("Name", nameField(spec)) +
     crow("Rows", seg("rows", spec.rows)) +
     crow("Who", seg("who", spec.who.base) + `<div class="chips">${filters}</div>`) +
     crow("Span", seg("span", spec.span)) +
-    crow("Look", seg("look", spec.look)) +
-    crow("Stats", `<div class="chips">${chips}</div>`) +
+    // A boons window is a table.
+    crow("Look", seg("look", spec.look, boons ? ["table"] : null)) +
+    crow("Stats", chipsHtml) +
+    (note ? `<div class="cnote">${esc(note)}</div>` : "") +
     crow("Sort", `<button data-cact="sortkey" data-tip="sort by the name or one of its stats">${esc(sortName)}</button>` +
       `<button data-cact="sortdir" data-tip="${spec.sort.asc ? "lowest" : "highest"} first">${spec.sort.asc ? "&uarr;" : "&darr;"}</button>` +
       `<span class="lbl">Rows</span><div class="step"><button data-cact="limit-">&minus;</button>` +
@@ -1144,11 +1179,12 @@ function renderBuilder(w) {
   if (full) w.addMenu = false;
   const feedSpecs = w.filterOpen ? players().map(p => p.spec).join() : "";
   const key = JSON.stringify([saved.custom, tables.map(t => t.id + t.def.blurb[0] + builtinChanged(t)), w.filterOpen || "", !!w.addMenu, feedSpecs,
-    ui.text]);
+    ui.text, w.boonOpen || "", w.cardNote || ""]);
   if (w.builderKey === key) return;
   w.builderKey = key;
   w.body.querySelector(".tbls").innerHTML = tables.map(t => builtinCard(t, full)).join("") +
-    saved.custom.map(s => customCard(s, full, w.filterOpen === s.id)).join("");
+    saved.custom.map(s => customCard(s, full, w.filterOpen === s.id,
+      w.boonOpen && w.boonOpen.id === s.id ? w.boonOpen.boon : 0, w.cardNote && w.cardNote.id === s.id ? w.cardNote.text : "")).join("");
   const add = w.body.querySelector('[data-act="addtable"]');
   add.disabled = full;
   add.classList.toggle("on", !!w.addMenu);
@@ -1171,6 +1207,7 @@ function builderAct(hw, b) {
   const card = b.closest("[data-c]");
   const t = card && wins.find(x => x.id === card.dataset.c);
   if (!t) return;
+  hw.cardNote = null;
   if (act === "copy") { addCustom(t); return; }
   if (act === "defaults" && t.def.table) {
     const c = t.cfg;
@@ -1181,17 +1218,30 @@ function builderAct(hw, b) {
   if (!t.def.custom) return;
   const spec = t.def.spec, id = spec.id;
   const stats = spec.stats.map(s => Object.assign({}, s));
+  const note = text => { hw.cardNote = {id, text}; hw.builderKey = ""; hw.def.render(hw); };
   const chip = b.closest("[data-i]"), i = chip ? Number(chip.dataset.i) : -1;
   switch (act) {
     case "name": return startText(id);
     case "del":
       if (hw.filterOpen === id) hw.filterOpen = "";
+      if (hw.boonOpen && hw.boonOpen.id === id) hw.boonOpen = null;
       return removeCustom(id);
     case "set": {
       const f = b.closest("[data-f]").dataset.f;
+      // A boons window or a chart has no per-boon picker to leave open.
+      if (hw.boonOpen && hw.boonOpen.id === id && (f === "rows" && v === "boons" || f === "look" && v === "chart")) hw.boonOpen = null;
       if (f === "who") return updateSpec(id, {who: {base: v, filters: spec.who.filters}});
-      return updateSpec(id, {[f]: v});
+      const next = updateSpec(id, {[f]: v});
+      // Say what the change took away.
+      const lost = next && spec.stats.length && spec.stats.some(s => !next.stats.some(x => x.key === s.key));
+      if (next && lost && f === "rows" && v === "boons") note("Boons windows show only Uptime, Self, Group and Squad; your other stats were dropped.");
+      else if (next && lost && f === "rows" && spec.rows === "boons") note("Those measures are for boons windows only, so they were dropped.");
+      else if (next && lost && f === "look" && v === "chart") note("Charts do not show boon stats (uptime summed over players means nothing), so they were dropped.");
+      return;
     }
+    case "boonopen":
+      hw.boonOpen = hw.boonOpen && hw.boonOpen.id === id && hw.boonOpen.boon === Number(v) ? null : {id, boon: Number(v)};
+      return hw.def.render(hw);
     case "filters":
       hw.filterOpen = hw.filterOpen === id ? "" : id;
       return hw.def.render(hw);
@@ -1540,6 +1590,13 @@ if (DEMO.includes("demo")) {
         {id: "c8", name: "Firebrands", look: "table", span: "fight", who: {base: "squad", filters: ["spec:Firebrand"]},
           stats: [{key: "cleanses", as: "per_s"}, {key: "taken", as: "share"}]});
     }
+    // custom=boons: a Boons window, a boon in the bars look and a boon in the number look.
+    if (DEMO.includes("boons")) {
+      specs.length = 0;
+      specs.push({id: "c1", name: "Boons", rows: "boons", who: {base: "group"}, stats: [{key: "boons:up"}, {key: "boons:group"}]},
+        {id: "c2", name: "Quickness", look: "bars", stats: [{key: "boon:1187:group"}]},
+        {id: "c3", name: "Alacrity", rows: "total", look: "number", stats: [{key: "boon:30328:up"}]});
+    }
     if (DEMO.includes("xss")) specs[0].name = "<img src=x onerror=alert(1)>";
     saved.custom = axidpsCustom.normalizeAll(specs);
     for (const s of saved.custom) saved.open[s.id] = true;
@@ -1561,12 +1618,19 @@ if (DEMO.includes("demo")) {
   const ps = names.map((n, i) => ({name: n, spec: SPECS[i % 9], account: n.split(" ")[0] + "." + (1000 + i),
     prof: 1 + i % 9, elite: 0, group: 1 + (i % 3), me: i === 3, power: 0, condi: 0, damage: 0, dps: 0,
     downs: 0, kills: 0, deaths: 0, downed: 0, taken: 0, strips: 0, cleanses: 0, down_contrib: 0,
-    healing: 0, barrier: 0, hps: 0, healing_in: 0, barrier_in: 0, heal_full: i === 3}));
+    healing: 0, barrier: 0, hps: 0, healing_in: 0, barrier_in: 0, heal_full: i === 3, boons: {}}));
   let ms = 0;
   const tl = {out: [], in: []};
   const step = () => {
     ms += 500;
     ps.forEach((p, i) => {
+      // Boon ms (stack-ms for Might and Stability): each player holds a different share of the time.
+      axidpsCustom.SQUAD_BOONS.forEach((b, j) => {
+        if ((i + j) % 7 === 0) return;
+        const f = 0.2 + ((i * 3 + j * 5) % 8) / 10, stacks = b === 740 ? 12 : b === 1122 ? 1.6 : 1;
+        const a = p.boons[b] = p.boons[b] || [0, 0, 0, 0];
+        a[0] += 500 * f * stacks; a[1] += 500 * f * 0.4 * stacks; a[2] += 500 * f * 0.7 * stacks; a[3] += 500 * f * 0.5 * stacks;
+      });
       p.damage += Math.round((9000 - i * 400) * (0.5 + Math.random()));
       p.dps = p.damage / (ms / 1000);
       p.taken += Math.round(3000 * Math.random());

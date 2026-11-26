@@ -332,6 +332,7 @@ dependencies = [
  "axidps-evtc",
  "axidps-protocol",
  "axidps-ringbuf",
+ "axilog-core",
  "chrono",
  "clap",
  "ctrlc",
@@ -388,6 +389,15 @@ dependencies = [
  "axidps-protocol",
  "memmap2",
  "windows 0.58.0",
+]
+
+[[package]]
+name = "axilog-core"
+version = "1.18.0"
+source = "git+https://github.com/darkharasho/axilog?rev=91533ac6143730eff35219ce3a5fd32e3aea14e5#91533ac6143730eff35219ce3a5fd32e3aea14e5"
+dependencies = [
+ "flate2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
