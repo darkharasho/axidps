@@ -714,3 +714,21 @@ test("share_not_offered_for_boons", () => {
   assert.strictEqual(C.STATS["boon:1187:group"].noAs, true);
   assert.strictEqual(C.STATS.damage.noAs, undefined);
 });
+
+test("history last:N with sub-second feeds divides by the span it covers", () => {
+  // A feed every 500 ms at x.25 and x.75 s: 1000 damage per second, Quickness always up.
+  const h = createHistory();
+  for (let ms = 250; ms <= 30750; ms += 500) h.push(feed("fight", ms, [{ name: "A", damage: ms, boons: { 1187: [ms, 0, 0, 0] } }]));
+  const v = h.view("last:10");
+  const a = byName(v, "A");
+  assert.ok(Math.abs(a.dps - 1000) < 1e-6, `dps ${a.dps}`);
+  assert.ok(Math.abs(statValue(a, "boon:1187:up", v.seconds, false) - 100) < 1e-6, `uptime ${statValue(a, "boon:1187:up", v.seconds, false)}`);
+  const r = computeRows(mk({ rows: "boons", stats: [{ key: "boons:up" }] }), v, String, 0);
+  assert.ok(Math.abs(r.rows[0].values[0] - 100) < 1e-6, `boons row ${r.rows[0].values[0]}`);
+  // The span covered: N up to a second more, and the time since the fight started when shorter.
+  assert.strictEqual(v.seconds, 10.5);
+  const early = createHistory();
+  for (let ms = 250; ms <= 4750; ms += 500) early.push(feed("fight", ms, [{ name: "A", damage: ms }]));
+  assert.strictEqual(early.view("last:10").seconds, 4.5);
+  assert.ok(Math.abs(byName(early.view("last:10"), "A").dps - 1000) < 1e-6);
+});

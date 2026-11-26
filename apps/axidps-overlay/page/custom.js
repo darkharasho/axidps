@@ -479,9 +479,10 @@ const axidpsCustom = (() => {
         else d.fill(0, NF);
         out.push(player(e.id, d));
       }
-      // No snapshot N s back (the ring started mid-fight, or the fight is younger): the time the
-      // ring covers.
-      return withRates(out, ref ? n : Math.min(n, (now.ms - ring[0].ms) / 1000));
+      // The span is the time the reference covers: the ring keeps each second's first snapshot,
+      // so it can be up to a second over N, and every rate divides by it. No snapshot N s back
+      // (the ring started mid-fight, or the fight is younger): the time the ring covers.
+      return withRates(out, ref ? (now.ms - ref.ms) / 1000 : Math.min(n, (now.ms - ring[0].ms) / 1000));
     }
 
     function viewSession() {
