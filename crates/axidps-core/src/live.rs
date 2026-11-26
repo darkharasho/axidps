@@ -37,6 +37,9 @@ const STRIKE_KILL: u8 = 8;
 /// Strike result: downing hit (`src` put `dst` into downstate).
 const STRIKE_DOWN: u8 = 9;
 
+/// Where the tracker's per-account ids start: above any agent id.
+const ACCOUNT_IDS: u32 = 1 << 31;
+
 /// MumbleLink map type of the Armistice Bastion WvW lounge.
 const WVW_LOUNGE: u32 = 18;
 
@@ -819,6 +822,7 @@ impl LiveStats {
             Event::Pov { id } => self.roster_pov = Some(id),
             Event::AgentRemove { id } => {
                 self.roster.remove(&id);
+                self.retire_account(id);
                 self.buff_stacks.forget_agent(id);
             }
             Event::BuffApply { .. }
@@ -854,7 +858,8 @@ impl LiveStats {
         self.canon_of.get(&id).copied().unwrap_or(id)
     }
 
-    /// Remember which account `id` is, once the registry knows it.
+    /// Remember which account `id` is, once the registry knows it. An account's id for the
+    /// tracker is its own number (above every live id), so a reused live id never meets it.
     fn note_account(&mut self, reg: &Registry, id: u32) {
         let Some(a) = reg.agent(id) else {
             return;
@@ -862,9 +867,19 @@ impl LiveStats {
         if a.kind != AgentKind::Player || a.account.is_empty() {
             return;
         }
-        let c = *self.by_account.entry(a.account.clone()).or_insert(id);
+        let next = ACCOUNT_IDS + self.by_account.len() as u32;
+        let c = *self.by_account.entry(a.account.clone()).or_insert(next);
+        if self.canon_of.get(&id).is_some_and(|&old| old != c) {
+            self.retire_account(id);
+        }
         self.canon_of.insert(id, c);
         self.live_of.insert(c, id);
+    }
+
+    /// `id` is gone or was given to someone else: it no longer stands for its account.
+    fn retire_account(&mut self, id: u32) {
+        self.canon_of.remove(&id);
+        self.live_of.retain(|_, &mut live| live != id);
     }
 
     /// Give the tracker `rows` written at `t`: sources resolved to their master and to one id per
@@ -986,6 +1001,10 @@ impl LiveStats {
         self.wvw = p.map_type().is_some_and(counts_as_wvw);
         if let Some(id) = p.registry().pov() {
             self.pov = Some(id);
+        }
+        if let Some(Event::AgentAdd { id, .. }) = ev {
+            // A new life of the id (the registry has forgotten the old account, if any).
+            self.retire_account(id);
         }
         if let Some(Event::AgentAdd { id, .. } | Event::AgentName { id, .. }) = ev {
             self.note_account(p.registry(), id);
@@ -2365,6 +2384,155 @@ mod tests {
         assert!(with > 0, "boons are present");
         assert!(with <= 40_000, "boons take {with} bytes");
         println!("boons bytes: {with}");
+    }
+
+    /// A zero-length boon next to a real one adds no entry.
+    #[test]
+    fn zero_boons_are_left_out_of_a_non_empty_map() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(1000, &boon_apply(1, 4, PROTECTION, 900, 2000));
+        l.event(1000, &boon_apply(1, 4, 719, 901, 0));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        assert_eq!(
+            player(&v, "Char 1").unwrap()["boons"],
+            json!({"717": [2000, 0, 0, 0]})
+        );
+    }
+
+    fn map_event() -> Event {
+        Event::Map {
+            map_id: 38,
+            map_type: 11,
+            shard: 0,
+            gw2_build: 1,
+        }
+    }
+
+    /// Through the processor: a boon up before the fight counts from its start (the initial
+    /// rows), the fight's feed carries it, and the ended fight's feed keeps it.
+    #[test]
+    fn processor_path_counts_initial_boons_and_keeps_them_after_the_fight() {
+        let mut p = processor();
+        let mut l = LiveStats::new();
+        for e in world_events() {
+            run(&mut p, &mut l, Step::Push(0, e));
+        }
+        run(&mut p, &mut l, Step::Push(0, map_event()));
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(500, boon_apply(1, 4, PROTECTION, 900, 600_000)),
+        );
+        let enter = Event::Combat {
+            id: 1,
+            in_combat: true,
+        };
+        run(&mut p, &mut l, Step::Push(1000, enter));
+        run(&mut p, &mut l, Step::Push(2000, strike(1, NPC, 400, 0)));
+        run(&mut p, &mut l, Step::Tick(3000));
+        let v = l.snapshot(p.registry(), 0);
+        assert_eq!(v["state"], "fight");
+        assert_eq!(
+            player(&v, "Char 1").unwrap()["boons"],
+            json!({"717": [2000, 0, 0, 0]})
+        );
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 0, 2000]})
+        );
+        // The fight ends at its last activity (2000): one second of it.
+        run(&mut p, &mut l, Step::Tick(30_000));
+        assert_eq!(l.state(), LiveState::Last);
+        let v = l.snapshot(p.registry(), 0);
+        assert_eq!(v["state"], "last");
+        assert_eq!(
+            player(&v, "Char 1").unwrap()["boons"],
+            json!({"717": [1000, 0, 0, 0]})
+        );
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 0, 1000]})
+        );
+        // The next fight starts from zero.
+        run(&mut p, &mut l, Step::Push(50_000, enter));
+        let v = l.snapshot(p.registry(), 0);
+        assert!(player(&v, "Char 1").unwrap().get("boons").is_none());
+    }
+
+    fn named(id: u32, group: u8, character: &str, account: &str) -> Vec<Event> {
+        let mut v = vec![add(id, group)];
+        v.extend(name_events(id, NameField::Character, character));
+        v.extend(name_events(id, NameField::Account, account));
+        v
+    }
+
+    /// Account X is id 7, leaves, rejoins as id 9; then the game gives id 7 to account Y.
+    /// They stay two players, and X keeps its boons across the rejoin.
+    #[test]
+    fn rejoined_and_reused_ids_do_not_merge_players() {
+        let mut p = processor();
+        let mut l = LiveStats::new();
+        for e in world_events() {
+            run(&mut p, &mut l, Step::Push(0, e));
+        }
+        for e in named(7, 2, "Xena", ":X.0001") {
+            run(&mut p, &mut l, Step::Push(0, e));
+        }
+        run(&mut p, &mut l, Step::Push(0, map_event()));
+        let enter = Event::Combat {
+            id: 1,
+            in_combat: true,
+        };
+        run(&mut p, &mut l, Step::Push(1000, enter));
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1500, boon_apply(7, 4, PROTECTION, 900, 600_000)),
+        );
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(2000, Event::AgentRemove { id: 7 }),
+        );
+        for e in named(9, 2, "Xena", ":X.0001") {
+            run(&mut p, &mut l, Step::Push(2100, e));
+        }
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(2200, boon_apply(9, 4, PROTECTION, 901, 600_000)),
+        );
+        run(&mut p, &mut l, Step::Push(2500, strike(1, NPC, 400, 0)));
+        for e in named(7, 2, "Yara", ":Y.0002") {
+            run(&mut p, &mut l, Step::Push(3000, e));
+        }
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(3000, boon_apply(7, 4, 1187, 902, 2000)),
+        );
+        run(&mut p, &mut l, Step::Push(4000, strike(1, NPC, 400, 0)));
+        run(&mut p, &mut l, Step::Tick(5000));
+        let v = l.snapshot(p.registry(), 0);
+        assert_eq!(v["state"], "fight");
+        let keys = |name: &str| -> Vec<String> {
+            player(&v, name).unwrap()["boons"]
+                .as_object()
+                .map(|o| o.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(keys("Xena"), ["717"]);
+        assert_eq!(keys("Yara"), ["1187"]);
+        assert_eq!(player(&v, "Yara").unwrap()["boons"]["1187"][0], 2000);
+        assert!(
+            player(&v, "Xena").unwrap()["boons"]["717"][0]
+                .as_u64()
+                .unwrap()
+                >= 2800
+        );
     }
 
     /// A processor that saves any fight: one squad member and no minimum length.
