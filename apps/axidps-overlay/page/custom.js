@@ -23,6 +23,29 @@ const axidpsCustom = (() => {
     healing_in: {label: "Heal in", tip: "healing received (others: only what you gave them)", w: 58, heal: true},
     barrier_in: {label: "Barr in", tip: "barrier received (others: only what you gave them)", w: 58, heal: true},
   };
+  // The fight stats' summed keys (charts and the old tables use these).
+  const FIGHT_KEYS = Object.keys(STATS).filter(k => !STATS[k].rate);
+
+  // Boons: the feed's p.boons = {"<id>": [up, self, group, squad]}, ms cumulative over the fight
+  // (stack-ms for intensity boons). Group and squad come per target already, averaged by the core
+  // over this fight's other squad players as axilog does. Order as the core's SQUAD_BOONS.
+  const SQUAD_BOONS = [740, 725, 1187, 30328, 717, 718, 726, 743, 1122, 719, 26980, 873, 5974];
+  const INTENSITY = [740, 1122];
+  const BOON_NAMES = {740: "Might", 725: "Fury", 1187: "Quickness", 30328: "Alacrity", 717: "Protection",
+    718: "Regeneration", 726: "Vigor", 743: "Aegis", 1122: "Stability", 719: "Swiftness", 26980: "Resistance",
+    873: "Resolution", 5974: "Superspeed"};
+  const MEASURES = ["up", "self", "group", "squad"];
+  const MEASURE_TIP = {up: "uptime", self: "generation on themself", group: "generation on their subgroup, per player",
+    squad: "generation on the squad, per player"};
+  // Boon stats: kind "boon", one per boon and measure. noAs: always "total" (no per second, no share).
+  for (const b of SQUAD_BOONS) for (const m of MEASURES) {
+    const intensity = INTENSITY.includes(b);
+    STATS[`boon:${b}:${m}`] = {kind: "boon", boon: b, measure: m, intensity, noAs: true,
+      label: BOON_NAMES[b] + (m === "up" ? "" : ` (${m})`),
+      tip: `${BOON_NAMES[b]} ${MEASURE_TIP[m]}${intensity ? ", in stacks" : ""}`, w: 58};
+  }
+  const isBoon = k => !!STATS[k] && STATS[k].kind === "boon";
+  // Summed keys, fight stats first: the history keeps and differences every one of them.
   const BASE_KEYS = Object.keys(STATS).filter(k => !STATS[k].rate);
   const MAX_CUSTOM = 8, MAX_STATS = 8, NAME_MAX = 24, MAX_LIMIT = 50, MAX_FILTERS = 9;
   const SPANS = ["fight", "last:10", "last:30", "last:60", "session"];
@@ -30,28 +53,34 @@ const axidpsCustom = (() => {
   const FILTER_RE = /^(spec:[A-Za-z ]{1,24}|prof:[1-9])$/;
   const AS = ["total", "per_s", "share"];
   const BASES = ["squad", "group", "me"];
-  const ROWS = ["players", "total"];
+  const ROWS = ["players", "total", "boons"];
+  // A boons window with no boon stat left.
+  const BOON_DEFAULT = "boon:1187:up";
   const ID_RE = /^c[1-8]$/;
 
   const isObj = v => v !== null && typeof v === "object" && !Array.isArray(v);
   const idNum = id => String(id).replace(/\D/g, "") || "1";
 
-  function normStats(raw) {
+  // boons: a boons window keeps only boon stats.
+  function normStats(raw, boons) {
     const out = [];
     for (const s of Array.isArray(raw) ? raw : []) {
       if (out.length >= MAX_STATS) break;
       if (!isObj(s) || !Object.prototype.hasOwnProperty.call(STATS, s.key)) continue;
-      const as = STATS[s.key].rate ? "per_s" : (AS.includes(s.as) ? s.as : "total");
+      if (boons && !isBoon(s.key)) continue;
+      const st = STATS[s.key];
+      const as = st.noAs ? "total" : st.rate ? "per_s" : (AS.includes(s.as) ? s.as : "total");
       out.push({key: s.key, as});
     }
-    return out.length ? out : [{key: "damage", as: "total"}];
+    return out.length ? out : [{key: boons ? BOON_DEFAULT : "damage", as: "total"}];
   }
 
   function normalizeSpec(raw, id) {
     if (!isObj(raw)) return null;
     let name = typeof raw.name === "string" ? raw.name.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, NAME_MAX).trim() : "";
     if (!name) name = `Window ${idNum(id)}`;
-    const stats = normStats(raw.stats);
+    const rows = ROWS.includes(raw.rows) ? raw.rows : "players";
+    const stats = normStats(raw.stats, rows === "boons");
     const who = isObj(raw.who) ? raw.who : {};
     const filters = (Array.isArray(who.filters) ? who.filters : [])
       .filter(f => typeof f === "string" && FILTER_RE.test(f)).slice(0, MAX_FILTERS);
@@ -59,10 +88,11 @@ const axidpsCustom = (() => {
     const sortKey = sort.key === "name" || stats.some(s => s.key === sort.key) ? sort.key : stats[0].key;
     const lim = Math.floor(Number(raw.limit));
     return {
-      id, name, rows: ROWS.includes(raw.rows) ? raw.rows : "players", stats,
+      id, name, rows, stats,
       who: {base: BASES.includes(who.base) ? who.base : "squad", filters},
       span: SPANS.includes(raw.span) ? raw.span : "fight",
-      look: LOOKS.includes(raw.look) ? raw.look : "table",
+      // A boons window is a table (its rows are boons, not players).
+      look: rows === "boons" ? "table" : LOOKS.includes(raw.look) ? raw.look : "table",
       sort: {key: sortKey, asc: sort.asc === true},
       limit: lim >= 1 ? Math.min(lim, MAX_LIMIT) : null,
     };
@@ -137,11 +167,48 @@ const axidpsCustom = (() => {
     }));
   }
 
-  // A player's value for a catalog key. Totals for base keys; rates are per second.
+  // A player's ms for a boon stat: the flattened key (history views), else the feed's p.boons.
+  function boonMs(p, key) {
+    if (typeof p[key] === "number") return p[key];
+    const st = STATS[key], b = p.boons && p.boons[st.boon];
+    return Array.isArray(b) ? Number(b[MEASURES.indexOf(st.measure)]) || 0 : 0;
+  }
+
+  // The feed's p.boons as flat keys ("boon:<id>:<measure>", ms; 0 for every boon not held), so
+  // a span differences them like any summed stat. Returns a new object without p.boons.
+  function flattenPlayer(p) {
+    const out = Object.assign({}, p);
+    delete out.boons;
+    for (const k of BASE_KEYS) if (isBoon(k)) out[k] = boonMs(p, k);
+    return out;
+  }
+
+  // A boon stat's value over a span of spanMs: % of the span for duration boons, average stacks
+  // for intensity boons. targets: how many players the ms are spread over; 0 gives null (no
+  // targets, shown as "–"). The feed's group and squad are already per target, so callers pass 1
+  // for every measure. Never negative, never NaN.
+  function boonRate(key, ms, spanMs, targets) {
+    if (targets === 0) return null;
+    const st = STATS[key];
+    const n = Number(ms), span = Number(spanMs), t = Number(targets) || 1;
+    if (!st || !(span > 0) || !(n > 0)) return 0;
+    const v = n / t / span;
+    return st.intensity ? v : v * 100;
+  }
+
+  // A boon value's text: "–" for null, stacks with 1 decimal, else % with 0 decimals.
+  function formatBoon(key, v) {
+    if (v == null || !Number.isFinite(v)) return "\u2013";
+    return STATS[key] && STATS[key].intensity ? v.toFixed(1) : `${Math.round(v)}%`;
+  }
+
+  // A player's value for a catalog key. Totals for base keys; rates are per second; boons as a
+  // rate of the span (boonRate).
   // live (fight span): dps/hps come from the feed. Otherwise rate keys summed over seconds.
   function statValue(p, key, seconds, live) {
     const st = STATS[key];
     if (!st) return 0;
+    if (st.kind === "boon") return boonRate(key, boonMs(p, key), seconds * 1000, 1);
     if (!st.rate) return Number(p[key]) || 0;
     if (live) return Number(p[key]) || 0;
     if (!(seconds > 0)) return 0;
@@ -151,12 +218,41 @@ const axidpsCustom = (() => {
   function totalPlayer(list) {
     // Heal stats are full only if every player's are.
     const t = {name: "Total", account: "", prof: 0, heal_full: list.length > 0 && list.every(p => p.heal_full)};
-    for (const k of Object.keys(STATS)) t[k] = list.reduce((a, p) => a + (Number(p[k]) || 0), 0);
+    for (const k of Object.keys(STATS)) if (!isBoon(k)) t[k] = list.reduce((a, p) => a + (Number(p[k]) || 0), 0);
     return t;
   }
 
+  // A boon stat over several players: uptime averaged, generation summed.
+  function boonOver(players, key, seconds) {
+    let sum = 0;
+    for (const p of players) sum += statValue(p, key, seconds, false) || 0;
+    return STATS[key].measure === "up" ? (players.length ? sum / players.length : 0) : sum;
+  }
+
+  // rows "boons": one row per boon picked (SQUAD_BOONS order), one column per measure picked (in
+  // the order picked). Rows whose values are all zero are left out.
+  function boonRows(spec, view) {
+    const matched = filterWho(view.players, spec.who);
+    const picked = new Set(), cols = [];
+    for (const s of spec.stats) {
+      if (!isBoon(s.key)) continue;
+      picked.add(STATS[s.key].boon);
+      if (!cols.includes(STATS[s.key].measure)) cols.push(STATS[s.key].measure);
+    }
+    const rows = [];
+    for (const b of SQUAD_BOONS) {
+      if (!picked.has(b)) continue;
+      const values = cols.map(m => boonOver(matched, `boon:${b}:${m}`, view.seconds));
+      if (values.every(v => !v)) continue;
+      rows.push({p: {name: BOON_NAMES[b], boon: b, intensity: INTENSITY.includes(b)}, values});
+    }
+    return {rows, cols, footer: `${rows.length} boons`};
+  }
+
   // Rows and footer for a spec over a view ({players, seconds, live}). limit null -> maxRows.
+  // rows "boons" also returns cols (see boonRows).
   function computeRows(spec, view, fmt, maxRows) {
+    if (spec.rows === "boons") return boonRows(spec, view);
     const seconds = view.seconds, live = !!view.live;
     const matched = filterWho(view.players, spec.who);
     const raw = (p, key) => statValue(p, key, seconds, live);
@@ -175,7 +271,10 @@ const axidpsCustom = (() => {
         t.dps = matched.reduce((a, p) => a + (Number(p.dps) || 0), 0);
         t.hps = matched.reduce((a, p) => a + (Number(p.hps) || 0), 0);
       }
-      rows = [build(t)];
+      const r = build(t);
+      // Boons over the players: uptime averaged, generation summed (the ms sum is not a rate).
+      spec.stats.forEach((s, i) => { if (isBoon(s.key)) r.values[i] = boonOver(matched, s.key, seconds); });
+      rows = [r];
     } else {
       rows = matched.map(build);
       const idx = spec.stats.findIndex(s => s.key === spec.sort.key);
@@ -188,7 +287,7 @@ const axidpsCustom = (() => {
     const parts = [`${matched.length} players`];
     let shown = 0;
     spec.stats.forEach((s, i) => {
-      if (shown >= 2 || STATS[s.key].count) return;
+      if (shown >= 2 || STATS[s.key].count || isBoon(s.key)) return;
       shown++;
       parts.push(`${fmt(sums[i])} ${STATS[s.key].label.toLowerCase()}`);
     });
@@ -197,11 +296,15 @@ const axidpsCustom = (() => {
 
   // History of the live feed for spans other than "fight": a 60 s ring of snapshots (last:N), the
   // session (summed finished fights) and 1 s chart series. The clock is fight.duration_ms, never
-  // wall time. Players are keyed by account || name; only identity fields and BASE_KEYS are kept.
-  // Charts track at most CHART_KEYS base keys at once: 12 keys x 50 players x 3600 s x 4 bytes is
-  // about 8.6 MB.
+  // wall time. Players are keyed by account || name; only identity fields and BASE_KEYS are kept
+  // (boons flattened, see flattenPlayer). A player with no boons keeps only the fight keys (NF):
+  // missing keys read as 0. Charts track at most CHART_KEYS base keys at once: 12 keys x 50
+  // players x 3600 s x 4 bytes is about 8.6 MB.
   const IDENT = ["name", "account", "prof", "elite", "spec", "group", "me", "heal_full"];
-  const RING_MS = 60000, SERIES_CAP = 3600, NK = BASE_KEYS.length, CHART_KEYS = 12;
+  const RING_MS = 60000, SERIES_CAP = 3600, NK = BASE_KEYS.length, NF = FIGHT_KEYS.length, CHART_KEYS = 12;
+  const at = (v, i) => i < v.length ? v[i] : 0;
+  const hasBoons = p => isObj(p.boons) ? Object.keys(p.boons).length > 0
+    : BASE_KEYS.some((k, i) => i >= NF && typeof p[k] === "number");
   const NO_VALS = new Map();
   const pkey = p => String(p.account || p.name || "");
 
@@ -228,8 +331,9 @@ const axidpsCustom = (() => {
         if (!k) continue;
         const id = {};
         for (const n of IDENT) id[n] = p[n];
-        const v = new Float64Array(NK);
-        for (let i = 0; i < NK; i++) v[i] = Number(p[BASE_KEYS[i]]) || 0;
+        const v = new Float64Array(hasBoons(p) ? NK : NF);
+        for (let i = 0; i < NF; i++) v[i] = Number(p[BASE_KEYS[i]]) || 0;
+        for (let i = NF; i < v.length; i++) v[i] = boonMs(p, BASE_KEYS[i]);
         map.set(k, {id, v});
       }
       return {ms: Number(f.fight.duration_ms) || 0, map};
@@ -242,7 +346,7 @@ const axidpsCustom = (() => {
         let s = session.get(k);
         if (!s) session.set(k, s = {id: e.id, v: new Float64Array(NK)});
         s.id = e.id;
-        for (let i = 0; i < NK; i++) s.v[i] += Math.max(0, e.v[i] - (b ? b.v[i] : 0));
+        for (let i = 0; i < NK; i++) s.v[i] += Math.max(0, at(e.v, i) - (b ? at(b.v, i) : 0));
       }
       sessionMs += Math.max(0, cur.ms - (base ? base.ms : 0));
       curAdded = true;
@@ -264,7 +368,7 @@ const axidpsCustom = (() => {
         for (const key of tracked) {
           const ki = BASE_KEYS.indexOf(key);
           const now = new Float64Array(slotId.length).fill(NaN);
-          for (const [k, e] of snap.map) now[slots.get(k)] = e.v[ki];
+          for (const [k, e] of snap.map) now[slots.get(k)] = at(e.v, ki);
           const was = last ? prev.get(key) : null;
           if (was) {
             const d = new Float32Array(slotId.length);
@@ -335,7 +439,7 @@ const axidpsCustom = (() => {
         let r = ref && ref.map.get(k);
         // Not at the reference (joined or came back): the first snapshot inside the span.
         if (!r) for (let i = refIdx + 1; i < ring.length; i++) { r = ring[i].map.get(k); if (r) break; }
-        for (let i = 0; i < NK; i++) d[i] = e.v[i] - r.v[i];
+        for (let i = 0; i < NK; i++) d[i] = at(e.v, i) - at(r.v, i);
         out.push(player(e.id, d));
       }
       // No snapshot N s back (the ring started mid-fight, or the fight is younger): the time the
@@ -352,7 +456,7 @@ const axidpsCustom = (() => {
         let a = acc.get(k);
         if (!a) acc.set(k, a = {id: e.id, v: new Float64Array(NK)});
         a.id = e.id;
-        for (let i = 0; i < NK; i++) a.v[i] += Math.max(0, e.v[i] - (b ? b.v[i] : 0));
+        for (let i = 0; i < NK; i++) a.v[i] += Math.max(0, at(e.v, i) - (b ? at(b.v, i) : 0));
       }
       const ms = sessionMs + (live ? Math.max(0, cur.ms - (base ? base.ms : 0)) : 0);
       return withRates([...acc.values()].map(a => player(a.id, a.v)), ms / 1000);
@@ -425,7 +529,7 @@ const axidpsCustom = (() => {
 
     function bytes() {
       let n = 0;
-      for (const s of ring) n += s.map.size * NK * 8;
+      for (const s of ring) for (const e of s.map.values()) n += e.v.byteLength;
       n += session.size * NK * 8;
       for (const a of prev.values()) n += a.byteLength;
       for (const s of samples) for (const a of s.vals.values()) n += a.byteLength;
@@ -468,7 +572,8 @@ const axidpsCustom = (() => {
     return out(value.slice(0, caret) + key + value.slice(caret), caret + 1);
   }
 
-  return {STATS, BASE_KEYS, CHART_KEYS, MAX_CUSTOM, MAX_STATS, NAME_MAX, SPANS, LOOKS,
-    filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec, createHistory, applyKey};
+  return {STATS, BASE_KEYS, FIGHT_KEYS, CHART_KEYS, MAX_CUSTOM, MAX_STATS, NAME_MAX, SPANS, LOOKS, SQUAD_BOONS,
+    filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec, createHistory, applyKey,
+    flattenPlayer, boonRate, formatBoon};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsCustom;
