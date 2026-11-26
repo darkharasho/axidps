@@ -293,18 +293,13 @@ jobs:
 
   # Pinned to Ubuntu 24.04, not ubuntu-latest: the programs need the glibc of the system they're
   # built on, and 24.04's 2.39 is the floor (SteamOS 3.7, Ubuntu 24.04, Debian 13). ubuntu-latest
-  # became 26.04 (glibc 2.43) in 2026. appimage-check enforces the floor, so a LINUX_RUNNER with
-  # a newer glibc fails the release instead of shipping an AppImage those systems can't start.
+  # became 26.04 (glibc 2.43) in 2026. appimage-check enforces the floor, so a newer image fails
+  # the release instead of shipping an AppImage those systems can't start.
   linux:
     needs: sign-dll
-    runs-on: ${{ vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          clean: false
-
-      # A self-hosted runner keeps the workspace: keep the build folders, clear the rest.
-      - run: git clean -ffdx -e /target -e /apps/axidps-overlay/target -e /node_modules
 
       - name: Normalize the version
         run: echo "AXIDPS_VERSION=${AXIDPS_VERSION#v}" >> "$GITHUB_ENV"
@@ -316,8 +311,7 @@ jobs:
         run: rustup toolchain install
 
       # Servo build deps: same list as ci.yml overlay-check.
-      - if: runner.environment == 'github-hosted'
-        run: |
+      - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential ca-certificates ccache clang cmake curl g++ git gperf \
@@ -331,7 +325,6 @@ jobs:
             libwayland-dev
 
       - uses: actions/cache@v4
-        if: runner.environment == 'github-hosted'
         with:
           path: |
             ~/.cargo/registry

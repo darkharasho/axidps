@@ -1,0 +1,8 @@
+{
+  "name": "axidps",
+  "private": true,
+  "description": "Class icons for the overlay page (packaging/stage-page.sh, apps/axidps-overlay/install.sh)",
+  "dependencies": {
+    "gw2-class-icons": "^0.3.0"
+  }
+}

@@ -61,9 +61,8 @@ run on another branch don't carry over. The `dll` job builds without a cache eve
 above). `cache-warm.yml` builds the Windows and Linux jobs' dependencies on every push to `main` (it stops in seconds when the cache for the current Cargo.lock files exists),
 so a tag restores them instead.
 
-The `linux` job runs on the runner named by the repo variable `LINUX_RUNNER` when it is set, and
-on GitHub's Ubuntu 24.04 when it isn't (currently unset). A runner with a glibc newer than 2.39
-fails `appimage-check`.
+The `linux` job runs on GitHub's Ubuntu 24.04. A runner with a glibc newer than 2.39 fails
+`appimage-check`.
 
 After `publish`, check the release by hand:
 

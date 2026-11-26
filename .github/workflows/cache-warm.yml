@@ -8,8 +8,6 @@ name: Warm release caches
 # different toolchain, env or command changes the fingerprints and the tag rebuilds anyway.
 # Each job first checks whether its key already exists and stops there if so, so a push that
 # doesn't touch a Cargo.lock costs a few seconds per job. Unused caches expire after 7 days.
-# When the repo variable LINUX_RUNNER names a self-hosted runner (see docs/RELEASING.md), the
-# Linux jobs run there and keep their build folders, so only the Windows cache is warmed.
 on:
   workflow_dispatch:
   push:
@@ -86,8 +84,6 @@ jobs:
         run: cargo build --release
 
   linux:
-    # Only while the Linux jobs run on GitHub; a self-hosted runner keeps its own build folders.
-    if: vars.LINUX_RUNNER == ''
     # Same image as release.yml's linux job (its glibc is the AppImage's floor).
     runs-on: ubuntu-24.04
     steps:

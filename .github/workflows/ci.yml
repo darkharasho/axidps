@@ -31,7 +31,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: actions/cache@v4
-        if: runner.environment == 'github-hosted'
         with:
           path: |
             ~/.cargo/registry
@@ -41,8 +40,7 @@ jobs:
           restore-keys: cargo-test-${{ runner.os }}-
 
       # The launcher's folder dialog (rfd -> ashpd) links Wayland and D-Bus.
-      - if: runner.environment == 'github-hosted'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwayland-dev libdbus-1-dev pkg-config
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwayland-dev libdbus-1-dev pkg-config
 
       - run: cargo test --workspace
 
