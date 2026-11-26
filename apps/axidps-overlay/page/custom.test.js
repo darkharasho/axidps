@@ -4,8 +4,8 @@ const C = require("./custom.js");
 const { filterWho, computeRows, statValue, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec } = C;
 
 test("catalog shape", () => {
-  // 17 fight stats and 13 boons x 4 measures.
-  assert.strictEqual(Object.keys(C.STATS).length, 17 + 52);
+  // 17 fight stats, 13 boons x 4 measures, and the boons windows' 4 measures.
+  assert.strictEqual(Object.keys(C.STATS).length, 17 + 52 + 4);
   assert.strictEqual(C.BASE_KEYS.length, 15 + 52);
   assert.strictEqual(C.FIGHT_KEYS.length, 15);
   assert.ok(!C.BASE_KEYS.includes("dps") && !C.BASE_KEYS.includes("hps"));
@@ -369,27 +369,37 @@ test("history budget", () => {
     stats: all.slice(i, i + 8).concat(all).slice(0, 8).map(key => ({ key, as: i % 2 ? "share" : "total" })),
     span: "last:60",
   }, "c" + (i + 1)));
-  const render = () => { for (const s of specs) computeRows(s, h.view(s.span), String, 50); };
-  for (let i = 0; i < 20; i++) render();
-  const t = performance.now();
-  for (let i = 0; i < 200; i++) render();
-  const mean = (performance.now() - t) / 200;
+  // Each render follows a fresh feed (as in the overlay), so the span views are computed again.
+  let ms = 3600000;
+  const timed = (render) => {
+    const step = () => { ms += 500; const f = feed("fight", ms, players(ms)); h.push(f); return f.players; };
+    for (let i = 0; i < 20; i++) render(step());
+    let spent = 0;
+    for (let i = 0; i < 200; i++) {
+      const ps = step();
+      const t = performance.now();
+      render(ps);
+      spent += performance.now() - t;
+    }
+    return spent / 200;
+  };
+  const mean = timed(() => { for (const s of specs) computeRows(s, h.view(s.span), String, 50); });
   assert.ok(mean < 1, `mean ${mean} ms`);
-  // 8 windows of boon stats: players and boons rows, over spans and the live fight.
+  // 8 windows of boon stats: players windows of 8 boon stats, boons windows of the 4 measures,
+  // over spans and the live fight.
   const boonKeys = Object.keys(C.STATS).filter(k => C.STATS[k].kind === "boon");
-  const live = { players: players(3600000), seconds: 3600, live: true };
-  const bspecs = Array.from({ length: 8 }, (_, i) => normalizeSpec({
-    rows: i % 2 ? "boons" : "players",
-    stats: boonKeys.slice(i * 6, i * 6 + 8).map(key => ({ key })),
-    who: { base: i % 4 < 2 ? "squad" : "group" },
-    span: ["fight", "last:10", "last:60", "session"][i % 4],
+  const bspecs = Array.from({ length: 8 }, (_, i) => normalizeSpec(i % 2 ? {
+    rows: "boons", stats: C.BOON_MEASURE_KEYS.map(key => ({ key })),
+    who: { base: i % 4 < 2 ? "squad" : "group" }, span: ["fight", "last:10", "last:60", "session"][i % 4],
+  } : {
+    rows: "players", stats: boonKeys.slice(i * 6, i * 6 + 8).map(key => ({ key })),
+    who: { base: i % 4 < 2 ? "squad" : "group" }, span: ["fight", "last:10", "last:60", "session"][i % 4],
   }, "c" + (i + 1)));
-  assert.ok(bspecs.every(s => s.stats.length === 8 && s.stats.every(x => C.STATS[x.key].kind === "boon")));
-  const brender = () => { for (const s of bspecs) computeRows(s, s.span === "fight" ? live : h.view(s.span), String, 50); };
-  for (let i = 0; i < 20; i++) brender();
-  const t2 = performance.now();
-  for (let i = 0; i < 200; i++) brender();
-  const bmean = (performance.now() - t2) / 200;
+  assert.ok(bspecs.every((s, i) => s.stats.length === (i % 2 ? 4 : 8)));
+  const bmean = timed(ps => {
+    const live = { players: ps, seconds: ms / 1000, live: true };
+    for (const s of bspecs) computeRows(s, s.span === "fight" ? live : h.view(s.span), String, 50);
+  });
   assert.ok(bmean < 1, `boon mean ${bmean} ms`);
   assert.ok(h.bytes() < 10e6, `bytes ${h.bytes()}`);
   console.log(`budget: fight ${mean.toFixed(3)} ms, boons ${bmean.toFixed(3)} ms per render, ${(h.bytes() / 1e6).toFixed(2)} MB`);
@@ -459,10 +469,12 @@ test("history series incremental equals a full recompute", () => {
 test("history chart budget: 50 players, 1 h, 8 charts of 8 stats", () => {
   const h = createHistory();
   const keys = C.FIGHT_KEYS;
-  h.track(keys);
+  // Charts at the cap of tracked keys, and every player holding and giving all 13 boons.
+  assert.strictEqual(h.track(keys).size, C.CHART_KEYS);
   const players = ms => Array.from({ length: 50 }, (_, i) => {
-    const p = { name: "P" + i, group: 1 + (i % 10), me: i === 0 };
+    const p = { name: "P" + i, group: 1 + (i % 10), me: i === 0, boons: {} };
     keys.forEach((k, j) => { p[k] = (ms / 1000) * (i + j + 1); });
+    C.SQUAD_BOONS.forEach((b, j) => { p.boons[b] = [ms * 0.9, ms * 0.3, ms * 0.2, ms * 0.1 + j]; });
     return p;
   });
   const all = Object.keys(C.STATS).filter(k => !C.STATS[k].kind);
@@ -475,6 +487,7 @@ test("history chart budget: 50 players, 1 h, 8 charts of 8 stats", () => {
   let ms = 0;
   for (; ms <= 3600000; ms += 500) h.push(feed("fight", ms, players(ms)));
   assert.ok(h.bytes() < 10e6, `bytes ${h.bytes()}`);
+  console.log(`chart budget: ${(h.bytes() / 1e6).toFixed(2)} MB`);
   draw();
   let spent = 0;
   for (let i = 0; i < 30; i++) {
@@ -491,7 +504,8 @@ test("history returning player counts from inside the span", () => {
     : [{ name: "A", damage: ms }, { name: "B", damage: ms }]);
   const v = h.view("last:10");
   assert.strictEqual(byName(v, "A").damage, 10000);
-  assert.strictEqual(byName(v, "B").damage, 8500);
+  // B is back at 21.5 s; the ring keeps each second's first snapshot, so B counts from 22 s.
+  assert.strictEqual(byName(v, "B").damage, 8000);
 });
 
 test("applyKey inserts at the caret", () => {
@@ -614,52 +628,89 @@ test("rows_boons_one_row_per_boon", () => {
     B({ 1187: [0, 0, 2000, 3000], 30328: [5000, 0, 0, 0] }, { name: "B", group: 1 }),
     B({ 1122: [0, 0, 0, 0] }, { name: "C", group: 2 }),
   ];
-  const spec = mk({ rows: "boons", stats: [{ key: "boon:30328:up" }, { key: "boon:1187:group" }, { key: "boon:1122:up" }, { key: "boon:1187:up" }] });
+  const spec = mk({ rows: "boons", stats: [{ key: "boons:up" }, { key: "boons:group" }] });
   assert.strictEqual(spec.rows, "boons");
+  assert.strictEqual(spec.sort.key, null);
   const r = computeRows(spec, { players: ps, seconds: 10 }, String, 5);
-  // Columns are the measures picked, in order; rows the boons picked, in SQUAD_BOONS order.
+  // Every boon with a value, in SQUAD_BOONS order; Stability (all zero) and the boons nobody has
+  // are left out. Columns are the measures picked.
   assert.deepStrictEqual(r.cols, ["up", "group"]);
-  // Stability is all zero: hidden. Quickness before Alacrity (SQUAD_BOONS order).
-  assert.deepStrictEqual(r.rows.map(x => x.p.name), ["Quickness", "Alacrity"]);
-  assert.deepStrictEqual(r.rows.map(x => x.p.boon), [1187, 30328]);
+  assert.deepStrictEqual(r.rows.map(x => x.p.name), ["Might", "Quickness", "Alacrity"]);
+  assert.deepStrictEqual(r.rows.map(x => x.p.boon), [740, 1187, 30328]);
+  // Each cell's own boon key, for formatting (stacks for Might, % for the rest).
+  assert.deepStrictEqual(r.rows[0].keys, ["boon:740:up", "boon:740:group"]);
+  assert.strictEqual(C.formatBoon(r.rows[0].keys[0], r.rows[0].values[0]), "3.3");
+  assert.strictEqual(C.formatBoon(r.rows[1].keys[0], r.rows[1].values[0]), "33%");
   // Uptime averaged over the 3 players; generation summed.
-  assert.deepStrictEqual(r.rows[0].values.map(v => Math.round(v * 1000) / 1000), [33.333, 60]);
-  assert.deepStrictEqual(r.rows[1].values.map(v => Math.round(v * 1000) / 1000), [33.333, 0]);
-  assert.strictEqual(r.footer, "2 boons");
+  const round = v => Math.round(v * 1000) / 1000;
+  assert.deepStrictEqual(r.rows[1].values.map(round), [33.333, 60]);
+  assert.deepStrictEqual(r.rows[2].values.map(round), [33.333, 0]);
+  assert.strictEqual(r.footer, "3 boons");
+  // All 13 boons can show.
+  const all = ps.slice(0, 1).map(p => B(Object.fromEntries(C.SQUAD_BOONS.map((b, i) => [b, [1000 * (i + 1), 0, 0, 0]])), { name: "A", me: true }));
+  const r13 = computeRows(mk({ rows: "boons", stats: [{ key: "boons:up" }] }), { players: all, seconds: 100 }, String, 0);
+  assert.deepStrictEqual(r13.rows.map(x => x.p.boon), C.SQUAD_BOONS);
   // "who" picks the players: group 1 only.
-  const g = computeRows(mk({ rows: "boons", stats: [{ key: "boon:1187:up" }], who: { base: "group" } }), { players: ps, seconds: 10 }, String, 5);
-  assert.deepStrictEqual(g.rows.map(x => x.values[0]), [50]);
+  const g = computeRows(mk({ rows: "boons", stats: [{ key: "boons:up" }], who: { base: "group" } }), { players: ps, seconds: 10 }, String, 5);
+  // Might in stacks: 10 stacks on A, 0 on B.
+  assert.deepStrictEqual(g.rows.map(x => [x.p.name, x.values[0]]), [["Might", 5], ["Quickness", 50], ["Alacrity", 50]]);
   // Nothing to show: no rows, no NaN.
   const e = computeRows(spec, { players: [], seconds: 0 }, String, 5);
   assert.deepStrictEqual(e.rows, []);
   assert.strictEqual(e.footer, "0 boons");
-  // A players window of boon stats: one row per player, uptime as each player's.
+  // A players window of per-boon stats: one row per player.
   const pr = computeRows(mk({ stats: [{ key: "boon:1187:up" }], sort: { key: "boon:1187:up" } }), { players: ps, seconds: 10 }, String, 5);
   assert.deepStrictEqual(pr.rows.map(x => [x.p.name, x.values[0]]), [["A", 100], ["B", 0], ["C", 0]]);
-  // The total row: uptime averaged, generation summed, as in rows boons.
+  // The total row: uptime averaged, generation summed.
   const t = computeRows(mk({ rows: "total", stats: [{ key: "boon:1187:up" }, { key: "boon:1187:group" }, { key: "damage" }] }), { players: ps, seconds: 10 }, String, 5);
-  assert.deepStrictEqual(t.rows[0].values.map(v => Math.round(v * 1000) / 1000), [33.333, 60, 0]);
+  assert.deepStrictEqual(t.rows[0].values.map(round), [33.333, 60, 0]);
+});
+
+test("rows_boons_sort_and_limit", () => {
+  const ps = [B({ 740: [20000, 0, 0, 0], 725: [3000, 0, 9000, 0], 1187: [8000, 0, 1000, 0], 718: [5000, 0, 4000, 0] }, { name: "A", me: true })];
+  const v = { players: ps, seconds: 10 };
+  const order = o => computeRows(mk(Object.assign({ rows: "boons", stats: [{ key: "boons:up" }, { key: "boons:group" }] }, o)), v, String, 0).rows.map(x => x.p.name);
+  assert.deepStrictEqual(order({}), ["Might", "Fury", "Quickness", "Regeneration"]);
+  // By a measure (highest first unless asc), by name, and limited.
+  assert.deepStrictEqual(order({ sort: { key: "boons:group" } }), ["Fury", "Regeneration", "Quickness", "Might"]);
+  // Might's uptime is in stacks (2), so it sorts with the numbers as shown.
+  assert.deepStrictEqual(order({ sort: { key: "boons:up", asc: true } }), ["Might", "Fury", "Regeneration", "Quickness"]);
+  assert.deepStrictEqual(order({ sort: { key: "name", asc: true } }), ["Fury", "Might", "Quickness", "Regeneration"]);
+  assert.deepStrictEqual(order({ sort: { key: "boons:group" }, limit: 2 }), ["Fury", "Regeneration"]);
+  assert.deepStrictEqual(order({ limit: 1 }), ["Might"]);
+  // limit null falls back to maxRows.
+  assert.strictEqual(computeRows(mk({ rows: "boons", stats: [{ key: "boons:up" }] }), v, String, 3).rows.length, 3);
+  // A sort key that is not one of the window's measures: SQUAD_BOONS order.
+  assert.strictEqual(mk({ rows: "boons", stats: [{ key: "boons:up" }], sort: { key: "boons:self" } }).sort.key, null);
+  assert.strictEqual(mk({ rows: "boons", stats: [{ key: "boons:up" }], sort: { key: "damage" } }).sort.key, null);
+  assert.strictEqual(mk({ rows: "boons", stats: [{ key: "boons:up" }], sort: { key: "name" } }).sort.key, "name");
 });
 
 test("normalize_drops_unknown_boon_keys", () => {
   const s = mk({ stats: [{ key: "boon:9999:up" }, { key: "boon:740:foo" }, { key: "boon:740:up" }, { key: "boon:1187" }, { key: "damage" }] });
   assert.deepStrictEqual(s.stats.map(x => x.key), ["boon:740:up", "damage"]);
-  // rows boons keeps only boon stats, and its look is a table.
-  const b = mk({ rows: "boons", look: "bars", stats: [{ key: "damage" }, { key: "boon:1187:squad" }, { key: "boon:9999:up" }] });
-  assert.deepStrictEqual(b.stats.map(x => x.key), ["boon:1187:squad"]);
+  // rows boons keeps only the measure keys (per-boon keys and fight stats go), and is a table.
+  const b = mk({ rows: "boons", look: "bars", stats: [{ key: "damage" }, { key: "boon:1187:squad" }, { key: "boons:squad" }, { key: "boons:nope" }, { key: "boons:up" }] });
+  assert.deepStrictEqual(b.stats.map(x => x.key), ["boons:squad", "boons:up"]);
   assert.strictEqual(b.look, "table");
-  assert.strictEqual(b.sort.key, "boon:1187:squad");
-  // No boon stat left: a default one.
-  assert.deepStrictEqual(mk({ rows: "boons", stats: [{ key: "damage" }] }).stats, [{ key: "boon:1187:up", as: "total" }]);
-  // Boon stats in a players window are kept.
-  assert.deepStrictEqual(mk({ rows: "players", stats: [{ key: "boon:30328:group" }] }).stats.map(x => x.key), ["boon:30328:group"]);
+  // No measure left: uptime.
+  assert.deepStrictEqual(mk({ rows: "boons", stats: [{ key: "boon:1187:up" }] }).stats, [{ key: "boons:up", as: "total" }]);
+  // The measure keys only belong to boons windows; per-boon keys stay valid in players and total windows.
+  assert.deepStrictEqual(mk({ rows: "players", stats: [{ key: "boons:up" }, { key: "boon:30328:group" }] }).stats.map(x => x.key), ["boon:30328:group"]);
+  assert.deepStrictEqual(mk({ rows: "total", stats: [{ key: "boons:group" }, { key: "boon:30328:group" }] }).stats.map(x => x.key), ["boon:30328:group"]);
+  assert.deepStrictEqual(mk({ stats: [{ key: "boons:up" }] }).stats, [{ key: "damage", as: "total" }]);
+  assert.deepStrictEqual(C.BOON_MEASURE_KEYS, ["boons:up", "boons:self", "boons:group", "boons:squad"]);
+  assert.deepStrictEqual(C.BOON_MEASURE_KEYS.map(k => C.STATS[k].label), ["Uptime", "Self", "Group", "Squad"]);
+  assert.ok(!C.BASE_KEYS.some(k => k.startsWith("boons:")));
   for (const b of C.SQUAD_BOONS) for (const m of ["up", "self", "group", "squad"]) assert.ok(C.STATS[`boon:${b}:${m}`], `${b} ${m}`);
 });
 
 test("share_not_offered_for_boons", () => {
   for (const as of ["share", "per_s", "total", "x"]) {
     assert.strictEqual(mk({ stats: [{ key: "boon:1187:group", as }] }).stats[0].as, "total", as);
+    assert.strictEqual(mk({ rows: "boons", stats: [{ key: "boons:group", as }] }).stats[0].as, "total", as);
   }
+  assert.strictEqual(C.STATS["boons:group"].noAs, true);
   assert.strictEqual(C.STATS["boon:1187:group"].noAs, true);
   assert.strictEqual(C.STATS.damage.noAs, undefined);
 });
