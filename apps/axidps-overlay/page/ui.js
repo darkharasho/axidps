@@ -694,21 +694,45 @@ defineWindow({
 function paintLauncher(cv, hot, live) {
   const g = cv.getContext("2d"), W = cv.width;
   g.clearRect(0, 0, W, W);
-  const bars = [[7, 15], [13.5, 10], [20, 4]]; // x, top; bottoms at 26, width 5
-  const shape = (dx, dy) => {
+  // Meter bars: an axis and three horizontal bars (x, top, right; height 5).
+  const bars = [[6.5, 5, 21], [6.5, 13, 28], [6.5, 21, 16]];
+  const meter = (dx, dy) => {
     g.beginPath();
-    for (const [x, top] of bars) {
-      const l = x + dx, t = top + dy, r = l + 5, b = 26 + dy;
-      g.moveTo(l, b); g.lineTo(l, t + 1.5); g.quadraticCurveTo(l, t, l + 1.5, t);
-      g.lineTo(r - 1.5, t); g.quadraticCurveTo(r, t, r, t + 1.5); g.lineTo(r, b); g.closePath();
+    g.rect(3 + dx, 3 + dy, 2.5, 26);
+    for (const [l0, t0, r0] of bars) {
+      const l = l0 + dx, t = t0 + dy, r = r0 + dx, b = t + 5;
+      g.moveTo(l, t); g.lineTo(r - 1.5, t); g.quadraticCurveTo(r, t, r, t + 1.5);
+      g.lineTo(r, b - 1.5); g.quadraticCurveTo(r, b, r - 1.5, b); g.lineTo(l, b); g.closePath();
     }
   };
-  shape(1, 1.5); g.fillStyle = "rgba(0,0,0,.5)"; g.fill();
-  shape(0, 0); g.lineWidth = 2; g.strokeStyle = "rgba(24,20,14,.85)"; g.stroke();
-  const grad = g.createLinearGradient(0, 4, 0, 26);
-  grad.addColorStop(0, hot ? "#fffbf0" : "#eee6d2");
-  grad.addColorStop(1, hot ? "#d9cfb6" : "#aaa089");
-  g.fillStyle = grad; g.fill();
+  // A sword in the bottom-right corner, its point up and to the left.
+  const poly = (pts, dx, dy) => {
+    g.moveTo(pts[0][0] + dx, pts[0][1] + dy);
+    for (const [x, y] of pts.slice(1)) g.lineTo(x + dx, y + dy);
+    g.closePath();
+  };
+  const SWORD = [
+    [[16.0, 16.0], [19.4, 16.8], [25.1, 22.5], [22.5, 25.1], [16.8, 19.4]],    // blade
+    [[27.3, 20.3], [29.0, 22.0], [22.0, 29.0], [20.3, 27.3]],    // crossguard
+    [[26.3, 24.6], [30.0, 28.3], [28.3, 30.0], [24.6, 26.3]],     // grip
+  ];
+  const sword = (dx, dy) => { g.beginPath(); for (const p of SWORD) poly(p, dx, dy); };
+  const ink = (top, bottom) => {
+    const grad = g.createLinearGradient(0, 3, 0, 30);
+    grad.addColorStop(0, top); grad.addColorStop(1, bottom);
+    return grad;
+  };
+  const light = ink(hot ? "#fffbf0" : "#eee6d2", hot ? "#d9cfb6" : "#aaa089");
+  meter(1, 1.5); g.fillStyle = "rgba(0,0,0,.5)"; g.fill();
+  meter(0, 0); g.lineWidth = 2; g.strokeStyle = "rgba(24,20,14,.85)"; g.stroke();
+  g.fillStyle = light; g.fill();
+  // Cut the meter away around the sword so the two read apart.
+  g.save(); g.globalCompositeOperation = "destination-out";
+  sword(0, 0); g.lineWidth = 5; g.lineJoin = "round"; g.stroke(); g.fill();
+  g.restore();
+  sword(1, 1.5); g.fillStyle = "rgba(0,0,0,.5)"; g.fill();
+  sword(0, 0); g.lineWidth = 2; g.lineJoin = "miter"; g.strokeStyle = "rgba(24,20,14,.85)"; g.stroke();
+  g.fillStyle = light; g.fill();
   if (live) {
     g.beginPath(); g.arc(27, 6, 3.5, 0, Math.PI * 2);
     g.fillStyle = "#16130e"; g.fill();
