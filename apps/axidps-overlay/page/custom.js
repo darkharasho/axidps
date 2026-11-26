@@ -198,8 +198,11 @@ const axidpsCustom = (() => {
   // History of the live feed for spans other than "fight": a 60 s ring of snapshots (last:N), the
   // session (summed finished fights) and 1 s chart series. The clock is fight.duration_ms, never
   // wall time. Players are keyed by account || name; only identity fields and BASE_KEYS are kept.
+  // Charts track at most CHART_KEYS base keys at once: 12 keys x 50 players x 3600 s x 4 bytes is
+  // about 8.6 MB.
   const IDENT = ["name", "account", "prof", "elite", "spec", "group", "me", "heal_full"];
-  const RING_MS = 60000, SERIES_CAP = 3600, NK = BASE_KEYS.length;
+  const RING_MS = 60000, SERIES_CAP = 3600, NK = BASE_KEYS.length, CHART_KEYS = 12;
+  const NO_VALS = new Map();
   const pkey = p => String(p.account || p.name || "");
 
   function createHistory() {
@@ -211,8 +214,11 @@ const axidpsCustom = (() => {
     let prevState = null, prevMs = 0;
     let tracked = new Set();
     let cache = new Map();      // view per span until the next push or clear; callers must not mutate it
-    // Series: one sample per whole fight second; sample.vals: Map<key, Float64Array by slot> (NaN = absent).
-    let samples = [], slots = new Map(), slotId = [];
+    // Series: one sample per whole fight second. sample.vals: Map<key, Float32Array by slot>, each
+    // player's gain since the previous sample (0 when absent in either). prev: the previous
+    // sample's totals per key (Float64Array by slot, NaN = absent). gen: bumped when past samples
+    // change (start over, a key dropped), so cached series are computed again.
+    let samples = [], slots = new Map(), slotId = [], prev = new Map(), gen = 0;
 
     const snapOf = (f) => {
       const map = new Map();
@@ -242,7 +248,7 @@ const axidpsCustom = (() => {
       curAdded = true;
     }
 
-    function clearSeries() { samples = []; slots = new Map(); slotId = []; }
+    function clearSeries() { samples = []; slots = new Map(); slotId = []; prev = new Map(); gen++; }
 
     function sample(snap) {
       const sec = Math.floor(snap.ms / 1000);
@@ -257,13 +263,23 @@ const axidpsCustom = (() => {
         }
         for (const key of tracked) {
           const ki = BASE_KEYS.indexOf(key);
-          const a = new Float64Array(slotId.length).fill(NaN);
-          for (const [k, e] of snap.map) a[slots.get(k)] = e.v[ki];
-          vals.set(key, a);
+          const now = new Float64Array(slotId.length).fill(NaN);
+          for (const [k, e] of snap.map) now[slots.get(k)] = e.v[ki];
+          const was = last ? prev.get(key) : null;
+          if (was) {
+            const d = new Float32Array(slotId.length);
+            for (let j = 0; j < was.length; j++) {
+              const x = now[j] - was[j];
+              if (x > 0) d[j] = x;
+            }
+            vals.set(key, d);
+          }
+          prev.set(key, now);
         }
       }
-      // Seconds the feed skipped repeat the previous sample, so values stay one per second.
-      if (last) for (let s = Math.max(last.s + 1, sec - SERIES_CAP); s < sec; s++) samples.push({s, vals: last.vals});
+      // Seconds the feed skipped gain nothing (the gain lands on this second), so there is one
+      // sample per second.
+      if (last) for (let s = Math.max(last.s + 1, sec - SERIES_CAP); s < sec; s++) samples.push({s, vals: NO_VALS});
       samples.push({s: sec, vals});
       if (samples.length > SERIES_CAP + 1) samples.splice(0, samples.length - SERIES_CAP - 1);
     }
@@ -350,46 +366,75 @@ const axidpsCustom = (() => {
       return v;
     }
 
+    // The base keys open charts use, in order. Keys already tracked stay; new ones are added up
+    // to CHART_KEYS, the rest are not tracked. Returns the tracked set.
     function track(keys) {
-      const next = new Set([...(keys || [])].filter(k => BASE_KEYS.includes(k)));
-      for (const k of tracked) if (!next.has(k)) for (const s of samples) s.vals.delete(k);
+      const want = [...new Set([...(keys || [])].filter(k => BASE_KEYS.includes(k)))];
+      const next = new Set(want.filter(k => tracked.has(k)));
+      for (const k of want) if (next.size < CHART_KEYS) next.add(k);
+      for (const k of tracked) if (!next.has(k)) {
+        prev.delete(k);
+        for (const s of samples) s.vals.delete(k);
+        gen++;
+      }
       tracked = next;
+      return tracked;
     }
 
-    function series(keys, whoFn) {
+    // Per-second lines over "who" (whoFn picks from the players seen). keys: one entry per line,
+    // a base key or an array of them (summed). memo: an object the caller keeps per window; while
+    // keys, "who" and the history stay the same, only new seconds are added. The returned arrays
+    // belong to memo: don't mutate them.
+    function series(keys, whoFn, memo) {
+      const groups = (keys || []).map(k => Array.isArray(k) ? k : [k]);
       const players = slotId.map(id => Object.assign({}, id));
       const kept = new Set(typeof whoFn === "function" ? whoFn(players) : players);
       const idx = [];
       players.forEach((p, j) => { if (kept.has(p)) idx.push(j); });
       const n = Math.max(0, samples.length - 1);
-      const values = (keys || []).map(key => {
-        const out = new Array(n).fill(0);
-        for (let i = 0; i < n; i++) {
-          const a = samples[i].vals.get(key), b = samples[i + 1].vals.get(key);
-          if (!a || !b) continue;
-          let sum = 0;
-          for (const j of idx) {
-            const d = b[j] - a[j];
-            if (d > 0) sum += d;
-          }
-          out[i] = sum;
+      const first = samples.length ? samples[0].s : 0, end = first + n;
+      // Line value i: the gain at samples[i + 1], second first + i + 1.
+      const at = (i, g) => {
+        const vals = samples[i + 1].vals;
+        let sum = 0;
+        for (const key of g) {
+          const d = vals.get(key);
+          if (d) for (const j of idx) { const x = d[j]; if (x > 0) sum += x; }
         }
-        return out;
-      });
-      return {t0: samples.length ? samples[0].s * 1000 : 0, step: 1000, values};
+        return sum;
+      };
+      const m = memo && typeof memo === "object" ? memo : {};
+      const sig = JSON.stringify(groups) + "|" + idx.join();
+      if (m.values && m.gen === gen && m.sig === sig && m.first <= first && m.end <= end) {
+        const drop = Math.min(first - m.first, m.end - m.first);
+        if (drop > 0) for (const a of m.values) a.splice(0, drop);
+        for (let s = Math.max(m.end, first) + 1; s <= end; s++) {
+          const i = s - first - 1;
+          m.values.forEach((a, g) => a.push(at(i, groups[g])));
+        }
+      } else {
+        m.values = groups.map(g => {
+          const a = new Array(n);
+          for (let i = 0; i < n; i++) a[i] = at(i, g);
+          return a;
+        });
+      }
+      m.gen = gen; m.sig = sig; m.first = first; m.end = end;
+      return {t0: first * 1000, step: 1000, values: m.values};
     }
 
     function bytes() {
       let n = 0;
-      for (const s of ring) n += s.map.size * NK;
-      n += session.size * NK;
-      const seen = new Set();
-      for (const s of samples) for (const a of s.vals.values()) if (!seen.has(a)) { seen.add(a); n += a.length; }
-      return n * 8;
+      for (const s of ring) n += s.map.size * NK * 8;
+      n += session.size * NK * 8;
+      for (const a of prev.values()) n += a.byteLength;
+      for (const s of samples) for (const a of s.vals.values()) n += a.byteLength;
+      return n;
     }
 
     return {
       push, view, track, series, bytes,
+      isTracked: k => tracked.has(k),
       clear() { ring = []; clearSeries(); cache = new Map(); },
       clearSession() {
         cache = new Map();
@@ -423,7 +468,7 @@ const axidpsCustom = (() => {
     return out(value.slice(0, caret) + key + value.slice(caret), caret + 1);
   }
 
-  return {STATS, BASE_KEYS, MAX_CUSTOM, MAX_STATS, NAME_MAX, SPANS, LOOKS,
+  return {STATS, BASE_KEYS, CHART_KEYS, MAX_CUSTOM, MAX_STATS, NAME_MAX, SPANS, LOOKS,
     filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec, createHistory, applyKey};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsCustom;
