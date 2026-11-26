@@ -20,15 +20,15 @@ Each stat is one number per player. A window can list players or show a single t
 | `strips` | Boon stacks stripped from enemies | players, total | fight outcome, also shown by the built-in windows |
 | `healing` | Healing given (for others, only what they gave you) | players, total | fight outcome, also shown by the built-in windows |
 | `barrier` | Barrier given (for others, only what they gave you) | players, total | fight outcome, also shown by the built-in windows |
-| `hps` | Healing and barrier given per second (per second only) | players, total | fight outcome, also shown by the built-in windows |
+| `hps` | Healing and barrier given per second (per second only; for others, only what they gave you) | players, total | fight outcome, also shown by the built-in windows |
 | `healing_in` | Healing received (for others, only what you gave them) | players, total | fight outcome, also shown by the built-in windows |
 | `barrier_in` | Barrier received (for others, only what you gave them) | players, total | fight outcome, also shown by the built-in windows |
 
-Heal stats are dimmed for players who don't share their healing.
+Heal stats for other players are dimmed. The game reports only what passed between them and you.
 
 ## Never offered
 
-- Gear and stats.
+- Gear and its stats.
 - Builds: traits, skills on the bar and templates.
 - Cooldowns.
 - Anything ArenaNet disallows.
