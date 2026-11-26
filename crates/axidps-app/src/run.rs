@@ -6,13 +6,14 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::autostart;
+use crate::autostart::{self, Lifetime, Starter};
 use crate::config::{self, GameState, Store};
 use crate::firstrun;
 use crate::game::gw2_running;
 use crate::gamedir::{self, Outcome};
 use crate::gw2path;
 use crate::layout::Layout;
+use crate::lifetime::{self, GameWatch, Verdict};
 use crate::supervise::{Child, Supervisor};
 use crate::update::Updater;
 
@@ -99,18 +100,20 @@ fn ask_user(store: &Store) -> Option<PathBuf> {
     Some(game)
 }
 
-/// Keeps the autostart entry pointing at the running AppImage. A failure is logged once.
-fn keep_autostart(failed: &mut bool) {
-    let Some(appimage) = std::env::var_os("APPIMAGE") else {
-        return;
-    };
-    match autostart::install(Path::new(&appimage)) {
-        Ok(()) => *failed = false,
-        Err(e) if !*failed => {
-            *failed = true;
-            eprintln!("axidps: cannot write the autostart entry: {e}");
-        }
-        Err(_) => {}
+/// The marker the DLL keeps while the game runs under Wine. `None` on Windows, where the DLL
+/// starts the launcher itself.
+fn game_marker() -> Option<PathBuf> {
+    cfg!(unix)
+        .then(|| axidps_protocol::paths::game_marker_path(axidps_protocol::v2::RingHost::Unix))
+}
+
+/// Deletes the game marker a crashed game left behind; otherwise the path unit would start the
+/// launcher again as soon as it exits.
+fn remove_marker(marker: &Path) {
+    match std::fs::remove_file(marker) {
+        Ok(()) => eprintln!("axidps: removed the stale {}", marker.display()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("axidps: cannot remove {}: {e}", marker.display()),
     }
 }
 
@@ -271,15 +274,43 @@ fn stop_requested(file: &Path) -> bool {
 /// How long a launcher started by an update waits for the old one to let go of the lock.
 const AFTER_UPDATE_WAIT: Duration = Duration::from_secs(60);
 
-/// The long-running loop. Returns when `stop` is set, or when another launcher runs (at once,
-/// or after waiting for it to exit when `after_update`).
-pub fn run(layout: &Layout, store: &Store, stop: &AtomicBool, after_update: bool) -> io::Result<()> {
+/// Whether a launcher that got the lock only after waiting should exit at once: one the path
+/// unit started (`from_game`) whose game closed while another launcher ran. Not one an update
+/// started: it has to rewrite the units for the new AppImage.
+fn exit_after_wait(from_game: bool, after_update: bool, waited: bool, marker_up: bool) -> bool {
+    from_game && !after_update && waited && !marker_up
+}
+
+/// The long-running loop. Returns when `stop` is set, when the game has closed (a launcher that
+/// runs with the game), or when another launcher runs (at once, or after waiting for it to exit
+/// when `after_update`, or while the game marker exists when `from_game`).
+pub fn run(
+    layout: &Layout,
+    store: &Store,
+    stop: &AtomicBool,
+    after_update: bool,
+    from_game: bool,
+) -> io::Result<()> {
     let wait = if after_update {
         AFTER_UPDATE_WAIT
     } else {
         Duration::ZERO
     };
-    let _instance = match crate::instance::acquire_waiting(store.dir(), wait) {
+    let deadline = Instant::now() + wait;
+    let marker = game_marker();
+    let marker_up = || marker.as_deref().is_some_and(Path::exists);
+    // Started by the path unit while another launcher runs (one started by hand): this one must
+    // stay up while the marker exists, or the path unit would start it again at once.
+    let mut waited = false;
+    let lock = crate::instance::acquire_while(store.dir(), || {
+        waited = true;
+        Instant::now() < deadline || (from_game && marker_up())
+    });
+    let _instance = match lock {
+        Ok(Some(_)) if exit_after_wait(from_game, after_update, waited, marker_up()) => {
+            eprintln!("axidps: the game closed while another launcher ran; this copy exits");
+            return Ok(());
+        }
         Ok(Some(instance)) => Some(instance),
         Ok(None) => {
             eprintln!("axidps: already running; this copy exits");
@@ -331,7 +362,20 @@ pub fn run(layout: &Layout, store: &Store, stop: &AtomicBool, after_update: bool
     let mut next_tick = Instant::now();
     // The dialog is shown at most once per process.
     let mut asked = false;
-    let mut autostart_failed = false;
+    let mut starter = Starter::new();
+    let lifetime = starter.keep();
+    if lifetime == Lifetime::WithGame {
+        eprintln!(
+            "axidps: runs while Guild Wars 2 runs{}",
+            if from_game {
+                " (started by the game)"
+            } else {
+                ""
+            }
+        );
+    }
+    let mut watch = GameWatch::new(lifetime, Instant::now());
+    let mut next_game_look = Instant::now();
     while !stop.load(Ordering::SeqCst) {
         #[cfg(windows)]
         {
@@ -349,7 +393,7 @@ pub fn run(layout: &Layout, store: &Store, stop: &AtomicBool, after_update: bool
             if let Some(log) = &log {
                 log.maintain();
             }
-            keep_autostart(&mut autostart_failed);
+            starter.keep();
             if game.is_none() {
                 game = resolve_game(store);
             }
@@ -366,6 +410,31 @@ pub fn run(layout: &Layout, store: &Store, stop: &AtomicBool, after_update: bool
             {
                 // Not waited for: the loop keeps supervising while the UAC prompt is up.
                 keeper.request_elevation(dir, false);
+            }
+        }
+        if now >= next_game_look {
+            next_game_look = now + lifetime::POLL;
+            let verdict = watch.observe(now, gw2_running());
+            if verdict != Verdict::Stay {
+                eprintln!(
+                    "axidps: {}; finishing up and quitting",
+                    if verdict == Verdict::GameClosed {
+                        "Guild Wars 2 closed"
+                    } else {
+                        "Guild Wars 2 did not start"
+                    }
+                );
+                if finish_after_game(
+                    game.as_deref(),
+                    &mut keeper,
+                    &mut updater,
+                    &mut supervisor,
+                    marker.as_deref(),
+                ) {
+                    break;
+                }
+                eprintln!("axidps: Guild Wars 2 is running again; staying");
+                watch.reopened(Instant::now());
             }
         }
         if now >= next_tick {
@@ -388,8 +457,40 @@ pub fn run(layout: &Layout, store: &Store, stop: &AtomicBool, after_update: bool
     Ok(())
 }
 
+/// Does what waits for the game to be closed before the launcher quits with it: the game
+/// folder, the stale marker, then a waiting update (which exits this process). Returns whether
+/// to quit: not when the game has started again meanwhile.
+fn finish_after_game(
+    game: Option<&Path>,
+    keeper: &mut Keeper,
+    updater: &mut Updater,
+    supervisor: &mut Supervisor,
+    marker: Option<&Path>,
+) -> bool {
+    if gw2_running() {
+        return false;
+    }
+    if let Some(dir) = game
+        && keeper.ensure_once(dir) == Some(Outcome::NeedsElevation)
+        // Waited for: once this process is gone, nothing installs until the game has started.
+        && keeper.request_elevation(dir, true)
+    {
+        keeper.ensure_once(dir);
+    }
+    if gw2_running() {
+        return false;
+    }
+    if let Some(marker) = marker {
+        remove_marker(marker);
+    }
+    updater.apply_pending(Instant::now(), supervisor);
+    true
+}
+
 /// `--install-game`: one `ensure`, then done.
 pub fn install_game(layout: &Layout, store: &Store) -> ExitCode {
+    // So the game can start the launcher even before the launcher's first run.
+    Starter::new().keep();
     let Some(game) = resolve_game(store).or_else(|| ask_user(store)) else {
         println!("Guild Wars 2 was not found; the launcher asks for its folder at its next start.");
         return ExitCode::SUCCESS;
@@ -406,7 +507,9 @@ pub fn install_game(layout: &Layout, store: &Store) -> ExitCode {
         Some(Outcome::NeedsElevation) => {
             if keeper.request_elevation(&game, true) {
                 if keeper.ensure_once(&game) == Some(Outcome::NeedsElevation) {
-                    println!("The game folder is still not writable; the launcher retries while it runs.");
+                    println!(
+                        "The game folder is still not writable; the launcher retries while it runs."
+                    );
                 }
             } else {
                 println!(
@@ -442,13 +545,13 @@ fn uninstall_in(game: &Path, store: &Store, game_running: bool) -> Result<(), St
     })
 }
 
-/// Stops the other launchers, then removes the autostart entry. In that order: a running
-/// launcher would put the files back within 15 s, and its `keep_autostart` would write the
-/// entry back in between.
+/// Stops the other launchers, then removes what starts them (units, autostart entry, launcher
+/// path). In that order: a running launcher would put the files back within 15 s, and its
+/// `Starter` would write them back in between.
 fn quiet_launchers(stop_others: impl FnOnce(), remove_autostart: impl FnOnce() -> io::Result<()>) {
     stop_others();
     if let Err(e) = remove_autostart() {
-        eprintln!("axidps: cannot remove the autostart entry: {e}");
+        eprintln!("axidps: cannot remove what starts the launcher: {e}");
     }
 }
 
@@ -652,7 +755,43 @@ mod tests {
         );
         assert_eq!(
             core_args(stop, Some(Path::new("/p/logs"))),
-            ["--stop-file", "/c/core.stop", "--wait-for-log-dir", "--log-dir", "/p/logs"]
+            [
+                "--stop-file",
+                "/c/core.stop",
+                "--wait-for-log-dir",
+                "--log-dir",
+                "/p/logs"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_game_started_copy_exits_if_the_game_closed_while_it_waited() {
+        // from_game, after_update, waited, marker_up
+        assert!(exit_after_wait(true, false, true, false));
+        assert!(!exit_after_wait(true, false, true, true));
+        assert!(!exit_after_wait(true, false, false, false));
+        assert!(!exit_after_wait(false, false, true, false));
+        // An update's new launcher must stay to rewrite the units.
+        assert!(!exit_after_wait(true, true, true, false));
+    }
+
+    #[test]
+    fn stale_marker_is_removed_and_a_missing_one_is_fine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("axidps-game");
+        fs::write(&marker, b"").unwrap();
+        remove_marker(&marker);
+        assert!(!marker.exists());
+        remove_marker(&marker);
+    }
+
+    #[test]
+    fn game_marker_is_the_shared_one_on_linux() {
+        #[cfg(unix)]
+        assert_eq!(
+            game_marker().as_deref(),
+            Some(Path::new("/dev/shm/axidps-game"))
         );
     }
 
@@ -717,7 +856,10 @@ mod tests {
         fs::write(&e.layout.dll, OURS).unwrap();
         let mut keeper = Keeper::new(&e.store, &e.layout, "0.2.0");
         keeper.ensure_once(&e.game);
-        assert_eq!(e.store.load_state().granted_for.as_deref(), Some(e.game.as_path()));
+        assert_eq!(
+            e.store.load_state().granted_for.as_deref(),
+            Some(e.game.as_path())
+        );
     }
 
     #[test]

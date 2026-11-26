@@ -1,7 +1,7 @@
 //! `axidps`: the launcher. It supervises `axidps-core` and the overlay host, keeps the game
 //! folder right and updates itself.
 
-// No console window at login (closing it would stop axidps); the log goes to
+// No console window when the game starts it (closing it would stop axidps); the log goes to
 // `<config>/axidps.log` and the command-line flags attach to the calling terminal.
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
@@ -16,6 +16,7 @@ mod instance;
 #[cfg(target_os = "linux")]
 mod kwin;
 mod layout;
+mod lifetime;
 mod plugin_cmd;
 mod preview;
 mod run;
@@ -54,6 +55,10 @@ struct Cli {
     /// Started by a Linux update: wait for the old launcher to exit instead of exiting at once.
     #[arg(long, hide = true)]
     after_update: bool,
+    /// Started by the game (the Linux path unit): wait for a running launcher while the game
+    /// runs instead of exiting at once.
+    #[arg(long, hide = true)]
+    from_game: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -92,7 +97,7 @@ fn attach_parent_console() {
 }
 
 fn main() -> ExitCode {
-    // Started with arguments: a command-line use, not the login start.
+    // Started with arguments: a command-line use, not the normal start.
     #[cfg(windows)]
     if std::env::args_os().len() > 1 {
         attach_parent_console();
@@ -133,7 +138,7 @@ fn main() -> ExitCode {
     if let Err(e) = ctrlc::set_handler(move || handler_stop.store(true, Ordering::SeqCst)) {
         eprintln!("axidps: cannot watch for Ctrl-C: {e}");
     }
-    match run::run(&layout, &store, &stop, cli.after_update) {
+    match run::run(&layout, &store, &stop, cli.after_update, cli.from_game) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("axidps: {e}");

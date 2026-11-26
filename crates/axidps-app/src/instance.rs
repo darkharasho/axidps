@@ -1,5 +1,5 @@
-//! One launcher per user: a second one (AxiOM starting it while the autostart copy runs, or a
-//! double-click) would run a second core and overlay host on the same ring and frame file.
+//! One launcher per user: a second one (AxiOM starting it while the game-started copy runs, or
+//! a double-click) would run a second core and overlay host on the same ring and frame file.
 
 use std::io;
 #[cfg(unix)]
@@ -36,21 +36,42 @@ pub fn acquire(dir: &Path) -> io::Result<Option<Instance>> {
     }
 }
 
-/// [`acquire`], retried for up to `wait` while another launcher holds the lock: the one a Linux
-/// update starts runs while the old launcher is still exiting.
-pub fn acquire_waiting(dir: &std::path::Path, wait: std::time::Duration) -> io::Result<Option<Instance>> {
-    let deadline = std::time::Instant::now() + wait;
+/// [`acquire`], retried every 200 ms while another launcher holds the lock and `keep_waiting`
+/// says to: the one a Linux update starts runs while the old launcher is still exiting, and the
+/// one the game starts waits while a launcher started by hand runs.
+pub fn acquire_while(
+    dir: &std::path::Path,
+    keep_waiting: impl FnMut() -> bool,
+) -> io::Result<Option<Instance>> {
+    wait_for_lock(
+        || acquire(dir),
+        keep_waiting,
+        || std::thread::sleep(std::time::Duration::from_millis(200)),
+    )
+}
+
+/// Tries `try_lock` until it succeeds or `keep_waiting` says to give up, calling `pause`
+/// between tries.
+fn wait_for_lock<T>(
+    mut try_lock: impl FnMut() -> io::Result<Option<T>>,
+    mut keep_waiting: impl FnMut() -> bool,
+    mut pause: impl FnMut(),
+) -> io::Result<Option<T>> {
     loop {
-        match acquire(dir)? {
-            Some(i) => return Ok(Some(i)),
-            None if std::time::Instant::now() >= deadline => return Ok(None),
-            None => std::thread::sleep(std::time::Duration::from_millis(200)),
+        if let Some(lock) = try_lock()? {
+            return Ok(Some(lock));
         }
+        if !keep_waiting() {
+            return Ok(None);
+        }
+        pause();
     }
 }
 
-/// Creates the named mutex `Local\axidps-launcher` (per login session). `None` when it already
-/// exists.
+/// Creates the named mutex [`LAUNCHER_MUTEX`] (per login session); the DLL looks for it to
+/// tell whether to start the launcher. `None` when it already exists.
+///
+/// [`LAUNCHER_MUTEX`]: axidps_protocol::paths::LAUNCHER_MUTEX
 #[cfg(windows)]
 pub fn acquire(_dir: &std::path::Path) -> io::Result<Option<Instance>> {
     Ok(mutex::Mutex::create()?.map(|m| Instance { _mutex: m }))
@@ -62,7 +83,7 @@ mod mutex {
 
     use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
     use windows::Win32::System::Threading::CreateMutexW;
-    use windows::core::w;
+    use windows::core::HSTRING;
 
     pub struct Mutex(HANDLE);
 
@@ -70,8 +91,8 @@ mod mutex {
         pub fn create() -> io::Result<Option<Mutex>> {
             // SAFETY: plain Win32 calls; the name is a static NUL-terminated string.
             unsafe {
-                let handle = CreateMutexW(None, false, w!("Local\\axidps-launcher"))
-                    .map_err(io::Error::other)?;
+                let name = HSTRING::from(axidps_protocol::paths::LAUNCHER_MUTEX);
+                let handle = CreateMutexW(None, false, &name).map_err(io::Error::other)?;
                 if GetLastError() == ERROR_ALREADY_EXISTS {
                     let _ = CloseHandle(handle);
                     return Ok(None);
@@ -91,9 +112,44 @@ mod mutex {
     }
 }
 
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    #[test]
+    fn lock_waits_while_asked_and_gives_up_when_not() {
+        let mut tries = 0;
+        let got = wait_for_lock(
+            || {
+                tries += 1;
+                Ok((tries == 3).then_some("lock"))
+            },
+            || true,
+            || {},
+        );
+        assert_eq!(got.unwrap(), Some("lock"));
+        let mut asked = 0;
+        let none: io::Result<Option<()>> = wait_for_lock(
+            || Ok(None),
+            || {
+                asked += 1;
+                asked < 4
+            },
+            || {},
+        );
+        assert!(none.unwrap().is_none());
+        assert_eq!(asked, 4);
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    fn within(wait: std::time::Duration) -> impl FnMut() -> bool {
+        let deadline = std::time::Instant::now() + wait;
+        move || std::time::Instant::now() < deadline
+    }
 
     #[test]
     fn second_acquire_fails_until_the_first_is_dropped() {
@@ -105,7 +161,7 @@ mod tests {
         drop(first);
         // Waiting: a process another test forks in parallel holds a copy of the descriptor
         // until it execs (close-on-exec), which briefly keeps the lock taken.
-        let again = acquire_waiting(&dir, std::time::Duration::from_secs(5)).unwrap();
+        let again = acquire_while(&dir, within(std::time::Duration::from_secs(5))).unwrap();
         assert!(again.is_some());
     }
 
@@ -118,10 +174,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(300));
             drop(first);
         });
-        let got = acquire_waiting(&dir, std::time::Duration::from_secs(5)).unwrap();
+        let got = acquire_while(&dir, within(std::time::Duration::from_secs(5))).unwrap();
         assert!(got.is_some());
         t.join().unwrap();
-        let none = acquire_waiting(&dir, std::time::Duration::from_millis(100)).unwrap();
+        let none = acquire_while(&dir, within(std::time::Duration::from_millis(100))).unwrap();
         assert!(none.is_none());
     }
 }

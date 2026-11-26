@@ -14,6 +14,21 @@ pub const CHAIN_DLL: &str = "axidps_chain_d3d11.dll";
 /// loads it when [`CHAIN_DLL`] is missing.
 pub const LEGACY_CHAIN_DLL: &str = "arcdps_d3d11.dll";
 
+/// The file in [`config_dir`] where the Windows launcher writes its own exe path, so the DLL
+/// can start it when the game starts.
+pub const LAUNCHER_PATH_FILE: &str = "launcher-path.txt";
+
+/// The named mutex a running Windows launcher holds (per login session). The DLL checks it to
+/// tell whether the launcher already runs.
+pub const LAUNCHER_MUTEX: &str = "Local\\axidps-launcher";
+
+/// The launcher exe named by the text of [`LAUNCHER_PATH_FILE`]: its first line, trimmed.
+/// `None` when that is empty.
+pub fn parse_launcher_path(text: &str) -> Option<PathBuf> {
+    let line = text.lines().next()?.trim();
+    (!line.is_empty()).then(|| PathBuf::from(line))
+}
+
 /// The overlay frame file (host-to-game shared frames) for `host`.
 pub fn overlay_frames_path(host: RingHost) -> PathBuf {
     shared_file(host, "axidps-overlay")
@@ -22,6 +37,13 @@ pub fn overlay_frames_path(host: RingHost) -> PathBuf {
 /// The live stats feed the overlay meter reads, for `host`.
 pub fn live_feed_path(host: RingHost) -> PathBuf {
     shared_file(host, "axidps-live.json")
+}
+
+/// The file the DLL keeps while it is loaded in the game, for `host`. Under Wine it is how the
+/// Linux launcher's systemd path unit learns that the game started; a game that crashed leaves
+/// it behind, so the launcher removes it when it quits after the game.
+pub fn game_marker_path(host: RingHost) -> PathBuf {
+    shared_file(host, "axidps-game")
 }
 
 fn shared_file(host: RingHost, name: &str) -> PathBuf {
@@ -76,6 +98,27 @@ mod tests {
         assert_eq!(live_feed_path(RingHost::Unix), Path::new("/dev/shm/axidps-live.json"));
         assert_eq!(live_feed_path(RingHost::Wine), Path::new(r"Z:\dev\shm\axidps-live.json"));
         assert!(live_feed_path(RingHost::Windows).ends_with("axidps-live.json"));
+    }
+    #[test]
+    fn game_marker_path_per_host() {
+        assert_eq!(
+            game_marker_path(RingHost::Unix),
+            Path::new("/dev/shm/axidps-game")
+        );
+        assert_eq!(
+            game_marker_path(RingHost::Wine),
+            Path::new(r"Z:\dev\shm\axidps-game")
+        );
+        assert!(game_marker_path(RingHost::Windows).ends_with("axidps-game"));
+    }
+    #[test]
+    fn launcher_path_text() {
+        assert_eq!(
+            parse_launcher_path("C:\\P\\axidps\\axidps.exe\r\n"),
+            Some(PathBuf::from("C:\\P\\axidps\\axidps.exe"))
+        );
+        assert_eq!(parse_launcher_path("  \n"), None);
+        assert_eq!(parse_launcher_path(""), None);
     }
     #[test]
     fn config_dir_rules() {

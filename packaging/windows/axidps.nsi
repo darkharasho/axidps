@@ -154,7 +154,9 @@ Section "Install"
   WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
   WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
-  WriteRegStr HKCU "${RUN_KEY}" "axidps" '"$INSTDIR\axidps.exe"'
+  ; The game starts the launcher now (the DLL runs the exe named in launcher-path.txt, which
+  ; the launcher writes); earlier versions started it at login.
+  DeleteRegValue HKCU "${RUN_KEY}" "axidps"
 
   ; AXIDPS_SILENT stays set, so the relaunched app inherits it below.
   ${If} ${Silent}
