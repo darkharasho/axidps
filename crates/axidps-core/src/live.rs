@@ -862,7 +862,8 @@ impl LiveStats {
                 self.retire_account(id);
                 self.buff_stacks.forget_agent(id);
                 // Left before its account was known: its rows, and whether it was squad and took
-                // part, keep an id of their own, so the id's next owner does not get them.
+                // part, keep an id of their own, so the id's next owner does not get them. (The
+                // orphan's squad flag is inert: with no subgroup known, it is never a target.)
                 let rows = self.uncanon.remove(&id);
                 let active = self.boon_active.remove(&id);
                 let squad = self.boon_squad.remove(&id);
@@ -974,6 +975,13 @@ impl LiveStats {
         }
         if self.boon_active.remove(&id) {
             self.boon_active.insert(c);
+        }
+        if self.boon_squad.remove(&id) {
+            self.boon_squad.insert(c);
+        }
+        if self.state == LiveState::Fight {
+            // What it is now, in case it leaves before the next tick records it.
+            self.boon_seen.insert(c, (reg.is_squad(id), a.subgroup));
         }
         self.canon_of.insert(id, c);
         self.live_of.insert(c, id);
@@ -2933,6 +2941,53 @@ mod tests {
             json!({"717": [0, 0, 0, 2000]})
         );
         assert!(!l.boon_targets().contains_key(":Y.0002"));
+    }
+
+    /// Player 7 joins mid-fight unnamed, takes part, gets its account name and leaves, all
+    /// between two feeds: it counts as a squad target under its account (axilog counts every
+    /// squad player of the log), so Char 4's protection on Char 1 is over two targets.
+    #[test]
+    fn a_leaver_named_between_ticks_stays_a_target() {
+        let mut p = processor();
+        let mut l = LiveStats::new();
+        for e in world_events() {
+            run(&mut p, &mut l, Step::Push(0, e));
+        }
+        run(&mut p, &mut l, Step::Push(0, map_event()));
+        let enter = Event::Combat {
+            id: 1,
+            in_combat: true,
+        };
+        run(&mut p, &mut l, Step::Push(1000, enter));
+        run(&mut p, &mut l, Step::Push(1100, add(7, 2)));
+        run(&mut p, &mut l, Step::Push(1200, strike(7, NPC, 400, 0)));
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1200, boon_apply(1, 4, PROTECTION, 900, 2000)),
+        );
+        for e in name_events(7, NameField::Character, "Xena")
+            .into_iter()
+            .chain(name_events(7, NameField::Account, ":X.0001"))
+        {
+            run(&mut p, &mut l, Step::Push(1500, e));
+        }
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1800, Event::AgentRemove { id: 7 }),
+        );
+        run(&mut p, &mut l, Step::Push(4000, strike(1, NPC, 400, 0)));
+        run(&mut p, &mut l, Step::Tick(5000));
+        let v = l.snapshot(p.registry(), 0);
+        assert_eq!(v["state"], "fight");
+        assert_eq!(l.boon_targets().get(":X.0001"), Some(&2));
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 0, 1000]})
+        );
+        // The raw id is not left behind as a squad player of its own.
+        assert!(!l.boon_squad.contains(&7));
     }
 
     /// Zero-value defiance strikes on a player (rows arcdps never writes) do not make the player
