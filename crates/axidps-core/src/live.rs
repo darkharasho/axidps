@@ -2011,18 +2011,48 @@ mod tests {
         l.begin(0, 38);
         l.event(10, &strike(1, NPC, 5, 0));
         let v = l.snapshot(&r, 1_700_000_000_123);
-        let mut got: Vec<String> = v["players"][0].as_object().unwrap().keys().cloned().collect();
+        let mut got: Vec<String> = v["players"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
         got.sort();
         let identity = [
-            "name", "account", "prof", "elite", "spec", "group", "me", "heal_full",
+            "name",
+            "account",
+            "prof",
+            "elite",
+            "spec",
+            "group",
+            "me",
+            "heal_full",
         ];
         let catalog = [
-            "damage", "dps", "power", "condi", "down_contrib", "downs", "kills", "deaths",
-            "downed", "taken", "cleanses", "strips", "healing", "barrier", "hps", "healing_in",
+            "damage",
+            "dps",
+            "power",
+            "condi",
+            "down_contrib",
+            "downs",
+            "kills",
+            "deaths",
+            "downed",
+            "taken",
+            "cleanses",
+            "strips",
+            "healing",
+            "barrier",
+            "hps",
+            "healing_in",
             "barrier_in",
         ];
         assert_eq!(catalog.len(), 17);
-        let mut want: Vec<String> = identity.iter().chain(catalog.iter()).map(|s| s.to_string()).collect();
+        let mut want: Vec<String> = identity
+            .iter()
+            .chain(catalog.iter())
+            .map(|s| s.to_string())
+            .collect();
         want.sort();
         assert_eq!(got, want);
     }
