@@ -396,10 +396,16 @@ test("history budget", () => {
     who: { base: i % 4 < 2 ? "squad" : "group" }, span: ["fight", "last:10", "last:60", "session"][i % 4],
   }, "c" + (i + 1)));
   assert.ok(bspecs.every((s, i) => s.stats.length === (i % 2 ? 4 : 8)));
+  // Each cell formatted as the windows show it (formatBoon), as well.
+  let cells = 0;
   const bmean = timed(ps => {
     const live = { players: ps, seconds: ms / 1000, live: true };
-    for (const s of bspecs) computeRows(s, s.span === "fight" ? live : h.view(s.span), String, 50);
+    for (const s of bspecs) {
+      const r = computeRows(s, s.span === "fight" ? live : h.view(s.span), String, 50);
+      for (const row of r.rows) row.values.forEach((v, i) => { cells += C.formatBoon(row.keys ? row.keys[i] : s.stats[i].key, v).length; });
+    }
   });
+  assert.ok(cells > 0);
   assert.ok(bmean < 1, `boon mean ${bmean} ms`);
   assert.ok(h.bytes() < 10e6, `bytes ${h.bytes()}`);
   console.log(`budget: fight ${mean.toFixed(3)} ms, boons ${bmean.toFixed(3)} ms per render, ${(h.bytes() / 1e6).toFixed(2)} MB`);
