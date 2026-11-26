@@ -1,0 +1,7 @@
+{"id": "t.escape", "name": "Escape test", "version": "1.0.0", "author": "harness", "api": 1,
+ "permissions": ["fight"],
+ "windows": [
+  {"id": "main", "title": "Escape", "entry": "index.html", "open": true},
+  {"id": "svg", "title": "Escape svg", "entry": "svg.html", "open": true},
+  {"id": "deeper", "title": "Escape deeper", "entry": "deeper.html", "open": true},
+  {"id": "off", "title": "Escape off", "entry": "off.html", "open": true}]}

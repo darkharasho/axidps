@@ -1,0 +1,10 @@
+/target/
+node_modules/
+dist/
+*.node
+.env
+.worktrees/
+.superpowers/
+graphify-out/
+.wrangler/
+/private/

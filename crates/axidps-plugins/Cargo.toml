@@ -1,0 +1,13 @@
+[package]
+name = "axidps-plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "axidps plugin manifests, folder scan, path resolution, CSP and change watching (no Servo)"
+
+[dependencies]
+serde_json = "1"
+semver = "1"
+
+[dev-dependencies]
+tempfile = "3"

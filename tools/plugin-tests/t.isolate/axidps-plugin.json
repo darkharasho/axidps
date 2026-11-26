@@ -1,0 +1,7 @@
+{"id": "t.isolate", "name": "Isolation test", "version": "1.0.0", "author": "harness", "api": 1,
+ "permissions": ["fight"],
+ "windows": [
+  {"id": "csp", "title": "CSP", "entry": "csp.html", "open": true},
+  {"id": "form", "title": "Form", "entry": "form.html", "open": true},
+  {"id": "unc", "title": "UNC", "entry": "unc.html", "open": true},
+  {"id": "comment", "title": "Comment", "entry": "comment.html", "open": true}]}

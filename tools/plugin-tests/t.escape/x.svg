@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40">
+<rect width="120" height="40" fill="#00ff00"/>
+<script><![CDATA[
+// No SDK here: report the way the SDK does (the page knows this frame by its window, which
+// stays the same across the navigation, so it logs these as t.escape's).
+const say = msg => parent.postMessage({axidps: 1, type: "log", level: "warn", msg}, "*");
+say("svg script ran");
+fetch("https://undeclared.invalid").then(r => say("svg fetch OPEN " + r.status),
+  e => say("svg fetch rejected (" + e.name + ")"));
+]]></script>
+</svg>

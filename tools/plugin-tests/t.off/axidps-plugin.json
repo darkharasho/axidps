@@ -1,0 +1,3 @@
+{"id": "t.off", "name": "Off test", "version": "1.0.0", "author": "harness", "api": 1,
+ "permissions": ["fight"], "network": ["off.invalid"],
+ "windows": [{"id": "main", "title": "Off", "entry": "index.html", "open": true}]}

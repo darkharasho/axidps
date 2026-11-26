@@ -1,0 +1,12 @@
+{
+  "id": "example.your-dps",
+  "name": "Your DPS",
+  "version": "1.0.0",
+  "author": "axidps",
+  "api": 1,
+  "permissions": ["fight"],
+  "windows": [
+    {"id": "card", "title": "Your DPS", "entry": "card.html", "description": "your DPS, big",
+     "icon": "chart", "open": true, "place": "beside-meter"}
+  ]
+}

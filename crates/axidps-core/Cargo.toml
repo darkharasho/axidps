@@ -1,0 +1,26 @@
+[package]
+name = "axidps-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axidps-protocol = { path = "../axidps-protocol" }
+axidps-evtc = { path = "../axidps-evtc" }
+axidps-ringbuf = { path = "../axidps-ringbuf" }
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["alloc", "clock"] }
+ctrlc = { version = "3.5.3", features = ["termination"] }
+flate2 = "1"
+serde_json = "1"
+sha2 = "0.10"
+tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# tungstenite enables rustls without a crypto provider; ring builds on every target.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+
+[target.'cfg(windows)'.dependencies]
+dirs = "6"
+
+[[bin]]
+name = "axidps-core"
+path = "src/main.rs"

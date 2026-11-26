@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Pins the private crates' commit that public builds check out (.github/private-ref).
+# private/ must be clean and its HEAD pushed to origin/main.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+git -C private diff --quiet && git -C private diff --cached --quiet \
+  || { echo "private/ has uncommitted changes" >&2; exit 1; }
+git -C private fetch -q origin main
+head=$(git -C private rev-parse HEAD)
+git -C private merge-base --is-ancestor "$head" origin/main \
+  || { echo "private HEAD $head is not on origin/main; push it first" >&2; exit 1; }
+echo "$head" > .github/private-ref
+echo "pinned private at $head"

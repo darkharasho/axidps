@@ -1,0 +1,7 @@
+{"id": "t.navigate", "name": "Navigate test", "version": "1.0.0", "author": "harness", "api": 1,
+ "permissions": [], "network": ["allowed.invalid", "*.csp.invalid"],
+ "windows": [
+  {"id": "workers", "title": "Workers", "entry": "workers.html", "open": true},
+  {"id": "srcdoc", "title": "Srcdoc", "entry": "srcdoc.html", "open": true},
+  {"id": "data", "title": "Data", "entry": "data.html", "open": true},
+  {"id": "web", "title": "Web", "entry": "web.html", "open": true}]}

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Exports the public part of this repo (tools/public-allowlist) at HEAD into a fresh git repo
+# at <out>, then runs tools/public-check on it. Usage: tools/export-public <out>
+# The result has no history; commit it yourself after reviewing.
+set -euo pipefail
+out=${1:?usage: $0 <out dir>}
+here=$(cd "$(dirname "$0")/.." && pwd)
+[ ! -e "$out" ] || { echo "$out exists; pick a new directory" >&2; exit 1; }
+mkdir -p "$out"
+mapfile -t prefixes < <(grep -v '^#' "$here/tools/public-allowlist" | sed '/^$/d')
+git -C "$here" archive --format=tar HEAD -- "${prefixes[@]}" | tar -x -C "$out"
+printf '/private/\n' >> "$out/.gitignore"
+git -C "$out" init -q -b main
+git -C "$out" add -A
+python3 -I "$here/tools/public-check" "$out"

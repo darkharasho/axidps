@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #804000; }</style></head>
+<body><div id="box"></div>
+<script>
+// Each attempt reports "<what> blocked (...)" or "<what> OPEN ...".
+const say = s => console.warn(s);
+axidps.ready(async () => {
+  axidps.window.setStatus("escaping");
+  try { const d = parent.document; say("parent OPEN " + (d && d.title)); }
+  catch (e) { say("parent blocked (" + e.name + ")"); }
+  try { const s = window.localStorage; s.setItem("k", "v"); say("storage OPEN " + s.getItem("k")); }
+  catch (e) { say("storage blocked (" + e.name + ")"); }
+  try {
+    const w = window.open("about:blank");
+    if (w) { say("open OPEN"); try { w.close(); } catch (e) { /* gone */ } } else say("open blocked (null)");
+  } catch (e) { say("open blocked (" + e.name + ")"); }
+  try { const r = await fetch("file:///etc/hostname"); say("file OPEN " + r.status + " " + (await r.text()).slice(0, 40)); }
+  catch (e) { say("file blocked (" + e.name + ")"); }
+  try { const r = await fetch("https://undeclared.invalid"); say("net OPEN " + r.status); }
+  catch (e) { say("net blocked (" + e.name + ")"); }
+  // Last: if this navigated the page, the overlay would be gone (the harness checks it is not).
+  let threw = false;
+  try { top.location = "https://undeclared.invalid/"; } catch (e) { threw = true; say("top blocked (" + e.name + ")"); }
+  if (!threw) setTimeout(() => say("top blocked (ignored; the page is still here)"), 1500);
+  setTimeout(() => say("escape done"), 1600);
+});
+</script></body></html>

@@ -1,0 +1,30 @@
+# Paths that belong in the public repo (darkharasho/axidps). Everything else stays private.
+# One prefix per line: a path is public when it equals a prefix or sits under it (prefix/...).
+.github/workflows/ci.yml
+.github/workflows/release.yml
+.github/workflows/cache-warm.yml
+.github/private-ref
+.gitignore
+Cargo.toml
+Cargo.lock
+README.md
+LICENSE
+crates/axidps-protocol
+crates/axidps-ringbuf
+crates/axidps-overlay-shm
+crates/axidps-evtc
+crates/axidps-core
+crates/axidps-app
+crates/axidps-plugins
+crates/axidps-mock-producer
+apps/axidps-overlay
+tools/plugin-tests
+tools/overlay-fake-dll.py
+tools/public-allowlist
+tools/public-check
+tools/export-public
+tools/bump-private
+tools/quiet-build
+packaging
+docs/plugins
+docs/RELEASING.md

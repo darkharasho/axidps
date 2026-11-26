@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>iframe { width: 120px; height: 40px; border: 0; background: #806000; }</style></head>
+<body>
+<script>
+axidps.ready(() => {
+  const f = document.createElement("iframe");
+  f.srcdoc = "<script>console.warn('srcdoc script ran'); fetch('https://undeclared.invalid').then(" +
+    "r => console.warn('srcdoc fetch OPEN ' + r.status), e => console.warn('srcdoc fetch rejected (' + e.name + ')'))<\/script>";
+  document.body.appendChild(f);
+});
+</script></body></html>

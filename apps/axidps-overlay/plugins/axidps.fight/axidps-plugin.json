@@ -1,0 +1,12 @@
+{
+  "id": "axidps.fight",
+  "name": "Fight",
+  "version": "1.0.0",
+  "author": "axidps",
+  "api": 1,
+  "permissions": ["fight"],
+  "windows": [
+    {"id": "fight", "title": "Fight", "entry": "fight.html", "description": "squad totals",
+     "icon": "swords", "open": false, "place": "beside-meter"}
+  ]
+}

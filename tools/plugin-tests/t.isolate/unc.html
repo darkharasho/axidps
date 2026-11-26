@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #204080; }</style></head>
+<body><div id="box"></div>
+<script>
+// A file URL with a host is a UNC path on Windows (SMB or WebDAV to that server): the host
+// refuses it before Servo looks.
+axidps.ready(() => { console.warn("unc navigating"); setTimeout(() => { location.href = "file://unc.invalid/share/x.html"; }, 300); });
+</script></body></html>

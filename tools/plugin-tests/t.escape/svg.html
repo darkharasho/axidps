@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #008040; }</style></head>
+<body><div id="box"></div>
+<script>
+// An SVG document gets no CSP meta: only the host's network backstop stands between its script
+// and the network.
+axidps.ready(() => { console.warn("svg navigating"); setTimeout(() => { location.href = "x.svg"; }, 300); });
+</script></body></html>

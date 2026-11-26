@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Checks a tree bound for the public repo. Usage: tools/public-check [dir]  (default: repo root)
+
+Fails on:
+- a tracked file outside tools/public-allowlist (only when checking this repo's own tree);
+- a line matching a private name/email pattern. Patterns come from $PUBLIC_CHECK_PATTERNS or
+  ~/.config/axidps/public-check-patterns (one regex per line). Only file:line is printed,
+  never the text;
+- RE markers: links into private docs or tools, decompiler names, long hex constants, byte
+  patterns. A line ending in a `public-check:ok` comment is exempt.
+"""
+import os, re, subprocess, sys
+
+root = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), '..'))
+here = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+def files(d):
+    out = subprocess.run(['git', '-C', d, 'ls-files', '-z'], capture_output=True, check=True).stdout
+    return [f for f in out.decode().split('\0') if f]
+
+def allowlist():
+    with open(os.path.join(here, 'tools/public-allowlist')) as f:
+        return [l.strip() for l in f if l.strip() and not l.startswith('#')]
+
+def allowed(path, allow):
+    return any(path == a or path.startswith(a + '/') for a in allow)
+
+pats = os.environ.get('PUBLIC_CHECK_PATTERNS')
+if pats is None:
+    p = os.path.expanduser('~/.config/axidps/public-check-patterns')
+    pats = open(p).read() if os.path.exists(p) else ''
+name_res = [re.compile(l.strip(), re.I) for l in pats.splitlines() if l.strip()]
+if not name_res:
+    print('warning: no name patterns; skipping the name check', file=sys.stderr)
+
+MARKERS = [
+    (re.compile(r'docs/(re|parity|superpowers)/'), 'link into private docs'),
+    (re.compile(r'tools/(re|probe-view|axidps-logtools)\b|tools/re/'), 'private tool'),
+    (re.compile(r'anchors\.toml|axidps-(anchors|capture|patternfinder|logtools)\b'), 'private crate'),
+    (re.compile(r'\bFUN_[0-9a-fA-F]{6,}'), 'decompiler name'),
+    (re.compile(r'\b0x[0-9a-fA-F_]{7,}\b'), 'long hex constant'),
+    (re.compile(r'\b(?:[0-9A-Fa-f]{2} (?:\?\?|[0-9A-Fa-f]{2}) ){3,}'), 'byte pattern'),
+    (re.compile(r'\brecon\b', re.I), 'recon reference'),
+]
+SKIP_EXT = ('.png', '.ico', '.lock', '.woff', '.woff2', '.ttf', '.zevtc')
+
+problems = 0
+paths = files(root)
+allow = allowlist()
+if root == here and os.path.isdir(os.path.join(here, 'private/crates')) and \
+        subprocess.run(['git', '-C', here, 'ls-files', '--error-unmatch', 'private/Cargo.toml'],
+                       capture_output=True).returncode == 0:
+    # Still the monorepo: private files are tracked here, and export-public leaves them out.
+    paths = [f for f in paths if allowed(f, allow)]
+else:
+    for f in paths:
+        if not allowed(f, allow):
+            print(f'{f}: not in tools/public-allowlist'); problems += 1
+
+for f in paths:
+    if f.endswith(SKIP_EXT) or f in ('tools/public-check', 'tools/public-allowlist'):
+        continue
+    try:
+        text = open(os.path.join(root, f), encoding='utf-8').read()
+    except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError):
+        continue
+    for n, line in enumerate(text.splitlines(), 1):
+        if any(r.search(line) for r in name_res):
+            print(f'{f}:{n}: private name or email'); problems += 1
+        if 'public-check:ok' in line:
+            continue
+        for r, what in MARKERS:
+            if r.search(line):
+                print(f'{f}:{n}: {what}: {line.strip()[:140]}'); problems += 1
+                break
+
+if problems:
+    print(f'public-check: {problems} problem(s)'); sys.exit(1)
+print('public-check: ok')

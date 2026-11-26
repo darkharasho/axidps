@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #208040; }</style></head>
+<body><div id="box"></div>
+<script>
+// Only this document's CSP stands between these loads and the network: escape.csp.invalid is
+// declared (as *.csp.invalid) by t.navigate, which is enabled, so the host's backstop lets it
+// through. Each reports "<what> blocked (...)" or "<what> OPEN ...".
+const say = s => console.warn(s);
+addEventListener("securitypolicyviolation", e => say("violation " + e.effectiveDirective + " " + e.blockedURI));
+axidps.ready(() => {
+  fetch("https://escape.csp.invalid/").then(r => say("csp OPEN " + r.status), e => say("csp blocked (" + e.name + ")"));
+  const img = new Image();
+  img.onload = () => say("fileimg OPEN " + img.naturalWidth + "x" + img.naturalHeight);
+  img.onerror = () => say("fileimg blocked (error event)");
+  img.src = "file:///usr/share/icons/hicolor/16x16/apps/fedora-logo-icon.png";
+  setTimeout(() => say("csp done"), 1500);
+});
+</script></body></html>

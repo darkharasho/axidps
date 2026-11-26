@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Runs a build of the private crates without letting its output reach a public log.
+# Usage: tools/quiet-build <log file> -- <command...>
+# stdout and stderr go to <log file>, which must never be printed or uploaded: compiler warnings
+# and errors quote private source. On failure this prints one line and exits 1.
+set -u
+[ $# -ge 3 ] && [ "$2" = "--" ] || { echo "usage: $0 <log> -- <command...>" >&2; exit 2; }
+log=$1; shift 2
+if "$@" >"$log" 2>&1; then
+  echo "private build ok"
+else
+  echo "::error::private build failed; reproduce it locally"
+  exit 1
+fi

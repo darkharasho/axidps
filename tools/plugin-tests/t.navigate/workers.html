@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #008080; }</style></head>
+<body><div id="box"></div>
+<script>
+const probe = (name, url) => {
+  try {
+    const w = new Worker(url);
+    w.onmessage = e => console.warn(name + " ran: " + e.data);
+    w.onerror = e => { console.warn(name + " blocked (error event)"); if (e.preventDefault) e.preventDefault(); };
+  } catch (e) { console.warn(name + " blocked (" + e.name + ")"); }
+};
+axidps.ready(() => {
+  probe("worker", "worker.js");
+  const src = "fetch('https://undeclared.invalid').then(r => postMessage('fetch OPEN ' + r.status), " +
+    "e => postMessage('fetch rejected (' + e.name + ')'))";
+  probe("blob worker", URL.createObjectURL(new Blob([src], {type: "text/javascript"})));
+  // The declared host: allowed through, so it reaches the network (the harness's local proxy).
+  fetch("https://allowed.invalid/").then(r => console.warn("allowed fetch status " + r.status),
+    e => console.warn("allowed fetch rejected (" + e.name + ")"));
+  // The control for t.isolate's CSP checks: the backstop lets *.csp.invalid through.
+  fetch("https://ok.csp.invalid/").then(r => console.warn("csp control status " + r.status),
+    e => console.warn("csp control rejected (" + e.name + ")"));
+});
+</script></body></html>

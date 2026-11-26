@@ -1,0 +1,11 @@
+[package]
+name = "axidps-mock-producer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axidps-protocol = { path = "../axidps-protocol" }
+axidps-ringbuf = { path = "../axidps-ringbuf" }
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+ctrlc = "3"

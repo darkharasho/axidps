@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=AxiDPS
+Exec=axidps
+Icon=axidps
+Categories=Game;
+Terminal=false

@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/axidps-evtc",
+    "crates/axidps-protocol",
+    "crates/axidps-overlay-shm",
+    "crates/axidps-ringbuf",
+    "crates/axidps-core",
+    "crates/axidps-app",
+    "crates/axidps-mock-producer",
+    "crates/axidps-plugins",
+]
+# The game-facing crates live in a separate private repo checked out here (see private/Cargo.toml).
+exclude = ["private"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"

@@ -1,0 +1,13 @@
+[package]
+name = "axidps-ringbuf"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axidps-protocol = { path = "../axidps-protocol" }
+memmap2 = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]

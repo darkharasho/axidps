@@ -1,0 +1,3 @@
+{"id": "t.bad", "name": "Bad test", "version": "1.0.0", "author": "harness", "api": 1,
+ "permissions": ["fight", "camera"],
+ "windows": [{"id": "main", "title": "Bad", "entry": "index.html", "open": true}]}

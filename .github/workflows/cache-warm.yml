@@ -1,0 +1,147 @@
+name: Warm release caches
+
+# A tag run can restore caches saved on main, but the caches it saves itself are scoped to that
+# tag, so without this every release builds Servo from scratch. This builds what release.yml
+# builds, with the same cache keys, on main, so the next tag restores an exact hit.
+# Keep the setup and build steps in step with release.yml's windows and linux jobs (the DLL
+# job is never cached: its target dir would hold the private crates): a
+# different toolchain, env or command changes the fingerprints and the tag rebuilds anyway.
+# Each job first checks whether its key already exists and stops there if so, so a push that
+# doesn't touch a Cargo.lock costs a few seconds per job. Unused caches expire after 7 days.
+# When the repo variable LINUX_RUNNER names a self-hosted runner (see docs/RELEASING.md), the
+# Linux jobs run there and keep their build folders, so only the Windows cache is warmed.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-warm
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: check
+        uses: actions/cache/restore@v4
+        with:
+          lookup-only: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/axidps-overlay/target
+          key: cargo-release-windows-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        name: Install the overlay host toolchain
+        working-directory: apps/axidps-overlay
+        run: rustup toolchain install
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "20.1"
+          directory: ${{ runner.temp }}/llvm
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          echo "LIBCLANG_PATH=$(Join-Path $env:LLVM_PATH 'bin')" >> $env:GITHUB_ENV
+          $dest = Join-Path $env:RUNNER_TEMP 'moztools'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Invoke-WebRequest "https://github.com/servo/servo-build-deps/releases/download/msvc-deps/moztools-4.0.zip" -OutFile "$dest\moztools.zip"
+          Expand-Archive "$dest\moztools.zip" -DestinationPath $dest
+          echo "MOZTOOLS_PATH=$dest\moztools-4.0" >> $env:GITHUB_ENV
+          git config --system core.longpaths true
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> $env:GITHUB_ENV
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/axidps-overlay/target
+          key: cargo-release-windows-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
+          restore-keys: cargo-release-windows-
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        name: Build the app and core
+        run: cargo build --release -p axidps-app -p axidps-core
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        name: Build the overlay host
+        working-directory: apps/axidps-overlay
+        run: cargo build --release
+
+  linux:
+    # Only while the Linux jobs run on GitHub; a self-hosted runner keeps its own build folders.
+    if: vars.LINUX_RUNNER == ''
+    # Same image as release.yml's linux job (its glibc is the AppImage's floor).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: check
+        uses: actions/cache/restore@v4
+        with:
+          lookup-only: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/axidps-overlay/target
+          key: cargo-release-linux-ubuntu24-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        name: Install the overlay host toolchain
+        working-directory: apps/axidps-overlay
+        run: rustup toolchain install
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates ccache clang cmake curl g++ git gperf \
+            libdbus-1-dev libfreetype6-dev libgl1-mesa-dri libgles2-mesa-dev libglib2.0-dev \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-ugly gstreamer1.0-plugins-base libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-libav libgstrtspserver-1.0-dev gstreamer1.0-tools libges-1.0-dev \
+            libharfbuzz-dev liblzma-dev libudev-dev libunwind-dev libvulkan1 libx11-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxmu-dev libxmu6 \
+            libegl1-mesa-dev llvm-dev m4 xorg-dev libxkbcommon0 libxkbcommon-x11-0 \
+            libwayland-dev
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/axidps-overlay/target
+          key: cargo-release-linux-ubuntu24-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
+          restore-keys: cargo-release-linux-ubuntu24-
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        name: Build the app and core
+        run: cargo build --release -p axidps-app -p axidps-core
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        name: Build the overlay host
+        working-directory: apps/axidps-overlay
+        run: cargo build --release

@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 100px; height: 40px; background: #808000; }</style></head>
+<body><div id="box"></div>
+<script>
+// 200 resizes and 200 log lines a second.
+axidps.ready(() => {
+  axidps.window.autoSize(false);
+  let n = 0;
+  setInterval(() => {
+    n++;
+    axidps.window.resize(100 + (n % 7) * 5, 40); // never the same size twice in a row
+    console.warn("flood " + n);
+  }, 5);
+});
+</script></body></html>

@@ -1,0 +1,7 @@
+{"id": "t.big", "name": "Big test", "version": "1.0.0", "author": "harness", "api": 1,
+ "permissions": [],
+ "windows": [
+  {"id": "w1", "title": "big 1", "entry": "index.html", "open": true},
+  {"id": "w2", "title": "big 2", "entry": "index.html", "open": true},
+  {"id": "w3", "title": "big 3", "entry": "index.html", "open": true},
+  {"id": "w4", "title": "big 4", "entry": "index.html", "open": true}]}

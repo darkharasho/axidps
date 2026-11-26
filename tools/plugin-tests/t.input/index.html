@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#pad { width: 160px; height: 60px; background: #004080; }</style></head>
+<body><div id="pad" data-tip="input tip"></div>
+<script>
+// Clicks and the SDK's [data-tip] tooltip, as the frame sees them.
+let tipped = false;
+addEventListener("click", e => console.warn(`click ${e.clientX},${e.clientY} of ${innerWidth}x${innerHeight}`));
+addEventListener("mouseover", () => {
+  if (tipped) return;
+  tipped = true;
+  setTimeout(() => {
+    const t = document.querySelector(".axidps-tip");
+    if (!t) { console.warn("tip missing"); return; }
+    const r = t.getBoundingClientRect();
+    console.warn(`tip ${getComputedStyle(t).display} "${t.textContent}" at ${r.left},${r.top} ${r.width}x${r.height} in ${innerWidth}x${innerHeight}`);
+  }, 100);
+});
+axidps.ready(() => axidps.window.setStatus("input"));
+</script></body></html>

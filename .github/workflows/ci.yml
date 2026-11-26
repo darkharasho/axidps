@@ -1,0 +1,211 @@
+name: CI
+
+# A v* tag runs these through release.yml (workflow_call), which holds the release back until
+# they pass; there is no separate tag run here.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The overlay page's and the plugin SDK's JS tests (Node's built-in runner, no npm install).
+      # The shell expands the globs: `node --test <dir>` fails with MODULE_NOT_FOUND on Node 24.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: page-tests
+        run: node --test apps/axidps-overlay/page/*.test.js apps/axidps-overlay/sdk/*.test.js
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        if: runner.environment == 'github-hosted'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-test-${{ runner.os }}-
+
+      # The launcher's folder dialog (rfd -> ashpd) links Wayland and D-Bus.
+      - if: runner.environment == 'github-hosted'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwayland-dev libdbus-1-dev pkg-config
+
+      - run: cargo test --workspace
+
+  windows-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-windows-check-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-windows-check-${{ runner.os }}-
+
+      - run: cargo check --workspace
+
+  # Same set as the Linux test job. On tags only: called from release.yml, github.ref is the tag.
+  windows-test:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-windows-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-windows-test-${{ runner.os }}-
+
+      - run: cargo test --workspace
+
+  # Compiles the DLL against this commit's public crates. Never on pull requests: it needs the
+  # deploy key for the private repo, and its output (which quotes private source) stays out of
+  # the log. The private crates' own tests run in the private repo.
+  dll-check:
+    if: github.event_name != 'pull_request'
+    environment: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nothing private (names, RE notes, private paths) in this repo. Prints file:line only for
+      # name hits. Here rather than in `test` because the patterns are a release-env secret.
+      - name: Public check
+        env:
+          PUBLIC_CHECK_PATTERNS: ${{ secrets.PUBLIC_CHECK_PATTERNS }}
+        run: python3 -I tools/public-check
+
+      # The game-facing crates live in the private repo darkharasho/axidps-internal, pinned in
+      # .github/private-ref. Skipped while they are still in this repo (private/ already exists).
+      - name: Pin the private crates
+        id: pin
+        run: echo "ref=$(cat .github/private-ref)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the private crates
+        if: hashFiles('private/Cargo.toml') == ''
+        uses: actions/checkout@v4
+        with:
+          repository: darkharasho/axidps-internal
+          ref: ${{ steps.pin.outputs.ref }}
+          path: private
+          ssh-key: ${{ secrets.PRIVATE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+
+      # Registry and git sources only (public crates). Never cache a target dir that holds the
+      # private crates: a fork's pull request can restore any cache saved on main.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-dll-${{ hashFiles('Cargo.lock', 'private/Cargo.lock') }}
+          restore-keys: cargo-registry-dll-
+
+      - run: tools/quiet-build "$RUNNER_TEMP/dll-check.log" -- cargo check --manifest-path private/Cargo.toml -p axidps-dll --target x86_64-pc-windows-gnu --features arcdps-chainload,overlay
+
+  # The overlay host (Servo) is its own Cargo workspace. Servo build deps come from
+  # python/servo/platform/{linux_packages/apt,windows}* at servo rev 75d20deef.
+  # Not on tags (called from release.yml, github.event_name is its `push`): release.yml builds the overlay host on both platforms anyway, and a tag run's
+  # cache would only crowd out the ones cache-warm.yml keeps on main.
+  overlay-check:
+    if: github.event_name != 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/axidps-overlay
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the channel and components from apps/axidps-overlay/rust-toolchain.toml.
+      - run: rustup toolchain install
+
+      - if: runner.os == 'Linux'
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates ccache clang cmake curl g++ git gperf \
+            libdbus-1-dev libfreetype6-dev libgl1-mesa-dri libgles2-mesa-dev libglib2.0-dev \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-ugly gstreamer1.0-plugins-base libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-libav libgstrtspserver-1.0-dev gstreamer1.0-tools libges-1.0-dev \
+            libharfbuzz-dev liblzma-dev libudev-dev libunwind-dev libvulkan1 libx11-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxmu-dev libxmu6 \
+            libegl1-mesa-dev llvm-dev m4 xorg-dev libxkbcommon0 libxkbcommon-x11-0 \
+            libwayland-dev
+
+      # Servo's winget.json wants CMake, LLVM and Ninja (CMake and Ninja ship on the runner).
+      # WiX is only for Servo's own installer. mozjs-sys also needs MozTools on Windows.
+      - if: runner.os == 'Windows'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "20.1"
+          directory: ${{ runner.temp }}/llvm
+
+      - if: runner.os == 'Windows'
+        working-directory: .
+        shell: pwsh
+        run: |
+          echo "LIBCLANG_PATH=$(Join-Path $env:LLVM_PATH 'bin')" >> $env:GITHUB_ENV
+          $dest = Join-Path $env:RUNNER_TEMP 'moztools'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Invoke-WebRequest "https://github.com/servo/servo-build-deps/releases/download/msvc-deps/moztools-4.0.zip" -OutFile "$dest\moztools.zip"
+          Expand-Archive "$dest\moztools.zip" -DestinationPath $dest
+          echo "MOZTOOLS_PATH=$dest\moztools-4.0" >> $env:GITHUB_ENV
+          # Servo's checkout has test paths past MAX_PATH; libgit2 fails on them, git with longpaths does not.
+          git config --system core.longpaths true
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> $env:GITHUB_ENV
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/axidps-overlay/target
+          key: cargo-overlay-${{ runner.os }}-${{ hashFiles('apps/axidps-overlay/Cargo.lock') }}
+          restore-keys: cargo-overlay-${{ runner.os }}-
+
+      - run: cargo check --release
+
+      # The host's own tests (the plugin scheme and its network guard). Linux only: a full
+      # Servo codegen on both runners would double the job's longest step.
+      - if: runner.os == 'Linux'
+        run: cargo test --release

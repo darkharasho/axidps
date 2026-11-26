@@ -1,0 +1,8 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #400080; }</style></head>
+<body><div id="box"></div>
+<script>
+// t.deeper needs verification: the host must not serve its files to anyone.
+axidps.ready(() => { console.warn("deeper navigating"); setTimeout(() => { location.href = "axidps-plugin://t.deeper/index.html"; }, 300); });
+</script></body></html>

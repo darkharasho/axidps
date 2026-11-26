@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #404080; }</style></head>
+<body><div id="box"></div>
+<script>
+// t.off is valid and installed but the player never enabled it: the host must not serve its files
+// (they would run with t.off's CSP and network, and the page would answer them as this frame).
+axidps.ready(() => { console.warn("off navigating"); setTimeout(() => { location.href = "axidps-plugin://t.off/index.html"; }, 300); });
+</script></body></html>

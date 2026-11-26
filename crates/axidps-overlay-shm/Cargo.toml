@@ -1,0 +1,8 @@
+[package]
+name = "axidps-overlay-shm"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Shared-memory layout between the overlay host and the DLL, plus window snapping"
+
+[dependencies]

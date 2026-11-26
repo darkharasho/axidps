@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #800000; }</style></head>
+<body><div id="box"></div>
+<script>
+axidps.ready(() => {
+  axidps.window.setStatus("alive");
+  setTimeout(() => { console.warn("hanging"); while (true) { /* never answers again */ } }, 1000);
+});
+</script></body></html>

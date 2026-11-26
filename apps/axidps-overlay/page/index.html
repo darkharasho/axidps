@@ -1,0 +1,246 @@
+<!doctype html>
+<!-- axidps in-game UI. The host renders this page offscreen into a 2048x2048 atlas; ui.js lays
+     every open window out side by side in it and reports each window's rect, screen position,
+     corner radius, blur and flags to the host (console.log "axidps:<token>:{...}", the token from the URL fragment). The DLL draws each
+     window's atlas rect at its screen position. The canvas is transparent (the host sets Servo's
+     background to clear), so pixels keep their alpha: see-through backgrounds and rounded corners
+     reach the game, and the DLL blurs what is behind a window when asked. Windows move only in
+     edit mode (Arrange). Host -> page calls: axidps.update(live), restore(saved), screen(w, h),
+     edit(on), moved(name, x, y), legacy(x, y), dismiss(), plugins(list). -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-Regular.ttf); font-weight: 400; }
+  @font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-SemiBold.ttf); font-weight: 600 700; }
+  @font-face { font-family: "Fira Code"; src: url(fonts/FiraCode-Regular.ttf); font-weight: 400; }
+  @font-face { font-family: "Fira Code"; src: url(fonts/FiraCode-SemiBold.ttf); font-weight: 600 700; }
+  @font-face { font-family: "Lato"; src: url(fonts/Lato-Regular.ttf); font-weight: 400; }
+  @font-face { font-family: "Lato"; src: url(fonts/Lato-Bold.ttf); font-weight: 600 700; }
+  /* Every colour, and the shape and type, is a theme token: ui.js THEMES sets them on :root
+     (the values here are Midnight, used until the script runs). */
+  :root { --bg: #12151b; --bar: #12151b; --raise: #1a1e26; --raise-hi: #222833; --btn: #232a35;
+    --btn-hi: #2e3746; --line: #242a34; --line-hi: #343c49; --text: #e8eaee; --title: #f2f4f7;
+    --dim: #8d96a5; --faint: #646d7a; --accent: #7aa2f7; --accent-hi: #a9c1ff; --accent-line: #34456a;
+    --accent-soft: rgba(122,162,247,.13); --good: #9ece6a; --bad: #f7768e; --tip: #0b0d11;
+    --font: "IBM Plex Sans", system-ui, sans-serif; --fs: 12px; --r: 10px; --rs: 6px; --bw: 1px;
+    --rh: 21px; --bh: 32px; }
+  * { user-select: none; -webkit-user-select: none; cursor: default; box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; overflow: hidden;
+    color: var(--text); font: var(--fs)/1.3 var(--font); }
+  #atlas { width: 2048px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
+  b, strong { font-weight: 600; }
+
+  /* ---- windows ---- */
+  .win { background: var(--bg); border: var(--bw) solid var(--line); position: relative; flex: none;
+    border-radius: var(--r); overflow: hidden; }
+  .win.closed { display: none; }
+  /* A plugin window's body: its sandboxed frame, sized by what the plugin reports. */
+  .win iframe.plugin { display: block; border: 0; background: transparent; }
+  body.editing .win iframe.plugin { pointer-events: none; }
+  .tip { position: absolute; display: none; padding: 3px 8px; background: var(--tip); color: var(--text);
+    border: 1px solid var(--line-hi); border-radius: var(--rs); white-space: pre; pointer-events: none;
+    font-size: 11px; z-index: 10; }
+  .bar { height: var(--bh); display: flex; align-items: center; padding: 0 6px 0 12px; gap: 8px;
+    background: var(--bar); border-bottom: 1px solid var(--line); }
+  .bar b { color: var(--title); white-space: nowrap; letter-spacing: .01em; }
+  /* Title bar styles: fill (bar colour), flat (window colour), line (accent underline). */
+  body.bar-flat .bar { background: transparent; }
+  body.bar-line .bar { background: transparent; border-bottom: 2px solid var(--accent-line); }
+  body.bar-line .bar b { color: var(--accent); }
+  body.caps .bar b, body.caps .hub h3 { text-transform: uppercase; letter-spacing: .1em; font-size: .88em; }
+  /* Fight state: a small chip after the title. */
+  .bar .state { flex: 1; white-space: nowrap; overflow: hidden; color: var(--faint); font-size: 11px; }
+  .bar .state.live { color: var(--good); }
+  /* Developer mode: a plugin window's errors since its frame last loaded. */
+  .bar .errs { color: var(--bad); font-size: 11px; font-weight: 600; }
+  .bar .state.live::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 3px;
+    background: var(--good); margin-right: 5px; vertical-align: 1px; }
+  .tools { display: flex; justify-content: flex-end; gap: 2px; }
+  button { background: var(--btn); color: var(--text); border: 1px solid transparent;
+    border-radius: var(--rs); padding: 3px 9px; font: inherit; }
+  button:hover { background: var(--btn-hi); }
+  /* Window tools: quiet until hovered or on. */
+  .tools button { background: transparent; color: var(--dim); padding: 1px 6px; font-size: 11px; height: 22px; }
+  .tools button:hover { background: var(--raise-hi); color: var(--text); }
+  .tools button.on { color: var(--accent); background: var(--accent-soft); }
+  button.x { padding: 0 6px; display: inline-flex; align-items: center; }
+  button.primary { background: var(--accent); color: var(--bg); font-weight: 600; }
+  button.primary:hover { background: var(--accent-hi); }
+  .ico { display: block; flex: none; }
+  .wc .ico { align-self: flex-start; }
+
+  /* ---- tables ---- */
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th { height: 22px; color: var(--faint); font-weight: 600; font-size: 10.5px; text-align: right;
+    padding: 0 6px; white-space: nowrap; text-transform: uppercase; letter-spacing: .05em; }
+  th:hover { color: var(--text); }
+  th.sort { color: var(--accent); }
+  th.l, td.l { text-align: left; }
+  td { height: var(--rh); padding: 0 6px; text-align: right; white-space: nowrap; overflow: hidden;
+    font-variant-numeric: tabular-nums; }
+  tr.p td:first-child { color: var(--faint); font-size: 11px; }
+  tr.p:hover td { background: var(--accent-soft); }
+  tr.me td { color: var(--title); }
+  tr.me td:first-child { color: var(--accent); }
+  td.name { padding-left: 8px; border-left: 3px solid #888; }
+  td.name img { width: 14px; height: 14px; vertical-align: -3px; margin-right: 5px; }
+  .empty { padding: 22px 12px; color: var(--dim); text-align: center; }
+  .foot { height: 22px; padding: 0 12px; color: var(--faint); display: flex; justify-content: space-between;
+    border-top: 1px solid var(--line); font-size: 11px; align-items: center; }
+  /* Compact (Settings): smaller rows, type and title bar; ui.js narrows the columns. */
+  body.compact .win:not(.modal) { --rh: 16px; --bh: 22px; --fs: 10.5px; font-size: var(--fs); }
+  body.compact .bar { padding: 0 4px 0 8px; gap: 6px; }
+  body.compact .bar .state { font-size: 10px; }
+  body.compact th { height: 16px; font-size: 9px; padding: 0 4px; }
+  body.compact td { padding: 0 4px; }
+  body.compact tr.p td:first-child { font-size: 9.5px; }
+  body.compact td.name { padding-left: 5px; border-left-width: 2px; }
+  body.compact td.name img { width: 11px; height: 11px; vertical-align: -2px; margin-right: 3px; }
+  body.compact .foot { height: 16px; padding: 0 8px; font-size: 9.5px; }
+  body.compact .empty { padding: 10px 8px; }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+
+  /* ---- edit mode (Arrange): every window shows its outline and name ---- */
+  .edit { display: none; position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 5;
+    border: 2px dashed var(--accent); border-radius: var(--r); background: rgba(8,10,14,.8);
+    align-items: center; justify-content: center; flex-direction: column; gap: 6px; }
+  .edit b { color: var(--bg); background: var(--accent); font-size: 13px; padding: 3px 12px; border-radius: 12px; }
+  .edit small { color: var(--text); font-size: 11px; }
+  body.editing .win:not(.ed) .edit { display: flex; }
+  body.editing .win.bare .edit b, body.editing .win.bare .edit small { display: none; }
+  .lay { padding: 10px 14px 12px; }
+  .lay p { margin: 0 0 10px; color: var(--dim); }
+  .lay label { display: flex; align-items: center; gap: 10px; height: 26px; }
+  .lay label small { color: var(--faint); margin-left: auto; font-variant-numeric: tabular-nums; }
+  .lay .row { display: flex; gap: 6px; margin-top: 10px; justify-content: flex-end; }
+
+  /* Toggle switch */
+  .tog { width: 28px; height: 16px; border-radius: 8px; background: var(--line-hi); position: relative; flex: none; }
+  .tog i { position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 6px; background: var(--dim); }
+  .on > .tog, .tog.on { background: var(--accent); }
+  .on > .tog i, .tog.on i { left: 14px; background: var(--bg); }
+
+  /* ---- the axidps button: a bare glyph that sits with the game's own menu icons ---- */
+  .win.bare { border: 0; background: transparent; border-radius: 0; }
+  .launch { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }
+
+  /* ---- hub: a full window over the dimmed game ---- */
+  .win.modal { border: var(--bw) solid var(--line-hi); border-radius: var(--r); background: var(--bg-modal); }
+  .hub { width: 760px; height: 500px; display: flex; }
+  .hub header .x { background: transparent; color: var(--dim); height: 26px; }
+  .hub header .x:hover { background: var(--raise-hi); }
+  .hub nav { width: 188px; flex: none; background: var(--nav-modal); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; padding: 14px 10px 12px; gap: 2px; }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 2px 8px 14px; }
+  .brand b { font-size: 15px; color: var(--title); letter-spacing: .02em; }
+  .brand small { color: var(--faint); font-size: 10.5px; display: block; }
+  .nav { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: var(--rs);
+    color: var(--dim); }
+  .nav:hover { background: var(--raise-hi); color: var(--text); }
+  .nav.on { background: var(--accent-soft); color: var(--title); }
+  .nav .n { margin-left: auto; font-size: 10.5px; color: var(--faint); }
+  .hub nav .grow { flex: 1; }
+  .hub nav button { display: flex; align-items: center; justify-content: center; gap: 8px; height: 32px; }
+  .hub nav .kbd { color: var(--faint); font-size: 10.5px; text-align: center; margin-top: 8px; }
+  .hub main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .hub header { display: flex; align-items: flex-start; gap: 10px; padding: 18px 16px 12px 22px; }
+  .hub header div { flex: 1; }
+  .hub h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--title); }
+  .hub header p { margin: 3px 0 0; color: var(--dim); }
+  .hub header .state { color: var(--faint); font-size: 11px; margin-top: 4px; }
+  .hub header .state.live { color: var(--good); }
+  .hub section { display: none; padding: 4px 22px 20px; overflow: hidden; flex: 1; min-height: 0; }
+  .hub section.on { display: block; }
+  .hub h3 { margin: 16px 0 8px; font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: .06em;
+    text-transform: uppercase; }
+  .hub h3:first-child { margin-top: 0; }
+  /* Window cards */
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .wc { height: 92px; border: 1px solid var(--line); border-radius: var(--rs); background: var(--raise);
+    padding: 12px; display: flex; flex-direction: column; position: relative; }
+  .wc:hover { border-color: var(--line-hi); background: var(--raise-hi); }
+  .wc.on { border-color: var(--accent-line); }
+  .wc .tog { position: absolute; right: 12px; top: 12px; }
+  .wc b { margin-top: auto; color: var(--title); }
+  .wc small { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; }
+  .acts { display: flex; gap: 8px; margin-top: 14px; }
+  .acts button { display: flex; align-items: center; gap: 7px; padding: 6px 12px; }
+  /* Theme cards: each previews its own colours, font and shape. */
+  .themes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .th { height: 78px; border: 1px solid var(--line); overflow: hidden; display: flex; flex-direction: column; }
+  .th:hover { border-color: var(--line-hi); }
+  .th.on { box-shadow: 0 0 0 2px var(--accent); }
+  .th .tb { height: 22px; display: flex; align-items: center; padding: 0 8px; font-size: 11px; font-weight: 600; }
+  .th .rows { padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .th .rows i { height: 6px; display: block; }
+  .look { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px 10px; align-items: center; }
+  .look > span { color: var(--dim); }
+  .seg { display: flex; gap: 2px; background: var(--raise); border: 1px solid var(--line); border-radius: var(--rs);
+    padding: 2px; }
+  .seg button { flex: 1; padding: 3px 0; font-size: 11px; color: var(--dim); background: transparent; }
+  .seg button:hover { color: var(--text); background: var(--raise-hi); }
+  .seg button.on { color: var(--title); background: var(--btn-hi); }
+  .note { color: var(--faint); font-size: 11px; margin: 10px 0 0; }
+  /* Settings rows */
+  .opt { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .opt div { flex: 1; }
+  .opt small { display: block; color: var(--dim); font-size: 11px; margin-top: 1px; }
+  .blank { border: 1px dashed var(--line-hi); border-radius: var(--rs); padding: 26px 20px; text-align: center;
+    color: var(--dim); }
+  .blank b { display: block; color: var(--title); margin-bottom: 4px; }
+  .step { display: flex; align-items: center; gap: 3px; }
+  .step button { padding: 2px 0; width: 30px; font-size: 11px; }
+  .step b { width: 36px; text-align: center; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .foot span { white-space: nowrap; overflow: hidden; }
+  .kv { display: grid; grid-template-columns: 140px auto; gap: 6px 12px; }
+  .kv span { color: var(--dim); }
+  /* Heal columns for anyone but you: only what passed between them and you. */
+  td.part { color: var(--faint); }
+  .lay .grow, .tbl-h .grow { flex: 1; }
+  .lay .zl { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; height: 30px; }
+  button:disabled { opacity: .45; pointer-events: none; }
+  /* Plugin cards (Windows tab) */
+  .hub section[data-tab="windows"], .hub section[data-tab="settings"], .hub section[data-tab="plugins"] {
+    overflow-y: auto; }
+  .hub .plugs h3 { margin-top: 18px; }
+  .pcards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .pc { border: 1px solid var(--line); border-radius: var(--rs); background: var(--raise); padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .pc-h { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+  .pc-h b { color: var(--title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pc-h .grow { flex: 1; }
+  .pc-h button { padding: 2px 10px; font-size: 11px; }
+  .pc small { color: var(--faint); font-size: 11px; margin-bottom: 3px; }
+  .pc .pl { color: var(--dim); font-size: 11px; }
+  .pc .pl.bad { color: var(--bad); }
+  .tag { font-size: 10px; color: var(--dim); border: 1px solid var(--line-hi); border-radius: var(--rs);
+    padding: 0 5px; line-height: 15px; white-space: nowrap; }
+  /* Tables tab */
+  .hub section[data-tab="tables"] { overflow-y: auto; }
+  .tbl { border: 1px solid var(--line); border-radius: var(--rs); background: var(--raise); padding: 8px 10px;
+    margin-bottom: 8px; }
+  .tbl-h { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .tbl-h b { color: var(--title); }
+  .tbl-h button { padding: 2px 8px; font-size: 11px; }
+  .tbl-h button.on { color: var(--accent); background: var(--accent-soft); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { display: inline-flex; align-items: center; gap: 2px; height: 22px; border-radius: var(--rs);
+    border: 1px dashed var(--line-hi); color: var(--dim); font-size: 11px; }
+  .chip button { background: transparent; color: inherit; padding: 0 6px; height: 20px; font-size: 11px; }
+  .chip button:hover { color: var(--title); background: var(--raise-hi); }
+  .chip.on { border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--title);
+    padding-left: 2px; }
+  .chip.on button { padding: 0 4px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div id="atlas"></div>
+<script src="version.js"></script>
+<script src="update-text.js"></script>
+<!-- sdk/ sits beside page/ both in the source tree and installed (the browser demo serves /sdk/). -->
+<script src="../sdk/axidps.js"></script>
+<script src="plugin-host.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>

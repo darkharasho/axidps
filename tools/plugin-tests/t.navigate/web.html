@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #806080; }</style></head>
+<body><div id="box"></div>
+<script>
+axidps.ready(() => {
+  console.warn("web navigating");
+  setTimeout(() => { location.href = "https://undeclared.invalid/"; }, 300);
+});
+</script></body></html>

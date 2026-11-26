@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="/_sdk/axidps.js"></script>
+<style>#box { width: 120px; height: 40px; background: #802040; }</style></head>
+<body><div id="box"></div>
+<form id="f" action="https://form.csp.invalid/landed" method="get"><input name="via" value="form"></form>
+<script>
+// The frame's sandbox has no allow-forms: submitting must do nothing. Nothing else would stop
+// it: form-action doesn't fall back to default-src, and t.navigate (enabled) declares
+// *.csp.invalid, so the backstop lets the navigation through (the harness's proxy would see
+// form.csp.invalid). Servo submits forms only to http(s), data: and a few other schemes, so the
+// action can't be this plugin's own scheme. Then a local file:// navigation, which the host refuses.
+axidps.ready(() => {
+  document.getElementById("f").submit();
+  setTimeout(() => {
+    console.warn("form blocked (still here)");
+    location.href = "file:///etc/hostname";
+  }, 1500);
+});
+</script></body></html>

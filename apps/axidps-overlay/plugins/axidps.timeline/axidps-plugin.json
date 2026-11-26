@@ -1,0 +1,12 @@
+{
+  "id": "axidps.timeline",
+  "name": "Timeline",
+  "version": "1.0.0",
+  "author": "axidps",
+  "api": 1,
+  "permissions": ["fight"],
+  "windows": [
+    {"id": "timeline", "title": "Timeline", "entry": "timeline.html", "description": "damage over time",
+     "icon": "activity", "open": false, "place": "below-meter"}
+  ]
+}
