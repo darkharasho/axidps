@@ -232,6 +232,24 @@
   .chip.on { border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--title);
     padding-left: 2px; }
   .chip.on button { padding: 0 4px; color: var(--dim); }
+  /* Custom windows: the bars, number and chart looks (the table look uses the table styles). */
+  .cbars { padding: 3px 0; }
+  .bl { height: var(--rh); display: flex; align-items: center; gap: 8px; padding: 0 8px; border-left: 3px solid #888;
+    font-variant-numeric: tabular-nums; }
+  .bl .n { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bl .n img { width: 14px; height: 14px; vertical-align: -3px; margin-right: 5px; }
+  .bl .v { white-space: nowrap; }
+  .bl .v.part { color: var(--faint); }
+  .bl.me .n { color: var(--title); }
+  body.compact .bl { padding: 0 5px; border-left-width: 2px; }
+  body.compact .bl .n img { width: 11px; height: 11px; vertical-align: -2px; margin-right: 3px; }
+  .big { padding: 12px 14px 14px; text-align: center; }
+  .big b { display: block; font-size: 30px; line-height: 1.15; color: var(--title); font-variant-numeric: tabular-nums;
+    white-space: nowrap; }
+  .big small { display: block; color: var(--dim); font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; }
+  body.compact .big { padding: 6px 8px 8px; }
+  body.compact .big b { font-size: 22px; }
+  canvas.chart { display: block; }
 </style>
 </head>
 <body>
@@ -241,6 +259,7 @@
 <!-- sdk/ sits beside page/ both in the source tree and installed (the browser demo serves /sdk/). -->
 <script src="../sdk/axidps.js"></script>
 <script src="plugin-host.js"></script>
+<script src="custom.js"></script>
 <script src="ui.js"></script>
 </body>
 </html>
