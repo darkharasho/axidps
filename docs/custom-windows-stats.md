@@ -1,8 +1,8 @@
 # Custom window stats
 
-A custom window can only show a stat that is a fight outcome, one the built-in windows already show. Gear, builds and anything ArenaNet disallows are never offered.
+A custom window can only show a stat that is a fight outcome: what happened in the fight, like the numbers the built-in windows show, and boon uptime and generation (which no built-in window shows). Gear, builds and anything ArenaNet disallows are never offered.
 
-Each stat is one number per player. A window can list players or show a single total. Stats marked "per second" are fixed rates.
+Each stat is one number per player. A window can list players, show a single total, or (for boon measures) list boons, one row per boon. Stats marked "per second" are fixed rates.
 
 | Key | What it counts | Rows | Allowed because |
 | --- | --- | --- | --- |
@@ -28,14 +28,14 @@ Heal stats for other players are dimmed. The game reports only what passed betwe
 
 ## Boons
 
-Each player also carries `boons`: `{"<boon id>": [up, self, group, squad]}`, integer milliseconds cumulative over the fight. Only boons with a nonzero value appear, and the key is left out when there are none. The measures:
+Each player also carries `boons`: `{"<boon id>": [up, self, group, squad]}`, integer milliseconds since the fight started, as of the feed's `duration_ms`. Only boons with a nonzero value appear, and the key is left out when there are none. The values mostly grow, but can go down a little: when the fight ends, the numbers are cut back to its last activity, and `group` and `squad` are averages that drop when a new target joins. A window over a span (last N seconds, session) counts a drop as 0. The measures:
 
 - `up`: how long the boon was on the player.
 - `self`: how long the player kept it up on themself.
 - `group`: how long the player kept it up on subgroup mates, per target, averaged as axilog does (the ms on each other squad player of the same subgroup in this fight, added up and divided by how many there are).
 - `squad`: the same over every other squad player in this fight, per target, averaged as axilog does.
 
-The targets are the squad players (with a subgroup) who took part in this fight's combat, other than the player; the local player always counts. With no targets, `group` or `squad` is 0.
+The targets are the squad players (with a subgroup) who took part in this fight's combat, other than the player; the local player always counts. With no targets, `group` or `squad` is 0. After the target count changes, a last-N-seconds window's `group` and `squad` read low for up to N seconds.
 
 Intensity boons (Might, Stability) are measured in stacks: stack-milliseconds. The numbers follow axilog's boon simulator.
 
