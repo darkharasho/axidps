@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const C = require("./custom.js");
-const { normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec } = C;
+const { filterWho, computeRows, statValue, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec } = C;
 
 test("catalog shape", () => {
   assert.strictEqual(Object.keys(C.STATS).length, 17);
@@ -118,4 +118,77 @@ test("migrateTables gives default columns when none are valid", () => {
     migrateTables(saved);
     assert.deepStrictEqual(saved.custom[0].stats, [{ key: "damage", as: "total" }, { key: "dps", as: "per_s" }]);
   }
+});
+
+const P = (o) => Object.assign({ account: "", name: "", prof: 0, spec: "", group: 0, me: false, heal_full: false,
+  damage: 0, downs: 0, taken: 0, healing: 0, barrier: 0 }, o);
+const fixture = () => [
+  P({ account: "a", name: "A", group: 1, me: true, spec: "Firebrand", prof: 1, damage: 100 }),
+  P({ account: "b", name: "B", group: 1, spec: "Scrapper", prof: 3, damage: 300 }),
+  P({ account: "c", name: "C", group: 2, spec: "Firebrand", damage: 0 }),
+  P({ account: "d", name: "D", group: 2, spec: "Druid", prof: 4, damage: 600 }),
+];
+const names = l => l.map(p => p.name).join("");
+const mk = (o) => normalizeSpec(o, "c1");
+
+test("filterWho group", () => assert.strictEqual(names(filterWho(fixture(), { base: "group" })), "AB"));
+test("filterWho me", () => assert.strictEqual(names(filterWho(fixture(), { base: "me" })), "A"));
+test("filterWho without me", () => {
+  const ps = fixture(); ps[0].me = false;
+  assert.strictEqual(filterWho(ps, { base: "group" }).length, 4);
+  assert.deepStrictEqual(filterWho(ps, { base: "me" }), []);
+});
+test("filterWho filters are any-of", () => {
+  assert.strictEqual(names(filterWho(fixture(), { base: "squad", filters: ["spec:Firebrand", "prof:4"] })), "ACD");
+});
+
+test("share before limit", () => {
+  const r = computeRows(mk({ stats: [{ key: "damage", as: "share" }], sort: { key: "damage", asc: false }, limit: 2 }),
+    { players: fixture(), seconds: 10 }, String, 5);
+  assert.deepStrictEqual(r.rows.map(x => x.p.name), ["D", "B"]);
+  assert.deepStrictEqual(r.rows.map(x => x.values[0]), [60, 30]);
+});
+test("share of zero", () => {
+  const ps = fixture().map(p => ({ ...p, damage: 0 }));
+  const r = computeRows(mk({ stats: [{ key: "damage", as: "share" }] }), { players: ps, seconds: 10 }, String, 5);
+  assert.ok(r.rows.every(x => x.values[0] === null));
+});
+test("per_s", () => {
+  const s = mk({ stats: [{ key: "damage", as: "per_s" }] });
+  assert.strictEqual(computeRows(s, { players: fixture(), seconds: 10 }, String, 5).rows[0].values[0], 60);
+  assert.strictEqual(computeRows(s, { players: fixture(), seconds: 0 }, String, 5).rows[0].values[0], 0);
+});
+test("dps live vs span", () => {
+  assert.strictEqual(statValue(P({ dps: 7, hps: 3 }), "dps", 10, true), 7);
+  assert.strictEqual(statValue(P({ dps: 7, hps: 3 }), "hps", 10, true), 3);
+  assert.strictEqual(statValue(P({ damage: 600 }), "dps", 10, false), 60);
+  assert.strictEqual(statValue(P({ healing: 30, barrier: 20 }), "hps", 10, false), 5);
+  assert.strictEqual(statValue(P({ damage: 600 }), "dps", 0, false), 0);
+});
+test("rows total", () => {
+  const v = { players: fixture(), seconds: 10 };
+  const r = computeRows(mk({ rows: "total", stats: [{ key: "damage" }] }), v, String, 5);
+  assert.strictEqual(r.rows.length, 1);
+  assert.strictEqual(r.rows[0].p.name, "Total");
+  assert.strictEqual(r.rows[0].values[0], 1000);
+  const s = computeRows(mk({ rows: "total", stats: [{ key: "damage", as: "share" }] }), v, String, 5);
+  assert.strictEqual(s.rows[0].values[0], 100);
+});
+test("sort by name asc", () => {
+  const ps = fixture().reverse();
+  const r = computeRows(mk({ stats: [{ key: "damage" }], sort: { key: "name", asc: true } }), { players: ps, seconds: 1 }, String, 5);
+  assert.strictEqual(names(r.rows.map(x => x.p)), "ABCD");
+  const m = fixture(); delete m[3].damage;
+  const r2 = computeRows(mk({ stats: [{ key: "damage" }], sort: { key: "damage", asc: true } }), { players: m, seconds: 1 }, String, 5);
+  assert.deepStrictEqual(r2.rows.map(x => x.values[0]), [0, 0, 100, 300]);
+});
+test("footer", () => {
+  const v = { players: fixture(), seconds: 10 };
+  const r = computeRows(mk({ stats: [{ key: "downs" }, { key: "damage" }, { key: "taken" }] }), v, String, 5);
+  assert.strictEqual(r.footer, "4 players \u00b7 1000 dmg \u00b7 0 taken");
+  assert.strictEqual(computeRows(mk({ stats: [{ key: "downs" }] }), v, String, 5).footer, "4 players");
+});
+test("limit falls back to maxRows", () => {
+  const r = computeRows(mk({ stats: [{ key: "damage" }] }), { players: fixture(), seconds: 1 }, String, 3);
+  assert.strictEqual(r.rows.length, 3);
 });
