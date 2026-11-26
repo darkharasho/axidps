@@ -232,6 +232,24 @@
   .chip.on { border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--title);
     padding-left: 2px; }
   .chip.on button { padding: 0 4px; color: var(--dim); }
+  /* Custom windows tab: a card per window (.tbl), a row per part of its spec. */
+  .tbl-h .tag { margin-left: 4px; }
+  .crow { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; align-items: center; padding: 3px 0; }
+  .crow > span { color: var(--dim); font-size: 11px; }
+  .crow > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  .crow .seg { display: inline-flex; }
+  .crow .seg button { flex: none; padding: 3px 9px; }
+  .crow > div > button { padding: 2px 8px; font-size: 11px; }
+  .crow .lbl { color: var(--dim); font-size: 11px; margin-left: 12px; }
+  .crow .step button { width: 24px; }
+  .crow .step b { width: 34px; font-size: 12px; }
+  .crow .chip button.on { color: var(--accent); }
+  .chip .as { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .field { display: inline-block; min-width: 180px; padding: 3px 8px; border: 1px solid var(--line-hi);
+    border-radius: var(--rs); background: var(--bg); color: var(--title); font-size: 12px; cursor: text; }
+  .addmenu { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .addmenu button { padding: 4px 10px; font-size: 11px; }
+  .acts button.on { color: var(--accent); background: var(--accent-soft); }
   /* Custom windows: the bars, number and chart looks (the table look uses the table styles). */
   .cbars { padding: 3px 0; }
   .bl { height: var(--rh); display: flex; align-items: center; gap: 8px; padding: 0 8px; border-left: 3px solid #888;
