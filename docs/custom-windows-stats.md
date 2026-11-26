@@ -32,8 +32,10 @@ Each player also carries `boons`: `{"<boon id>": [up, self, group, squad]}`, int
 
 - `up`: how long the boon was on the player.
 - `self`: how long the player kept it up on themself.
-- `group`: how long the player kept it up on subgroup mates, added up over those mates (not an average).
-- `squad`: the same over every squadmate, added up (not an average); divide by the number of targets to compare with an average.
+- `group`: how long the player kept it up on subgroup mates, per target, averaged as axilog does (the ms on each other squad player of the same subgroup in this fight, added up and divided by how many there are).
+- `squad`: the same over every other squad player in this fight, per target, averaged as axilog does.
+
+The targets are the squad players (with a subgroup) who took part in this fight's combat, other than the player; the local player always counts. With no targets, `group` or `squad` is 0.
 
 Intensity boons (Might, Stability) are measured in stacks: stack-milliseconds. The numbers follow axilog's boon simulator.
 

@@ -8,6 +8,7 @@
 //!
 //! Group and squad credit follow axilog's rollup: one subgroup per player for the whole fight
 //! (whatever `groups` says at the tick), and every squad player except the source as a target.
+//! The tracker sums a source's ms over its targets; `LiveStats` divides by the target count.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -238,13 +239,14 @@ impl BoonTracker {
 
     /// Re-simulate the pairs with new rows (holders in the squad only), and bring the totals to
     /// `now`. `groups` is each player's subgroup for the fight, `squad` whether a player counts
-    /// (as holder, source or target), and `healing_of` the healing-power lookup Regeneration's
-    /// stack order uses.
+    /// (as holder or source), `target` whether a holder counts as a group and squad target, and
+    /// `healing_of` the healing-power lookup Regeneration's stack order uses.
     pub fn tick(
         &mut self,
         now: u64,
         groups: &dyn Fn(u32) -> Option<u8>,
         squad: &dyn Fn(u32) -> bool,
+        target: &dyn Fn(u32) -> bool,
         healing_of: &dyn Fn(u32) -> i16,
     ) {
         let marker = if self.stack_ids { STACK_ACTIVE } else { 0 };
@@ -302,6 +304,7 @@ impl BoonTracker {
                 .entry(boon)
                 .or_default()[0] += pair.up;
             let group = groups(holder);
+            let is_target = target(holder);
             for (&src, &ms) in &pair.by_source {
                 if !squad(src) {
                     continue;
@@ -309,6 +312,9 @@ impl BoonTracker {
                 let t = self.totals.entry(src).or_default().entry(boon).or_default();
                 if src == holder {
                     t[1] += ms;
+                    continue;
+                }
+                if !is_target {
                     continue;
                 }
                 if group.is_some() && groups(src) == group {
@@ -320,9 +326,9 @@ impl BoonTracker {
     }
 
     /// `[up, self, group, squad]` per boon for `player`, cumulative since [`Self::clear`], as of
-    /// the last tick. `group` and `squad` are SUMS over the targets (a player's ms on each
-    /// squadmate added up), not axilog's per-target average: divide by the target count to
-    /// compare with axilog.
+    /// the last tick. Here `group` and `squad` are sums over the targets (a player's ms on each
+    /// squadmate added up); the feed sends them per target, averaged as axilog does (see
+    /// `LiveStats`).
     pub fn totals(&self, player: u32) -> Option<&BTreeMap<u32, [u64; 4]>> {
         self.totals.get(&player)
     }
@@ -440,7 +446,7 @@ mod tests {
         }
         fn tick(&mut self, now: u64, groups: &dyn Fn(u32) -> Option<u8>) {
             self.tr
-                .tick(now, groups, &|id| groups(id).is_some(), &|_| 0);
+                .tick(now, groups, &|id| groups(id).is_some(), &|_| true, &|_| 0);
         }
         fn get(&self, player: u32, boon: u32) -> [u64; 4] {
             self.tr
@@ -784,7 +790,7 @@ mod tests {
         let mut g = Feed::new();
         let reference = regen_feed(&mut g);
         let heal = |id: u32| if id == 4 { -5 } else { 0 };
-        g.tr.tick(60_000, &one_group, &|_| true, &heal);
+        g.tr.tick(60_000, &one_group, &|_| true, &|_| true, &heal);
         let want = by_source(
             &run_sim(
                 reference,

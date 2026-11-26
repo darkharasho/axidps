@@ -302,6 +302,16 @@ pub struct LiveStats {
     orphans: u32,
     /// Per account id: whether it was squad, and its subgroup, when last seen this fight.
     boon_seen: BTreeMap<u32, (bool, Option<u8>)>,
+    /// Tracker ids of the squad players this fight has seen (live at its start, named during it,
+    /// or live at a tick): the players our log of the fight lists as squad.
+    boon_squad: BTreeSet<u32>,
+    /// Tracker ids of the players that took part in this fight's combat (struck or were struck,
+    /// ticked a condition or were ticked, cast, or entered combat). axilog leaves idle squad
+    /// members out of its players, so they are not targets.
+    boon_active: BTreeSet<u32>,
+    /// Of those, the squad players with a subgroup at the last tick: their subgroup, and whether
+    /// they count as group and squad targets (they took part in the fight).
+    boon_targets: BTreeMap<u32, (u8, bool)>,
     /// Game time of the tracker's last tick.
     boon_tick: Option<u64>,
 }
@@ -352,6 +362,9 @@ impl LiveStats {
             uncanon: BTreeSet::new(),
             orphans: 0,
             boon_seen: BTreeMap::new(),
+            boon_squad: BTreeSet::new(),
+            boon_active: BTreeSet::new(),
+            boon_targets: BTreeMap::new(),
             boon_tick: None,
         }
     }
@@ -533,6 +546,9 @@ impl LiveStats {
         self.boons.clear();
         self.uncanon.clear();
         self.boon_seen.clear();
+        self.boon_squad.clear();
+        self.boon_active.clear();
+        self.boon_targets.clear();
         self.boon_tick = None;
         // The stacks held at the start are the fight's first rows.
         let initial = self.buff_stacks.initial(start_ms);
@@ -817,6 +833,9 @@ impl LiveStats {
     /// Keep our stack copy, the roster and the map current (in and out of fights), and feed the
     /// rows a stack event wrote to the boon tracker while a fight records.
     fn track_boons(&mut self, t: u64, ev: &Event) {
+        if self.state == LiveState::Fight {
+            self.track_active(ev);
+        }
         match *ev {
             Event::Map { map_id, shard, .. } => {
                 if self.boon_map.is_some_and(|m| m != (map_id, shard)) {
@@ -857,6 +876,29 @@ impl LiveStats {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Note the players `ev` shows taking part in the fight, as axilog reads our log's rows: a
+    /// strike's source and target, a condition tick's (with damage), a cast's source, and an
+    /// enter-combat.
+    fn track_active(&mut self, ev: &Event) {
+        let ids = match *ev {
+            Event::Strike { src, dst, .. } => [Some(src), Some(dst)],
+            Event::BuffDamage {
+                src, dst, value, ..
+            } if value != 0 => [Some(src), Some(dst)],
+            Event::CastStart { agent, .. } => [Some(agent), None],
+            Event::Combat {
+                id,
+                in_combat: true,
+            } => [Some(id), None],
+            _ => return,
+        };
+        for id in ids.into_iter().flatten() {
+            if id != 0 && !self.foreign(id) {
+                self.boon_active.insert(self.canon(id));
+            }
         }
     }
 
@@ -906,6 +948,9 @@ impl LiveStats {
         if self.uncanon.remove(&id) {
             // Rows fed before the account was known went in under the raw id.
             self.boons.rename(id, c);
+        }
+        if self.boon_active.remove(&id) {
+            self.boon_active.insert(c);
         }
         self.canon_of.insert(id, c);
         self.live_of.insert(c, id);
@@ -965,6 +1010,12 @@ impl LiveStats {
                 self.boon_seen.insert(c, (reg.is_squad(id), a.subgroup));
             }
         }
+        let squad_now: Vec<u32> = reg
+            .live_agents()
+            .filter(|a| reg.is_squad(a.id))
+            .map(|a| self.canon(a.id))
+            .collect();
+        self.boon_squad.extend(squad_now);
         let live_of = &self.live_of;
         let seen = &self.boon_seen;
         // A player who left keeps the squad and subgroup it had (axilog keeps every player of
@@ -985,9 +1036,54 @@ impl LiveStats {
             Some(id) => reg.is_squad(id),
             None => seen.get(&c).map_or_else(|| reg.is_squad(c), |s| s.0),
         };
+        // Group and squad targets, as axilog takes them from the log's agent table: the fight's
+        // squad players with a subgroup that took part in it (the POV always counts).
+        let pov = reg.pov().map(|id| self.canon(id));
+        let active = &self.boon_active;
+        let targets: BTreeMap<u32, (u8, bool)> = self
+            .boon_squad
+            .iter()
+            .filter(|&&c| squad(c))
+            .filter_map(|&c| {
+                let g = groups(c).filter(|g| (1..=15).contains(g))?;
+                Some((c, (g, active.contains(&c) || pov == Some(c))))
+            })
+            .collect();
+        let target = |c: u32| targets.get(&c).is_some_and(|t| t.1);
         // Regeneration's stack order reads the agent table's healing field, which arcdps and our
         // writer leave at 0 for every player: 0 is what axilog sees on both logs.
-        self.boons.tick(now, &groups, &squad, &|_| 0);
+        self.boons.tick(now, &groups, &squad, &target, &|_| 0);
+        self.boon_targets = targets;
+    }
+
+    /// A tracker total with group and squad as per-target averages, as axilog's rollup takes
+    /// them: ms over the other targets of the source's subgroup, and over every other target
+    /// (rounded; 0 with no targets).
+    fn per_target(&self, source: u32, v: [u64; 4]) -> [u64; 4] {
+        let group = self.boon_targets.get(&source).map(|t| t.0);
+        let others = self
+            .boon_targets
+            .iter()
+            .filter(|&(&c, t)| c != source && t.1);
+        let (mut n_group, mut n_squad) = (0u64, 0u64);
+        for (_, t) in others {
+            n_squad += 1;
+            n_group += u64::from(group == Some(t.0));
+        }
+        let avg = |ms: u64, n: u64| (ms + n / 2).checked_div(n).unwrap_or(0);
+        [v[0], v[1], avg(v[2], n_group), avg(v[3], n_squad)]
+    }
+
+    /// The accounts the boon numbers count as group and squad targets as of the last tick, with
+    /// their subgroup (for checks against a log's agent table).
+    pub fn boon_targets(&self) -> BTreeMap<String, u8> {
+        self.by_account
+            .iter()
+            .filter_map(|(a, c)| match self.boon_targets.get(c) {
+                Some(&(g, true)) => Some((a.clone(), g)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Keep the instance map current; a removal returns (remover, target, buff, stacks removed).
@@ -1052,6 +1148,24 @@ impl LiveStats {
                     self.roster_pov = Some(id);
                 }
                 self.begin(start, p.map_id().unwrap_or(0));
+                // The squad at the start is in the fight, even if it leaves before a tick.
+                let squad: Vec<u32> = reg
+                    .live_agents()
+                    .filter(|a| reg.is_squad(a.id))
+                    .map(|a| a.id)
+                    .collect();
+                for id in squad {
+                    self.boon_squad.insert(self.canon(id));
+                }
+                // Players in combat at the start enter combat in our log at the start.
+                let fighting: Vec<u32> = reg
+                    .live_agents()
+                    .filter(|a| a.in_combat && a.kind == AgentKind::Player)
+                    .map(|a| a.id)
+                    .collect();
+                for id in fighting {
+                    self.boon_active.insert(self.canon(id));
+                }
             } else if self.map == 0
                 && let Some(m) = p.map_id()
             {
@@ -1069,6 +1183,9 @@ impl LiveStats {
         }
         if let Some(Event::AgentAdd { id, .. } | Event::AgentName { id, .. }) = ev {
             self.note_account(p.registry(), id);
+            if self.state == LiveState::Fight && p.registry().is_squad(id) {
+                self.boon_squad.insert(self.canon(id));
+            }
         }
         if let Some(ev) = ev
             && let Some(t) = time
@@ -1270,11 +1387,13 @@ impl LiveStats {
                 }
             };
             let dps = per_s(damage);
+            let c = self.boon_id(id, &who.account);
             let boons: serde_json::Map<String, Value> = self
                 .boons
-                .totals(self.boon_id(id, &who.account))
+                .totals(c)
                 .into_iter()
                 .flatten()
+                .map(|(b, v)| (b, self.per_target(c, *v)))
                 .filter(|(_, v)| v.iter().any(|&n| n > 0))
                 .map(|(b, v)| (b.to_string(), json!(v)))
                 .collect();
@@ -2371,6 +2490,95 @@ mod tests {
         );
     }
 
+    /// Group and squad generation are per target, averaged as axilog does: player 4 (group 2)
+    /// protects player 1 (group 3) and player 5 (group 2) for 2 s each; player 6 (group 2) gets
+    /// nothing. Squad: 4000 ms over 3 targets; group: 2000 ms over 2 (5 and 6).
+    #[test]
+    fn group_and_squad_generation_are_per_target_averages() {
+        let mut r = world();
+        for id in [5, 6] {
+            for e in squad_events(id, 2) {
+                r.apply(0, &e);
+            }
+        }
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        // 5 strikes, 6 enters combat: both take part (1 is the POV, which always counts).
+        l.event(500, &strike(5, NPC, 10, 0));
+        l.event(
+            500,
+            &Event::Combat {
+                id: 6,
+                in_combat: true,
+            },
+        );
+        l.event(1000, &boon_apply(1, 4, PROTECTION, 900, 2000));
+        l.event(1000, &boon_apply(5, 4, PROTECTION, 901, 2000));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 1000, 1333]})
+        );
+        // Two squad mates at 2000 ms each: 2000 per target, not the 4000 sum.
+        let mut r = world();
+        for e in squad_events(5, 2) {
+            r.apply(0, &e);
+        }
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(500, &strike(NPC, 5, 10, 0));
+        l.event(1000, &boon_apply(1, 4, PROTECTION, 900, 2000));
+        l.event(1000, &boon_apply(5, 4, PROTECTION, 901, 2000));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 2000, 2000]})
+        );
+    }
+
+    /// A squad member who never takes part in the fight (axilog leaves idle squad members out of
+    /// its players) is not a target: 5 holds the boon but does nothing else.
+    #[test]
+    fn idle_squad_members_are_not_targets() {
+        let mut r = world();
+        for e in squad_events(5, 2) {
+            r.apply(0, &e);
+        }
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(1000, &boon_apply(1, 4, PROTECTION, 900, 2000));
+        l.event(1000, &boon_apply(5, 4, PROTECTION, 901, 2000));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 0, 2000]})
+        );
+        // 5 still has its uptime.
+        assert_eq!(player(&v, "Char 5").unwrap()["boons"]["717"][0], 2000);
+    }
+
+    /// A source with no other squad player in the fight has no group or squad generation.
+    #[test]
+    fn no_targets_means_no_group_or_squad_generation() {
+        let mut r = Registry::new();
+        for e in squad_events(1, 3) {
+            r.apply(0, &e);
+        }
+        r.apply(0, &Event::Pov { id: 1 });
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(1000, &boon_apply(1, 1, PROTECTION, 900, 2000));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        assert_eq!(
+            player(&v, "Char 1").unwrap()["boons"],
+            json!({"717": [2000, 2000, 0, 0]})
+        );
+    }
+
     #[test]
     fn minion_boons_credit_the_master() {
         let r = world();
@@ -2637,6 +2845,7 @@ mod tests {
         assert_eq!(v["state"], "fight");
         let x = &player(&v, "Xena").unwrap()["boons"];
         assert_eq!(x["717"][0], 3500);
+        // Per target: Char 4 never takes part in the fight, so Char 1 is Xena's only target.
         assert_eq!(x["1187"][3], 3500);
     }
 
@@ -2728,7 +2937,8 @@ mod tests {
             player(&v, "Xena").unwrap()["boons"],
             json!({"717": [2000, 0, 0, 0], "1187": [0, 0, 0, 2000]})
         );
-        assert_eq!(player(&v, "Char 4").unwrap()["boons"]["717"][3], 2000);
+        // Per target: 2000 ms on one of two other squad players (Xena counts after leaving).
+        assert_eq!(player(&v, "Char 4").unwrap()["boons"]["717"][3], 1000);
         assert_eq!(player(&v, "Char 1").unwrap()["boons"]["1187"][0], 2000);
     }
 
