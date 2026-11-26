@@ -355,3 +355,11 @@ test("history budget", () => {
   const mean = (performance.now() - t) / 200;
   assert.ok(mean < 1, `mean ${mean} ms`);
 });
+test("history returning player counts from inside the span", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => ms >= 19000 && ms <= 21000 ? [{ name: "A", damage: ms }]
+    : [{ name: "A", damage: ms }, { name: "B", damage: ms }]);
+  const v = h.view("last:10");
+  assert.strictEqual(byName(v, "A").damage, 10000);
+  assert.strictEqual(byName(v, "B").damage, 8500);
+});
