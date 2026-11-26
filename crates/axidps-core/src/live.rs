@@ -2002,6 +2002,31 @@ mod tests {
         assert!(serde_json::to_string(&v).unwrap().contains("\"dps\":"));
     }
 
+    /// The custom window catalog (docs/custom-windows-stats.md and STATS in the overlay page) is
+    /// exactly the per-player stat keys. A new feed key fails here until both are updated.
+    #[test]
+    fn feed_player_keys_are_the_catalog() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(10, &strike(1, NPC, 5, 0));
+        let v = l.snapshot(&r, 1_700_000_000_123);
+        let mut got: Vec<String> = v["players"][0].as_object().unwrap().keys().cloned().collect();
+        got.sort();
+        let identity = [
+            "name", "account", "prof", "elite", "spec", "group", "me", "heal_full",
+        ];
+        let catalog = [
+            "damage", "dps", "power", "condi", "down_contrib", "downs", "kills", "deaths",
+            "downed", "taken", "cleanses", "strips", "healing", "barrier", "hps", "healing_in",
+            "barrier_in",
+        ];
+        assert_eq!(catalog.len(), 17);
+        let mut want: Vec<String> = identity.iter().chain(catalog.iter()).map(|s| s.to_string()).collect();
+        want.sort();
+        assert_eq!(got, want);
+    }
+
     /// A processor that saves any fight: one squad member and no minimum length.
     fn processor() -> Processor {
         Processor::new(WvwRules {
