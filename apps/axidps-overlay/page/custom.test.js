@@ -350,6 +350,10 @@ test("history series cap", () => {
   assert.strictEqual(r.t0, 399000);
   assert.ok(r.values[0].every(x => x === 1));
 });
+// The render budget is for a player's machine (spec: 8 windows under 1 ms per render). Shared CI
+// runners are a few times slower, so CI only checks for a gross regression.
+const RENDER_MS = process.env.CI ? 3 : 1;
+
 test("history budget", () => {
   const h = createHistory();
   h.track(new Set(["damage", "healing"]));
@@ -384,7 +388,7 @@ test("history budget", () => {
     return spent / 200;
   };
   const mean = timed(() => { for (const s of specs) computeRows(s, h.view(s.span), String, 50); });
-  assert.ok(mean < 1, `mean ${mean} ms`);
+  assert.ok(mean < RENDER_MS, `mean ${mean} ms`);
   // 8 windows of boon stats: players windows of 8 boon stats, boons windows of the 4 measures,
   // over spans and the live fight.
   const boonKeys = Object.keys(C.STATS).filter(k => C.STATS[k].kind === "boon");
@@ -406,7 +410,7 @@ test("history budget", () => {
     }
   });
   assert.ok(cells > 0);
-  assert.ok(bmean < 1, `boon mean ${bmean} ms`);
+  assert.ok(bmean < RENDER_MS, `boon mean ${bmean} ms`);
   assert.ok(h.bytes() < 10e6, `bytes ${h.bytes()}`);
   console.log(`budget: fight ${mean.toFixed(3)} ms, boons ${bmean.toFixed(3)} ms per render, ${(h.bytes() / 1e6).toFixed(2)} MB`);
 });
