@@ -28,6 +28,9 @@ const axidpsCustom = (() => {
   const SPANS = ["fight", "last:10", "last:30", "last:60", "session"];
   const LOOKS = ["table", "bars", "number", "chart"];
   const FILTER_RE = /^(spec:[A-Za-z ]{1,24}|prof:[1-9])$/;
+  const AS = ["total", "per_s", "share"];
+  const BASES = ["squad", "group", "me"];
+  const ROWS = ["players", "total"];
   const ID_RE = /^c[1-8]$/;
 
   const isObj = v => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -38,7 +41,7 @@ const axidpsCustom = (() => {
     for (const s of Array.isArray(raw) ? raw : []) {
       if (out.length >= MAX_STATS) break;
       if (!isObj(s) || !Object.prototype.hasOwnProperty.call(STATS, s.key)) continue;
-      const as = STATS[s.key].rate ? "per_s" : (s.as === "share" ? "share" : "total");
+      const as = STATS[s.key].rate ? "per_s" : (AS.includes(s.as) ? s.as : "total");
       out.push({key: s.key, as});
     }
     return out.length ? out : [{key: "damage", as: "total"}];
@@ -56,8 +59,8 @@ const axidpsCustom = (() => {
     const sortKey = sort.key === "name" || stats.some(s => s.key === sort.key) ? sort.key : stats[0].key;
     const lim = Math.floor(Number(raw.limit));
     return {
-      id, name, rows: "players", stats,
-      who: {base: who.base === "group" ? "group" : "squad", filters},
+      id, name, rows: ROWS.includes(raw.rows) ? raw.rows : "players", stats,
+      who: {base: BASES.includes(who.base) ? who.base : "squad", filters},
       span: SPANS.includes(raw.span) ? raw.span : "fight",
       look: LOOKS.includes(raw.look) ? raw.look : "table",
       sort: {key: sortKey, asc: sort.asc === true},
@@ -89,9 +92,11 @@ const axidpsCustom = (() => {
       if (!isObj(t) || typeof t.id !== "string" || !/^t\d+$/.test(t.id)) continue;
       const cfg = isObj(saved.cfg) && isObj(saved.cfg[t.id]) ? saved.cfg[t.id] : {};
       const id = "c" + t.id.slice(1);
+      let keys = (Array.isArray(cfg.cols) ? cfg.cols : []).filter(k => Object.prototype.hasOwnProperty.call(STATS, k));
+      if (!keys.length) keys = ["damage", "dps"];
       const spec = normalizeSpec({
         name: t.title,
-        stats: (Array.isArray(cfg.cols) ? cfg.cols : []).map(key => ({key})),
+        stats: keys.map(key => ({key})),
         who: {base: cfg.groupOnly ? "group" : "squad"},
         sort: {key: cfg.sortKey, asc: cfg.sortAsc},
       }, id);
