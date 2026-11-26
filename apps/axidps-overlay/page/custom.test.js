@@ -372,6 +372,97 @@ test("history budget", () => {
   const mean = (performance.now() - t) / 200;
   assert.ok(mean < 1, `mean ${mean} ms`);
 });
+test("history chart key cap", () => {
+  const h = createHistory();
+  const keys = C.BASE_KEYS;
+  assert.strictEqual(C.CHART_KEYS, 12);
+  const t = h.track(keys);
+  assert.deepStrictEqual([...t], keys.slice(0, 12));
+  assert.ok(!h.isTracked(keys[12]) && !h.isTracked(keys[14]));
+  // Keys already tracked keep their place; a new key gets a free one.
+  h.track(keys.slice(1).concat(["gear", "dps"]));
+  assert.deepStrictEqual([...h.track(keys.slice(1))].sort(), keys.slice(1, 13).sort());
+  assert.ok(h.isTracked(keys[12]) && !h.isTracked(keys[0]));
+  // An untracked key has no series.
+  fightTo(h, 3000, ms => [Object.fromEntries([["name", "A"], ...keys.map(k => [k, ms])])]);
+  const r = h.series([keys[0], keys[1], keys[14]], ps => ps);
+  assert.deepStrictEqual(r.values, [[0, 0, 0], [1000, 1000, 1000], [0, 0, 0]]);
+});
+test("history series grouped keys", () => {
+  const h = createHistory();
+  h.track(["healing", "barrier"]);
+  fightTo(h, 3000, ms => [{ name: "A", healing: ms / 10, barrier: ms / 20 }]);
+  assert.deepStrictEqual(h.series([["healing", "barrier"], "barrier"], ps => ps).values, [[150, 150, 150], [50, 50, 50]]);
+});
+test("history series incremental equals a full recompute", () => {
+  const h = createHistory();
+  h.track(["damage", "healing"]);
+  const memo = {}, keys = ["damage", ["damage", "healing"]];
+  let who = ps => ps.filter(p => p.group === 1);
+  const check = at => {
+    const inc = h.series(keys, who, memo), full = h.series(keys, who);
+    assert.deepStrictEqual(inc, full, `at ${at}`);
+  };
+  // B joins, leaves and comes back; C changes group (who changes); the feed skips seconds; the
+  // series passes its cap; a key is dropped and added again.
+  const pl = ms => {
+    const out = [{ name: "A", damage: ms / 3, healing: ms / 7 }];
+    if (ms > 5000 && (ms < 9000 || ms > 12000)) out.push({ name: "B", damage: ms / 5, healing: 3 });
+    out.push({ name: "C", damage: ms / 11, group: ms > 20000 ? 2 : 1 });
+    return out;
+  };
+  let ms = 0;
+  const step = (to, d) => { for (; ms <= to; ms += d) { h.push(feed("fight", ms, pl(ms))); check(ms); } };
+  step(30000, 500);
+  step(60000, 3700);
+  who = ps => ps;
+  step(80000, 1000);
+  h.track(["damage"]); check("drop");
+  step(90000, 1000);
+  h.track(["damage", "healing"]); check("add");
+  step(100000, 1000);
+  for (let i = 0; i < 3700; i++) { ms += 1000; h.push(feed("fight", ms, pl(ms))); if (i % 97 === 0) check(ms); }
+  check("cap");
+  assert.strictEqual(h.series(keys, who, memo).values[0].length, 3600);
+  ms += 5000000; h.push(feed("fight", ms, pl(ms))); check("long gap");
+  h.clear(); check("clear");
+  ms = 0; step(5000, 500);
+  // The memo's lines are extended in place, not computed again (B joined at 5 s: who changed).
+  ms += 1000; h.push(feed("fight", ms, pl(ms)));
+  const before = h.series(keys, who, memo).values[0];
+  ms += 1000; h.push(feed("fight", ms, pl(ms)));
+  assert.strictEqual(h.series(keys, who, memo).values[0], before);
+  check("extended");
+});
+test("history chart budget: 50 players, 1 h, 8 charts of 8 stats", () => {
+  const h = createHistory();
+  const keys = C.BASE_KEYS;
+  h.track(keys);
+  const players = ms => Array.from({ length: 50 }, (_, i) => {
+    const p = { name: "P" + i, group: 1 + (i % 10), me: i === 0 };
+    keys.forEach((k, j) => { p[k] = (ms / 1000) * (i + j + 1); });
+    return p;
+  });
+  const all = Object.keys(C.STATS);
+  const charts = Array.from({ length: 8 }, (_, i) => ({
+    keys: all.slice(i, i + 8).concat(all).slice(0, 8).map(k => C.STATS[k].rate || k),
+    who: ps => filterWho(ps, { base: i % 2 ? "group" : "squad", filters: [] }),
+    memo: {},
+  }));
+  const draw = () => { for (const c of charts) h.series(c.keys, c.who, c.memo); };
+  let ms = 0;
+  for (; ms <= 3600000; ms += 500) h.push(feed("fight", ms, players(ms)));
+  assert.ok(h.bytes() < 10e6, `bytes ${h.bytes()}`);
+  draw();
+  let spent = 0;
+  for (let i = 0; i < 30; i++) {
+    ms += 1000; h.push(feed("fight", ms, players(ms)));
+    const t = performance.now();
+    draw();
+    spent += performance.now() - t;
+  }
+  assert.ok(spent / 30 < 1, `mean ${spent / 30} ms`);
+});
 test("history returning player counts from inside the span", () => {
   const h = createHistory();
   fightTo(h, 30000, ms => ms >= 19000 && ms <= 21000 ? [{ name: "A", damage: ms }]

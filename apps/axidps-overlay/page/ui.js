@@ -369,12 +369,12 @@ function renderAll() {
   applyCap();
   document.body.classList.toggle("editing", ui.editing);
   document.body.classList.toggle("compact", !!saved.compact);
+  trackCharts();
   for (const w of wins) {
     const open = isOpen(w);
     w.el.classList.toggle("closed", !open);
     if (open && w.def.render) { w.def.render(w); paintIcons(w.el); }
   }
-  trackCharts();
   toPlugins();
   scheduleReport();
 }
@@ -633,32 +633,30 @@ function customView(spec) {
 const CHART_INKS = ["accent", "good", "bad", "#e0af68", "#bb9af7", "#7dcfff", "#ff9e64", "dim"];
 const chartInk = i => { const c = CHART_INKS[i % CHART_INKS.length]; return c[0] === "#" ? c : T(c); };
 // A chart's lines: per stat, the per-second values summed over "who", as a 5 s rolling average
-// (the Timeline's). series() is costly (about 4 ms for an hour): computed again only when a new
-// whole fight second arrives, the spec changes or the history starts over.
+// (the Timeline's). Computed again only when a new whole fight second arrives, the spec changes or
+// the history starts over; series() then adds only the new seconds (w.series keeps its lines).
 function chartData(w, spec) {
   const f = ui.live && ui.live.fight;
   const key = JSON.stringify(spec) + "|" + (f ? Math.floor((Number(f.duration_ms) || 0) / 1000) : -1) + "|" + chartGen;
   if (w.chartKey === key) return w.chart;
-  const keys = [...new Set(spec.stats.flatMap(s => baseOf(s.key)))];
-  const ser = spanHistory.series(keys, ps => axidpsCustom.filterWho(ps, spec.who));
+  w.series = w.series || {};
+  const ser = spanHistory.series(spec.stats.map(s => baseOf(s.key)), ps => axidpsCustom.filterWho(ps, spec.who), w.series);
   const n = ser.values.length ? ser.values[0].length : 0;
-  const smooth = a => a.map((_, i) => {
-    let sum = 0;
-    const lo = Math.max(0, i - 4);
-    for (let j = lo; j <= i; j++) sum += a[j];
-    return sum / (i - lo + 1) * 1000 / ser.step;
-  });
   // fight and session: the whole fight; last:N the last N seconds.
   const m = /^last:(\d+)$/.exec(spec.span);
   const from = m ? Math.max(0, n - Number(m[1])) : 0;
-  const lines = spec.stats.map(s => {
-    const a = new Array(n).fill(0);
-    for (const b of baseOf(s.key)) {
-      const v = ser.values[keys.indexOf(b)];
-      for (let i = 0; i < n; i++) a[i] += v[i];
+  const smooth = a => {
+    const out = new Array(n - from);
+    const start = Math.max(0, from - 4);
+    let sum = 0;
+    for (let i = start; i < n; i++) {
+      sum += a[i];
+      if (i - 5 >= start) sum -= a[i - 5];
+      if (i >= from) out[i - from] = sum / Math.min(i + 1, 5) * 1000 / ser.step;
     }
-    return smooth(a).slice(from);
-  });
+    return out;
+  };
+  const lines = ser.values.map(smooth);
   w.chartKey = key;
   w.chart = {t0: ser.t0 + from * ser.step, step: ser.step, lines};
   return w.chart;
@@ -667,7 +665,9 @@ function chartData(w, spec) {
 // times, one 1.5 px line per stat.
 function drawChart(w, spec) {
   const data = ui.cleared ? null : chartData(w, spec);
-  const drawKey = `${w.chartKey}|${ui.cleared}|${theme.id}|${theme.s.font}`;
+  // A stat past the history's chart stat cap has no line.
+  const capped = spec.stats.some(s => baseOf(s.key).some(k => !spanHistory.isTracked(k)));
+  const drawKey = `${w.chartKey}|${ui.cleared}|${theme.id}|${theme.s.font}|${capped}`;
   if (w.drawn === drawKey) return;
   w.drawn = drawKey;
   const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
@@ -705,8 +705,8 @@ function drawChart(w, spec) {
     g.textAlign = "start";
   }
   const st = STATS[spec.stats[0].key];
-  w.body.querySelector(".peak").textContent = n > 1
-    ? `peak ${fmt(Math.max(...lines[0]))} ${st.label.toLowerCase()}${st.rate ? "" : "/s"}` : "";
+  w.body.querySelector(".peak").textContent = capped ? `chart stat limit (${axidpsCustom.CHART_KEYS}) reached`
+    : n > 1 ? `peak ${fmt(Math.max(...lines[0]))} ${st.label.toLowerCase()}${st.rate ? "" : "/s"}` : "";
 }
 
 // A custom window's body for its look (again whenever the spec or compact mode changes).
@@ -884,7 +884,8 @@ const nameField = spec => {
   return `<span class="field focus" data-cact="name">${esc(t.value.slice(0, t.caret))}<i class="caret"></i>` +
     `${esc(t.value.slice(t.caret))}</span>`;
 };
-// The history keeps chart series only for the stats an open chart window draws.
+// The history keeps chart series only for the stats an open chart window draws, up to its cap
+// (axidpsCustom.CHART_KEYS base keys): stats past it are not tracked and their windows say so.
 function trackCharts() {
   const keys = new Set();
   for (const w of wins) {
