@@ -30,3 +30,4 @@ tools/quiet-build
 packaging
 docs/plugins
 docs/RELEASING.md
+docs/custom-windows-stats.md
