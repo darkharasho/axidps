@@ -709,6 +709,7 @@ impl Ctx<'_> {
             value: r.value,
             buff_dmg: r.buff_dmg,
             overstack: r.overstack,
+            iff: r.iff(),
             buff: r.buff,
             result: r.result,
             is_buffremove: r.is_buffremove,
@@ -3110,6 +3111,27 @@ mod tests {
                     inst: 2,
                 },
             ),
+            (
+                2600,
+                Event::BuffApply {
+                    dst: 1,
+                    src: 3,
+                    buff: 740,
+                    inst: 3,
+                    duration: 4000,
+                    level: 0,
+                    active: true,
+                },
+            ),
+            // No remover: an expiry or overstack, written iff unknown like arcdps.
+            (
+                2700,
+                Event::BuffRemove {
+                    dst: 1,
+                    remover: 0,
+                    inst: 3,
+                },
+            ),
         ]);
         let mut before = Stacks::default();
         before.apply(
@@ -3153,9 +3175,17 @@ mod tests {
         );
         let rm = sc_rows(&l, 71)[0];
         assert_eq!(
-            (rm.src_agent, rm.dst_agent, rm.value, rm.is_buffremove),
-            (a1, a3, 3500, 2)
+            (
+                rm.src_agent,
+                rm.dst_agent,
+                rm.value,
+                rm.is_buffremove,
+                rm.iff
+            ),
+            (a1, a3, 3500, 2, 0)
         );
+        let gone = sc_rows(&l, 71)[1];
+        assert_eq!((gone.dst_agent, gone.iff), (0, 2));
         let ids: Vec<_> = l.skills.iter().map(|s| s.id).collect();
         assert!(ids.contains(&740) && ids.contains(&1187));
     }

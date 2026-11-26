@@ -300,6 +300,7 @@ Each player row:
 | `healing`, `barrier`, `hps` | Healing and barrier given, and both per second. |
 | `healing_in`, `barrier_in` | Healing and barrier received. |
 | `heal_full` | `true` if the healing numbers are complete (you, and players sharing their heals). Otherwise they only count what passed between that player and you. |
+| `boons` | Boon uptime and generation: `{"<boon id>": [up, self, group, squad]}`, in milliseconds since the fight started (stack-milliseconds for Might and Stability). `group` and `squad` are per target: the time the player kept the boon up on subgroup mates (or squad mates), averaged over them. Only boons with a nonzero value appear; the field is left out when there are none. The values can go down a little. See [Boons](../custom-windows-stats.md#boons). |
 
 ## Theming
 

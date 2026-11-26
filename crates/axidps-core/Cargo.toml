@@ -8,6 +8,7 @@ license.workspace = true
 axidps-protocol = { path = "../axidps-protocol" }
 axidps-evtc = { path = "../axidps-evtc" }
 axidps-ringbuf = { path = "../axidps-ringbuf" }
+axilog-core = { git = "https://github.com/darkharasho/axilog", rev = "91533ac6143730eff35219ce3a5fd32e3aea14e5" }
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["alloc", "clock"] }
 ctrlc = { version = "3.5.3", features = ["termination"] }
