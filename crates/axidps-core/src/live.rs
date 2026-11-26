@@ -43,6 +43,9 @@ const ACCOUNT_IDS: u32 = 1 << 31;
 /// Where the tracker's ids for unnamed agents that left start: above the account ids.
 const ORPHAN_IDS: u32 = 3 << 30;
 
+/// The game's defiance damage skill: its zero-value strikes on players are not taking part.
+const DEFIANCE_DAMAGE: u32 = 23276;
+
 /// MumbleLink map type of the Armistice Bastion WvW lounge.
 const WVW_LOUNGE: u32 = 18;
 
@@ -858,12 +861,23 @@ impl LiveStats {
                 self.roster.remove(&id);
                 self.retire_account(id);
                 self.buff_stacks.forget_agent(id);
-                if self.uncanon.remove(&id) {
-                    // Left before its account was known: its rows keep an id of their own, so the
-                    // id's next owner does not get them.
+                // Left before its account was known: its rows, and whether it was squad and took
+                // part, keep an id of their own, so the id's next owner does not get them.
+                let rows = self.uncanon.remove(&id);
+                let active = self.boon_active.remove(&id);
+                let squad = self.boon_squad.remove(&id);
+                if rows || active || squad {
                     let orphan = ORPHAN_IDS + self.orphans;
                     self.orphans = self.orphans.wrapping_add(1) % (1 << 30);
-                    self.boons.rename(id, orphan);
+                    if rows {
+                        self.boons.rename(id, orphan);
+                    }
+                    if active {
+                        self.boon_active.insert(orphan);
+                    }
+                    if squad {
+                        self.boon_squad.insert(orphan);
+                    }
                 }
             }
             Event::BuffApply { .. }
@@ -884,6 +898,15 @@ impl LiveStats {
     /// enter-combat.
     fn track_active(&mut self, ev: &Event) {
         let ids = match *ev {
+            // A zero-value defiance strike on a player is not taking part (arcdps never writes
+            // these rows; our log still does).
+            Event::Strike {
+                dst,
+                skill: DEFIANCE_DAMAGE,
+                value: 0,
+                result: 10,
+                ..
+            } if self.roster.get(&dst).is_some_and(|r| r.0) => return,
             Event::Strike { src, dst, .. } => [Some(src), Some(dst)],
             Event::BuffDamage {
                 src, dst, value, ..
@@ -2847,6 +2870,82 @@ mod tests {
         assert_eq!(x["717"][0], 3500);
         // Per target: Char 4 never takes part in the fight, so Char 1 is Xena's only target.
         assert_eq!(x["1187"][3], 3500);
+    }
+
+    /// Player A at id 7 fights and leaves before its account name arrives; the game gives id 7 to
+    /// B, who never fights. A's "took part" stays A's: B is not a target, so Char 4's protection
+    /// on Char 1 is over one target, not two.
+    #[test]
+    fn unnamed_leavers_activity_does_not_go_to_the_next_owner_of_the_id() {
+        let mut p = processor();
+        let mut l = LiveStats::new();
+        for e in world_events() {
+            run(&mut p, &mut l, Step::Push(0, e));
+        }
+        run(&mut p, &mut l, Step::Push(0, add(7, 2)));
+        run(&mut p, &mut l, Step::Push(0, map_event()));
+        let enter = Event::Combat {
+            id: 1,
+            in_combat: true,
+        };
+        run(&mut p, &mut l, Step::Push(1000, enter));
+        run(&mut p, &mut l, Step::Push(1000, strike(7, NPC, 400, 0)));
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1000, boon_apply(1, 4, PROTECTION, 900, 2000)),
+        );
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(2000, Event::AgentRemove { id: 7 }),
+        );
+        for e in named(7, 2, "Yara", ":Y.0002") {
+            run(&mut p, &mut l, Step::Push(2500, e));
+        }
+        run(&mut p, &mut l, Step::Push(4000, strike(1, NPC, 400, 0)));
+        run(&mut p, &mut l, Step::Tick(5000));
+        let v = l.snapshot(p.registry(), 0);
+        assert_eq!(v["state"], "fight");
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 0, 2000]})
+        );
+        assert!(!l.boon_targets().contains_key(":Y.0002"));
+    }
+
+    /// Zero-value defiance strikes on a player (rows arcdps never writes) do not make the player
+    /// take part: 5 gets only those and is not a target; 6 gets a real strike and is.
+    #[test]
+    fn zero_defiance_strikes_on_players_are_not_taking_part() {
+        let mut r = world();
+        let mut l = LiveStats::new();
+        for id in [5, 6] {
+            for e in squad_events(id, 2) {
+                r.apply(0, &e);
+                l.event(0, &e);
+            }
+        }
+        l.begin(0, 38);
+        let defiance = |dst| Event::Strike {
+            src: 0,
+            dst,
+            skill: DEFIANCE_DAMAGE,
+            value: 0,
+            overstack: 0,
+            result: 10,
+        };
+        l.event(500, &defiance(5));
+        l.event(500, &defiance(6));
+        l.event(600, &strike(NPC, 6, 10, 0));
+        l.event(1000, &boon_apply(1, 4, PROTECTION, 900, 2000));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        // Targets for 4: 1 (the POV) and 6; 2000 ms over 2.
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 0, 1000]})
+        );
     }
 
     /// Player A at id 7 leaves before its account name arrives, and the game gives id 7 to B,
