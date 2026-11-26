@@ -381,7 +381,7 @@ pub fn zones(ui: &GameUi, screen: (i32, i32)) -> Vec<Zone> {
         px(520.0),
         px(290.0),
     );
-    add("menu", "Menu bar", 0, 0, px(330.0), px(42.0));
+    add("menu", "Menu bar", 0, 0, px(320.0), px(42.0));
     add("party", "Party", 0, px(44.0), px(250.0), px(330.0));
     let target = (px(560.0), px(120.0));
     add(

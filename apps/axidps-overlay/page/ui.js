@@ -742,9 +742,12 @@ function paintLauncher(cv, hot, live) {
 }
 const launcher = defineWindow({
   id: "launcher", title: "axidps button", open: true, bare: true,
-  at: ([sw, sh]) => {
+  // The slot after the game's last menu icon: its icons are 32 wide at the top edge at "normal"
+  // interface size, so the menu zone (320 wide at normal) ends where the next slot starts.
+  at: () => {
     const m = ui.zones.find(z => z.id === "menu");
-    return [m ? m.x + m.w + 4 : Math.round(sh * 0.235), 4];
+    const k = m ? m.w / 320 : 1, pad = (32 * k - 32) / 2;
+    return [Math.round((m ? m.w : 320) + pad), Math.max(0, Math.round(pad))];
   },
   mount(w) {
     w.body.innerHTML = `<div class="launch"><canvas width="32" height="32"></canvas></div>`;
@@ -1106,7 +1109,7 @@ if (DEMO.includes("demo")) {
   axidps.gameui([{id: "minimap", label: "Minimap", x: 2200, y: 1064, w: 360, h: 376},
     {id: "skills", label: "Skill bar", x: 735, y: 1265, w: 1090, h: 175},
     {id: "chat", label: "Chat (default size)", x: 0, y: 1150, w: 520, h: 290},
-    {id: "menu", label: "Menu bar", x: 0, y: 0, w: 330, h: 42},
+    {id: "menu", label: "Menu bar", x: 0, y: 0, w: 320, h: 42},
     {id: "party", label: "Party", x: 0, y: 44, w: 250, h: 330},
     {id: "target", label: "Target", x: 1000, y: 0, w: 560, h: 120},
     {id: "tracker", label: "Event tracker", x: 2240, y: 190, w: 320, h: 360}]);
