@@ -121,9 +121,82 @@ const axidpsCustom = (() => {
     }, id);
   }
 
+  // Who a window covers: the base (squad = everyone, group = my group, me = just me), then any-of filters.
+  function filterWho(players, who) {
+    const list = Array.isArray(players) ? players : [];
+    const base = who && who.base;
+    const me = list.find(p => p.me);
+    let out = list;
+    if (base === "me") out = me ? [me] : [];
+    else if (base === "group" && me) out = list.filter(p => p.group === me.group);
+    const filters = (who && Array.isArray(who.filters)) ? who.filters : [];
+    if (!filters.length) return out;
+    return out.filter(p => filters.some(f => {
+      const i = f.indexOf(":"), kind = f.slice(0, i), val = f.slice(i + 1);
+      return kind === "spec" ? p.spec === val : kind === "prof" ? p.prof === Number(val) : false;
+    }));
+  }
+
+  // A player's value for a catalog key. Totals for base keys; rates are per second.
+  // live (fight span): dps/hps come from the feed. Otherwise rate keys summed over seconds.
+  function statValue(p, key, seconds, live) {
+    const st = STATS[key];
+    if (!st) return 0;
+    if (!st.rate) return Number(p[key]) || 0;
+    if (live) return Number(p[key]) || 0;
+    if (!(seconds > 0)) return 0;
+    return st.rate.reduce((a, k) => a + (Number(p[k]) || 0), 0) / seconds;
+  }
+
+  function totalPlayer(list) {
+    const t = {name: "Total", account: "", prof: 0, heal_full: list.some(p => p.heal_full)};
+    for (const k of Object.keys(STATS)) t[k] = list.reduce((a, p) => a + (Number(p[k]) || 0), 0);
+    return t;
+  }
+
+  // Rows and footer for a spec over a view ({players, seconds, live}). limit null -> maxRows.
+  function computeRows(spec, view, fmt, maxRows) {
+    const seconds = view.seconds, live = !!view.live;
+    const matched = filterWho(view.players, spec.who);
+    const raw = (p, key) => statValue(p, key, seconds, live);
+    const sums = spec.stats.map(s => matched.reduce((a, p) => a + raw(p, s.key), 0));
+    const valueOf = (p, s, i) => {
+      const v = raw(p, s.key);
+      if (STATS[s.key].rate || s.as === "total") return v;
+      if (s.as === "per_s") return seconds > 0 ? v / seconds : 0;
+      return sums[i] > 0 ? v / sums[i] * 100 : null;
+    };
+    const build = p => ({p, values: spec.stats.map((s, i) => valueOf(p, s, i))});
+    let rows;
+    if (spec.rows === "total") {
+      const t = totalPlayer(matched);
+      if (live) {
+        t.dps = matched.reduce((a, p) => a + (Number(p.dps) || 0), 0);
+        t.hps = matched.reduce((a, p) => a + (Number(p.hps) || 0), 0);
+      }
+      rows = [build(t)];
+    } else {
+      rows = matched.map(build);
+      const idx = spec.stats.findIndex(s => s.key === spec.sort.key);
+      const dir = spec.sort.asc ? 1 : -1;
+      if (spec.sort.key === "name") rows.sort((a, b) => dir * String(a.p.name || "").localeCompare(String(b.p.name || "")));
+      else if (idx >= 0) rows.sort((a, b) => dir * ((a.values[idx] || 0) - (b.values[idx] || 0)));
+      const lim = spec.limit || maxRows;
+      if (lim >= 1) rows = rows.slice(0, lim);
+    }
+    const parts = [`${matched.length} players`];
+    let shown = 0;
+    spec.stats.forEach((s, i) => {
+      if (shown >= 2 || STATS[s.key].count) return;
+      shown++;
+      parts.push(`${fmt(sums[i])} ${STATS[s.key].label.toLowerCase()}`);
+    });
+    return {rows, footer: parts.join(" \u00b7 ")};
+  }
+
   const blankSpec = id => normalizeSpec({}, id);
 
   return {STATS, BASE_KEYS, MAX_CUSTOM, MAX_STATS, NAME_MAX, SPANS, LOOKS,
-    normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec};
+    filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsCustom;
