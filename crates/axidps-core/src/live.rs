@@ -573,7 +573,7 @@ impl LiveStats {
             return;
         }
         self.now_ms = end_ms.max(self.start_ms);
-        self.tick_boons(reg, true);
+        self.tick_boons(reg);
         self.last_rows = self.rows(reg);
         self.boons.clear();
         self.last_timeline = self.timeline();
@@ -1020,12 +1020,12 @@ impl LiveStats {
         self.boons.rows(t, &keep);
     }
 
-    /// Bring the boon totals to the latest game time: at most once a second, or `force`d.
-    fn tick_boons(&mut self, reg: &Registry, force: bool) {
+    /// Bring the boon totals to the latest game time (each feed's totals are as of its
+    /// duration).
+    fn tick_boons(&mut self, reg: &Registry) {
         let now = self.now_ms;
-        match self.boon_tick {
-            Some(last) if last == now || (!force && now < last + 1000) => return,
-            _ => {}
+        if self.boon_tick == Some(now) {
+            return;
         }
         self.boon_tick = Some(now);
         for (&c, &id) in &self.live_of {
@@ -1362,7 +1362,7 @@ impl LiveStats {
     /// highest damage first.
     fn rows(&mut self, reg: &Registry) -> Vec<Value> {
         if self.state == LiveState::Fight {
-            self.tick_boons(reg, false);
+            self.tick_boons(reg);
         }
         let mut ids: std::collections::BTreeSet<u32> = self.acc.keys().copied().collect();
         ids.extend(
@@ -2511,6 +2511,27 @@ mod tests {
             player(&v, "Char 4").unwrap()["boons"],
             json!({"717": [0, 0, 0, 2000]})
         );
+    }
+
+    /// The boon totals are as of the feed's duration at every feed, not only once a second: a
+    /// boon held the whole fight reads exactly 100% uptime at each feed written 500 ms apart.
+    #[test]
+    fn boons_are_as_of_every_feed() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(0, &boon_apply(1, 4, PROTECTION, 900, 600_000));
+        for t in (500..=20_000).step_by(500) {
+            l.advance(t);
+            let v = l.snapshot(&r, 1);
+            let duration = v["fight"]["duration_ms"].as_u64().unwrap();
+            assert_eq!(duration, t);
+            assert_eq!(
+                player(&v, "Char 1").unwrap()["boons"]["717"][0],
+                duration,
+                "uptime at {t}"
+            );
+        }
     }
 
     /// Group and squad generation are per target, averaged as axilog does: player 4 (group 2)
