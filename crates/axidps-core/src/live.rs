@@ -40,6 +40,9 @@ const STRIKE_DOWN: u8 = 9;
 /// Where the tracker's per-account ids start: above any agent id.
 const ACCOUNT_IDS: u32 = 1 << 31;
 
+/// Where the tracker's ids for unnamed agents that left start: above the account ids.
+const ORPHAN_IDS: u32 = 3 << 30;
+
 /// MumbleLink map type of the Armistice Bastion WvW lounge.
 const WVW_LOUNGE: u32 = 18;
 
@@ -295,6 +298,8 @@ pub struct LiveStats {
     live_of: BTreeMap<u32, u32>,
     /// Ids the tracker holds rows under before their account was known.
     uncanon: BTreeSet<u32>,
+    /// Orphan ids given out (see [`ORPHAN_IDS`]).
+    orphans: u32,
     /// Per account id: whether it was squad, and its subgroup, when last seen this fight.
     boon_seen: BTreeMap<u32, (bool, Option<u8>)>,
     /// Game time of the tracker's last tick.
@@ -345,6 +350,7 @@ impl LiveStats {
             canon_of: BTreeMap::new(),
             live_of: BTreeMap::new(),
             uncanon: BTreeSet::new(),
+            orphans: 0,
             boon_seen: BTreeMap::new(),
             boon_tick: None,
         }
@@ -833,6 +839,13 @@ impl LiveStats {
                 self.roster.remove(&id);
                 self.retire_account(id);
                 self.buff_stacks.forget_agent(id);
+                if self.uncanon.remove(&id) {
+                    // Left before its account was known: its rows keep an id of their own, so the
+                    // id's next owner does not get them.
+                    let orphan = ORPHAN_IDS + self.orphans;
+                    self.orphans = self.orphans.wrapping_add(1) % (1 << 30);
+                    self.boons.rename(id, orphan);
+                }
             }
             Event::BuffApply { .. }
             | Event::BuffRemove { .. }
@@ -930,7 +943,7 @@ impl LiveStats {
                 _ => continue,
             }
             for id in [r.src, r.dst] {
-                if id != 0 && id < ACCOUNT_IDS {
+                if id != 0 && id < ACCOUNT_IDS && !self.foreign(id) {
                     self.uncanon.insert(id);
                 }
             }
@@ -2625,6 +2638,50 @@ mod tests {
         let x = &player(&v, "Xena").unwrap()["boons"];
         assert_eq!(x["717"][0], 3500);
         assert_eq!(x["1187"][3], 3500);
+    }
+
+    /// Player A at id 7 leaves before its account name arrives, and the game gives id 7 to B,
+    /// whose name does arrive: A's rows stay A's, not B's (as holder or as source).
+    #[test]
+    fn unnamed_leaver_rows_do_not_go_to_the_next_owner_of_the_id() {
+        let mut p = processor();
+        let mut l = LiveStats::new();
+        for e in world_events() {
+            run(&mut p, &mut l, Step::Push(0, e));
+        }
+        run(&mut p, &mut l, Step::Push(0, add(7, 2)));
+        run(&mut p, &mut l, Step::Push(0, map_event()));
+        let enter = Event::Combat {
+            id: 1,
+            in_combat: true,
+        };
+        run(&mut p, &mut l, Step::Push(1000, enter));
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1000, boon_apply(7, 4, PROTECTION, 900, 600_000)),
+        );
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1000, boon_apply(1, 7, 1187, 901, 600_000)),
+        );
+        run(&mut p, &mut l, Step::Push(1500, strike(1, NPC, 400, 0)));
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(2000, Event::AgentRemove { id: 7 }),
+        );
+        for e in named(7, 2, "Yara", ":Y.0002") {
+            run(&mut p, &mut l, Step::Push(2500, e));
+        }
+        run(&mut p, &mut l, Step::Push(4000, strike(7, NPC, 400, 0)));
+        run(&mut p, &mut l, Step::Tick(5000));
+        let v = l.snapshot(p.registry(), 0);
+        assert_eq!(v["state"], "fight");
+        assert!(player(&v, "Yara").unwrap().get("boons").is_none());
+        // Char 1 still held the quickness A gave.
+        assert_eq!(player(&v, "Char 1").unwrap()["boons"]["1187"][0], 4000);
     }
 
     /// Player 7 leaves mid-fight: its boons, the credit it gave and the credit it got stay, as
