@@ -498,7 +498,8 @@ const sumOf = (ps, k) => ps.reduce((s, p) => s + (p[k] || 0), 0);
 const STATS = axidpsCustom.STATS;
 // A table cell's text for a catalog stat's value.
 const statText = (k, v) => (STATS[k].count ? int : fmt)(v);
-// The columns a table shows: the player's choice (Tables tab), else its defaults.
+// The columns a table shows: the player's choice from the old Tables tab (cfg.cols; the hub can
+// only reset it now), else its defaults.
 function colsOf(w) {
   const c = (w.cfg.cols || []).filter(k => STATS[k]);
   return c.length ? c : w.def.cols;
@@ -518,8 +519,8 @@ function nameCell(p, frac) {
 // What a table's layout depends on: its columns and compact mode.
 const tableKey = w => colsOf(w).join() + (saved.compact ? "/c" : "");
 // def: {cols: default column keys, nameW: name column width, sum(ps): footer}; the rank and
-// name columns are added automatically. "My subgroup only" (cfg.groupOnly) is set in the hub
-// (Tables tab).
+// name columns are added automatically. "My subgroup only" (cfg.groupOnly) was set in the old
+// Tables tab; the hub's Defaults clears it.
 function tableWindow(def) {
   const build = w => {
     // Compact (Settings) narrows every column with the smaller type.
@@ -835,7 +836,7 @@ function addCustom(from) {
     const src = JSON.parse(JSON.stringify(from.def.spec));
     spec = C.normalizeSpec(Object.assign(src, {name: ("Copy of " + src.name).slice(0, C.NAME_MAX)}), id);
   } else if (from && from.def.table) {
-    spec = C.specFromBuiltin({title: from.def.title, cols: from.def.cols, cfg: from.cfg}, id);
+    spec = C.specFromBuiltin({title: from.def.blurb[0], cols: from.def.cols, cfg: from.cfg}, id);
   } else spec = C.blankSpec(id);
   delete saved.pos[id]; delete saved.cfg[id]; saved.open[id] = true;
   list.push(spec);
@@ -1089,10 +1090,15 @@ const seg = (f, cur) => `<div class="seg" data-f="${f}">` + SEG_TEXT[f].map(([v,
   `<button data-cact="set" data-v="${v}"${v === cur ? ' class="on"' : ""}>${t}</button>`).join("") + `</div>`;
 const crow = (label, body) => `<div class="crow"><span>${label}</span><div>${body}</div></div>`;
 
-// A built-in table's card: its name and Copy (they are not editable).
+// Column or subgroup choices a built-in table kept from before custom windows (they can no longer
+// be made, only reset).
+const builtinChanged = t => { const c = t.cfg; return Array.isArray(c.cols) || !!c.groupOnly; };
+// A built-in table's card: its name, Copy and, while it has old choices, Defaults (they are not
+// editable).
 function builtinCard(t, full) {
   return `<div class="tbl" data-c="${t.id}"><div class="tbl-h"><b>${esc(t.def.blurb[0])}</b><span class="tag">built in</span>` +
-    `<span class="grow"></span><button data-cact="copy"${full ? " disabled" : ""} data-tip="a custom window with its columns">Copy</button></div></div>`;
+    `<span class="grow"></span>${builtinChanged(t) ? `<button data-cact="defaults" data-tip="its default columns, for the whole squad">Defaults</button>` : ""}` +
+    `<button data-cact="copy"${full ? " disabled" : ""} data-tip="a custom window with its columns">Copy</button></div></div>`;
 }
 // A custom window's card: every part of its spec.
 function customCard(spec, full, filterOpen) {
@@ -1137,7 +1143,7 @@ function renderBuilder(w) {
   const tables = wins.filter(x => x.def.table);
   if (full) w.addMenu = false;
   const feedSpecs = w.filterOpen ? players().map(p => p.spec).join() : "";
-  const key = JSON.stringify([saved.custom, tables.map(t => t.id + t.def.blurb[0]), w.filterOpen || "", !!w.addMenu, feedSpecs,
+  const key = JSON.stringify([saved.custom, tables.map(t => t.id + t.def.blurb[0] + builtinChanged(t)), w.filterOpen || "", !!w.addMenu, feedSpecs,
     ui.text]);
   if (w.builderKey === key) return;
   w.builderKey = key;
@@ -1166,6 +1172,12 @@ function builderAct(hw, b) {
   const t = card && wins.find(x => x.id === card.dataset.c);
   if (!t) return;
   if (act === "copy") { addCustom(t); return; }
+  if (act === "defaults" && t.def.table) {
+    const c = t.cfg;
+    delete c.cols; delete c.groupOnly;
+    t.offset = 0; save(); renderAll();
+    return;
+  }
   if (!t.def.custom) return;
   const spec = t.def.spec, id = spec.id;
   const stats = spec.stats.map(s => Object.assign({}, s));
@@ -1213,8 +1225,12 @@ function builderAct(hw, b) {
       return updateSpec(id, {sort: {key, asc: key === "name"}});
     }
     case "sortdir": return updateSpec(id, {sort: {key: spec.sort.key, asc: !spec.sort.asc}});
-    case "limit+": return updateSpec(id, {limit: spec.limit ? Math.min(MAX_ROWS, spec.limit + 1) : 1});
-    case "limit-": return updateSpec(id, {limit: spec.limit && spec.limit > 1 ? spec.limit - 1 : null});
+    // From auto, the steps start at Settings' Rows shown; below 1 is auto again.
+    case "limit+": return updateSpec(id, {limit: Math.min(MAX_ROWS, (spec.limit || maxRows()) + 1)});
+    case "limit-": {
+      const cur = spec.limit || maxRows();
+      return updateSpec(id, {limit: spec.limit === 1 || cur <= 1 ? null : cur - 1});
+    }
   }
 }
 
