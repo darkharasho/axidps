@@ -65,6 +65,8 @@ pub struct BoonTracker {
     registry: InstidRegistry,
     header: RawHeader,
     capacities: BTreeMap<u32, u32>,
+    /// The last tick's time.
+    clipped_at: Option<u64>,
 }
 
 impl Default for BoonTracker {
@@ -187,6 +189,7 @@ impl BoonTracker {
             registry: InstidRegistry::build(&empty_log(header())),
             header: header(),
             capacities: SQUAD_BOONS.iter().map(|&b| (b, capacity(b))).collect(),
+            clipped_at: None,
         }
     }
 
@@ -270,8 +273,12 @@ impl BoonTracker {
                 run_sim(events, capacity, intensity, FAR, regeneration, &healing).segments;
             pair.fresh = true;
         }
+        // Time went back (a fight's end is its last activity, before later ticks): every pair is
+        // clipped again, closed ones included.
+        let back = self.clipped_at.is_some_and(|t| now < t);
+        self.clipped_at = Some(now);
         for (&(_, boon), pair) in &mut self.pairs {
-            if pair.fresh || pair.open {
+            if pair.fresh || pair.open || back {
                 let intensity = INTENSITY.contains(&boon);
                 (pair.up, pair.by_source) = clip(&pair.segments, now, intensity);
                 let mut open = pair.segments.iter().any(|s| s.end > now);
@@ -380,6 +387,7 @@ impl BoonTracker {
         self.dirty.clear();
         self.stack_ids = false;
         self.totals.clear();
+        self.clipped_at = None;
     }
 }
 
@@ -947,6 +955,20 @@ mod tests {
         f.tick(20_000, &one_group);
         assert_eq!(f.get(1, PROTECTION)[0], 5000);
         assert_eq!(f.get(3, FURY)[0], 2000);
+    }
+
+    /// A tick earlier than the last one (the fight ends at its last activity, after ticks past
+    /// it) clips every pair to it, including stacks that ended in between.
+    #[test]
+    fn an_earlier_tick_clips_ended_stacks() {
+        let mut f = Feed::new();
+        f.ev(1000, apply(1, 1, FURY, 1, 2000, true));
+        f.ev(1000, apply(2, 1, PROTECTION, 2, 9000, true));
+        f.tick(5000, &one_group);
+        assert_eq!(f.get(1, FURY)[0], 2000);
+        f.tick(2500, &one_group);
+        assert_eq!(f.get(1, FURY), [1500, 1500, 0, 0]);
+        assert_eq!(f.get(2, PROTECTION)[0], 1500);
     }
 
     #[test]
