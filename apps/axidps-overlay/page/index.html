@@ -247,6 +247,10 @@
   .chip .as { color: var(--accent); font-variant-numeric: tabular-nums; }
   .field { display: inline-block; min-width: 180px; padding: 3px 8px; border: 1px solid var(--line-hi);
     border-radius: var(--rs); background: var(--bg); color: var(--title); font-size: 12px; cursor: text; }
+  .field.focus { border-color: var(--accent); white-space: pre; }
+  .field .caret { display: inline-block; width: 1px; height: 1.1em; margin: 0 -0.5px; vertical-align: text-bottom;
+    background: var(--title); animation: caret 1s steps(1) infinite; }
+  @keyframes caret { 50% { opacity: 0; } }
   .addmenu { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .addmenu button { padding: 4px 10px; font-size: 11px; }
   .acts button.on { color: var(--accent); background: var(--accent-soft); }

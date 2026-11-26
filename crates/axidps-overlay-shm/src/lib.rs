@@ -12,7 +12,7 @@
 //! 12372 DLL -> host: the game's UI from MumbleLink (see `GameUi`): u32 bit 31 known | uiState,
 //!       u32 interface size (0 small .. 3 larger), u16 compass width, u16 compass height
 //! 12416 window table of buffer 0, 13504 of buffer 1 (see `Table`): u32 count, u32 edit_seq,
-//!       u32 table flags (`TABLE_HIDE_ZONES`), u32 pad, then per window name[16],
+//!       u32 table flags (`TABLE_HIDE_ZONES`, `TABLE_TEXT_FOCUS`), u32 pad, then per window name[16],
 //!       i32 atlas x/y/w/h, i32 sx/sy, i32 drag x/y/w/h, u32 flags, u8 radius, u8 blur, u16 pad
 //! 16384 frame buffers 0 and 1: max_w x max_h RGBA8 premultiplied, row stride max_w*4
 //! ```
@@ -54,6 +54,9 @@ pub const FLAG_MODAL: u32 = 2;
 /// Table flag: don't draw the game's UI areas in edit mode (the Layout window's switch). Clear
 /// in tables from hosts that predate it, so those show them.
 pub const TABLE_HIDE_ZONES: u32 = 1;
+/// Table flag: a text field in the modal window has focus. While it is set (and the modal is up),
+/// the DLL forwards keys as `kind::KEY` and keeps them from the game.
+pub const TABLE_TEXT_FOCUS: u32 = 2;
 
 /// Input kinds (DLL -> host).
 pub mod kind {
@@ -69,6 +72,9 @@ pub mod kind {
     pub const EDIT: u32 = 7;
     /// A modal window was dismissed: a click outside it, or Esc.
     pub const DISMISS: u32 = 8;
+    /// A key while a text field has focus: name = the character (UTF-8) or one of Backspace,
+    /// Delete, ArrowLeft, ArrowRight, Home, End, Enter, Escape.
+    pub const KEY: u32 = 9;
 }
 
 fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -177,7 +183,7 @@ impl Window {
 pub struct Table {
     /// The page's edit-mode requests: odd = on, even = off. The DLL follows changes.
     pub edit_seq: u32,
-    /// `TABLE_HIDE_ZONES`.
+    /// `TABLE_HIDE_ZONES`, `TABLE_TEXT_FOCUS`.
     pub flags: u32,
     pub windows: Vec<Window>,
 }
@@ -477,13 +483,24 @@ mod tests {
         w.set_name("meter");
         let t = Table {
             edit_seq: 3,
-            flags: TABLE_HIDE_ZONES,
+            flags: TABLE_HIDE_ZONES | TABLE_TEXT_FOCUS,
             windows: vec![w],
         };
         t.write(&mut shm, 1);
         assert_eq!(Table::read(&shm, 1), t);
         assert_eq!(Table::read(&shm, 1).windows[0].name(), "meter");
         assert_eq!(Table::read(&shm, 0), Table::default());
+    }
+
+    #[test]
+    fn key_input_round_trips() {
+        for name in ["a", "M", "é", "€", "Backspace", "ArrowRight"] {
+            let i = Input::new(kind::KEY, 0, 0.0, 0.0, 0.0).named(name);
+            let back = Input::decode(&i.encode());
+            assert_eq!(back, i);
+            assert_eq!(back.kind, kind::KEY);
+            assert_eq!(back.name(), name);
+        }
     }
 
     #[test]
