@@ -972,8 +972,8 @@ impl LiveStats {
             Some(id) => reg.is_squad(id),
             None => seen.get(&c).map_or_else(|| reg.is_squad(c), |s| s.0),
         };
-        // TODO(B1 Task 4): healing power is a gear stat that must not leave the core; Task 4
-        // decides where Regeneration's stack order gets it.
+        // Regeneration's stack order reads the agent table's healing field, which arcdps and our
+        // writer leave at 0 for every player: 0 is what axilog sees on both logs.
         self.boons.tick(now, &groups, &squad, &|_| 0);
     }
 

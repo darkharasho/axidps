@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use axilog_core::analysis::buffs::events::extract_buff_events_with_registry;
-use axilog_core::analysis::buffs::generation::{HeldSegment, run_sim};
+use axilog_core::analysis::buffs::generation::{HeldSegment, run_segments, run_sim};
 use axilog_core::analysis::buffs::simulator::capacity_for;
 use axilog_core::analysis::damage::InstidRegistry;
 use axilog_core::evtc::{RawEvent, RawHeader, RawLog};
@@ -43,6 +43,9 @@ struct Pair {
     /// Row 0 is the stack-id marker slot (sc 0 until any stack-active row is seen, then 27).
     log: RawLog,
     segments: Vec<HeldSegment>,
+    /// Regeneration only: the queue simulation axilog's uptime uses (its credit uses the healing
+    /// logic in `segments`).
+    up_segments: Option<Vec<HeldSegment>>,
     /// Some segment ends after the last clip: the totals still move without new rows.
     open: bool,
     /// Simulated since the last clip.
@@ -218,6 +221,7 @@ impl BoonTracker {
                 Pair {
                     log,
                     segments: Vec::new(),
+                    up_segments: None,
                     open: false,
                     fresh: false,
                     up: 0,
@@ -258,21 +262,24 @@ impl BoonTracker {
                 &BTreeSet::from([key.1]),
             );
             let capacity = self.capacities.get(&key.1).copied().unwrap_or(1);
-            pair.segments = run_sim(
-                events,
-                capacity,
-                INTENSITY.contains(&key.1),
-                FAR,
-                key.1 == REGENERATION,
-                &healing,
-            )
-            .segments;
+            let intensity = INTENSITY.contains(&key.1);
+            let regeneration = key.1 == REGENERATION;
+            pair.up_segments =
+                regeneration.then(|| run_segments(events.clone(), capacity, intensity, FAR));
+            pair.segments =
+                run_sim(events, capacity, intensity, FAR, regeneration, &healing).segments;
             pair.fresh = true;
         }
         for (&(_, boon), pair) in &mut self.pairs {
             if pair.fresh || pair.open {
-                (pair.up, pair.by_source) = clip(&pair.segments, now, INTENSITY.contains(&boon));
-                pair.open = pair.segments.iter().any(|s| s.end > now);
+                let intensity = INTENSITY.contains(&boon);
+                (pair.up, pair.by_source) = clip(&pair.segments, now, intensity);
+                let mut open = pair.segments.iter().any(|s| s.end > now);
+                if let Some(up) = &pair.up_segments {
+                    pair.up = clip(up, now, intensity).0;
+                    open |= up.iter().any(|s| s.end > now);
+                }
+                pair.open = open;
                 pair.fresh = false;
             }
         }
@@ -790,6 +797,21 @@ mod tests {
             g.get(2, REGENERATION)[3],
             want.get(&2).copied().unwrap_or(0)
         );
+    }
+
+    /// Regeneration's uptime is axilog's: its stack-count simulation queues stacks (only the
+    /// credit uses the healing logic), so held time follows the queue.
+    #[test]
+    fn regeneration_uptime_uses_the_queue() {
+        let mut f = Feed::new();
+        let reference = regen_feed(&mut f);
+        f.tick(60_000, &one_group);
+        let cap = capacity(REGENERATION);
+        let union = |segs: &[HeldSegment]| clip(segs, 60_000, false).0;
+        let queue = union(&run_segments(reference.clone(), cap, false, 60_000));
+        let healing = union(&run_sim(reference, cap, false, 60_000, true, &|_| 0).segments);
+        assert_ne!(queue, healing, "the case must tell the two apart");
+        assert_eq!(f.get(1, REGENERATION)[0], queue);
     }
 
     /// A 60 s fight with overlapping sources, removes and stack changes: ticking every second
