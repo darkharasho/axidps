@@ -29,6 +29,31 @@ pub fn find_dll_version(bytes: &[u8]) -> Option<String> {
         })
 }
 
+/// Prefix of the capability marker. DLLs that can do more than capture embed
+/// `axidps-dll-caps=<cap>[,<cap>...]\0`; older ones have no such marker.
+pub const CAPS_PREFIX: &[u8] = b"axidps-dll-caps=";
+
+/// The capability of a DLL that tells the launcher the game runs: under Wine it keeps
+/// [`crate::paths::game_marker_path`], on Windows it starts the launcher. Only with such a DLL in
+/// the game folder may the launcher stop starting at login.
+pub const CAP_STARTS_LAUNCHER: &str = "starts-launcher";
+
+/// Whether `bytes` (a DLL file) carries the capability `cap` in a [`CAPS_PREFIX`] marker.
+pub fn dll_has_cap(bytes: &[u8], cap: &str) -> bool {
+    let n = CAPS_PREFIX.len();
+    bytes
+        .windows(n)
+        .enumerate()
+        .filter(|(_, w)| *w == CAPS_PREFIX)
+        .any(|(i, _)| {
+            let rest = &bytes[i + n..];
+            let Some(end) = rest.iter().position(|&b| b == 0) else {
+                return false;
+            };
+            std::str::from_utf8(&rest[..end]).is_ok_and(|list| list.split(',').any(|c| c == cap))
+        })
+}
+
 /// The marker's export name. Builds since the version marker export it.
 pub const ID_EXPORT: &str = "AXIDPS_DLL_ID";
 
@@ -125,6 +150,18 @@ fn is_semver(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caps_marker_is_found_by_name() {
+        let dll = b"MZ junk axidps-dll-caps=other,starts-launcher\0 tail";
+        assert!(dll_has_cap(dll, CAP_STARTS_LAUNCHER));
+        assert!(dll_has_cap(dll, "other"));
+        assert!(!dll_has_cap(dll, "starts"));
+        // Older DLLs: only the version marker.
+        assert!(!dll_has_cap(b"MZ axidps-dll-version=0.2.0\0", CAP_STARTS_LAUNCHER));
+        // Unterminated: not a marker.
+        assert!(!dll_has_cap(b"axidps-dll-caps=starts-launcher", CAP_STARTS_LAUNCHER));
+    }
 
     #[test]
     fn finds_marker_version() {

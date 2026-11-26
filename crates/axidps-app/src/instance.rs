@@ -81,7 +81,9 @@ pub fn acquire(_dir: &std::path::Path) -> io::Result<Option<Instance>> {
 mod mutex {
     use std::io;
 
-    use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
+    use windows::Win32::Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError, HANDLE,
+    };
     use windows::Win32::System::Threading::CreateMutexW;
     use windows::core::HSTRING;
 
@@ -92,7 +94,13 @@ mod mutex {
             // SAFETY: plain Win32 calls; the name is a static NUL-terminated string.
             unsafe {
                 let name = HSTRING::from(axidps_protocol::paths::LAUNCHER_MUTEX);
-                let handle = CreateMutexW(None, false, &name).map_err(io::Error::other)?;
+                let handle = match CreateMutexW(None, false, &name) {
+                    Ok(handle) => handle,
+                    // Another launcher's, elevated (started by a game run as administrator):
+                    // it runs.
+                    Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => return Ok(None),
+                    Err(e) => return Err(io::Error::other(e)),
+                };
                 if GetLastError() == ERROR_ALREADY_EXISTS {
                     let _ = CloseHandle(handle);
                     return Ok(None);

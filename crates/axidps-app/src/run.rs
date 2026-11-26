@@ -147,6 +147,21 @@ struct Keeper<'a> {
     logged_kept_newer: bool,
     logged_granted_unwritable: bool,
     elevation_requested: bool,
+    /// Starts the elevated grant (`wait`: and waits for it); replaced in tests.
+    elevate: fn(&Path, bool) -> io::Result<bool>,
+}
+
+/// The platform's elevated `--grant-game-folder`; nothing to ask for off Windows.
+fn platform_elevate(game: &Path, wait: bool) -> io::Result<bool> {
+    #[cfg(windows)]
+    {
+        elevate::grant_game_folder(game, wait)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (game, wait);
+        Ok(false)
+    }
 }
 
 impl<'a> Keeper<'a> {
@@ -162,6 +177,7 @@ impl<'a> Keeper<'a> {
             logged_kept_newer: false,
             logged_granted_unwritable: false,
             elevation_requested: false,
+            elevate: platform_elevate,
         }
     }
 
@@ -246,14 +262,26 @@ impl<'a> Keeper<'a> {
             return false;
         }
         self.elevation_requested = true;
-        #[cfg(windows)]
-        match elevate::grant_game_folder(game, wait) {
-            Ok(granted) => return granted,
-            Err(e) => eprintln!("axidps: cannot ask for administrator access: {e}"),
+        match (self.elevate)(game, wait) {
+            Ok(granted) => granted,
+            Err(e) => {
+                eprintln!("axidps: cannot ask for administrator access: {e}");
+                false
+            }
         }
-        #[cfg(not(windows))]
-        let _ = (game, wait);
-        false
+    }
+
+    /// The game folder before the launcher quits with the game: one `ensure`, and if the folder
+    /// needs administrator access, a request that is waited for and then a second `ensure`. Asked
+    /// again even if this process asked before without waiting: once it is gone, nothing
+    /// installs until the game has started once more.
+    fn ensure_before_quit(&mut self, game: &Path) {
+        if self.ensure_once(game) == Some(Outcome::NeedsElevation) {
+            self.elevation_requested = false;
+            if self.request_elevation(game, true) {
+                self.ensure_once(game);
+            }
+        }
     }
 }
 
@@ -273,6 +301,45 @@ fn stop_requested(file: &Path) -> bool {
 
 /// How long a launcher started by an update waits for the old one to let go of the lock.
 const AFTER_UPDATE_WAIT: Duration = Duration::from_secs(60);
+
+/// Whether a launcher that did not get the lock tries again: one an update started, until
+/// `deadline`; one the path unit started (`from_game`), while the game marker exists.
+fn keep_waiting(now: Instant, deadline: Instant, from_game: bool, marker_up: bool) -> bool {
+    now < deadline || (from_game && marker_up)
+}
+
+/// Whether the DLL in the game folder `game` tells the launcher the game runs
+/// ([`axidps_protocol::ident::CAP_STARTS_LAUNCHER`]). Read again only when the file changes.
+#[derive(Default)]
+struct DllCaps {
+    seen: Option<(PathBuf, u64, Option<std::time::SystemTime>)>,
+    starts_launcher: bool,
+}
+
+impl DllCaps {
+    fn starts_launcher(&mut self, game: Option<&Path>) -> bool {
+        let Some(game) = game else {
+            return false;
+        };
+        let file = game.join("d3d11.dll");
+        let Ok(meta) = std::fs::metadata(&file) else {
+            self.seen = None;
+            self.starts_launcher = false;
+            return false;
+        };
+        let key = (file.clone(), meta.len(), meta.modified().ok());
+        if self.seen.as_ref() != Some(&key) {
+            self.starts_launcher = std::fs::read(&file).is_ok_and(|bytes| {
+                axidps_protocol::ident::dll_has_cap(
+                    &bytes,
+                    axidps_protocol::ident::CAP_STARTS_LAUNCHER,
+                )
+            });
+            self.seen = Some(key);
+        }
+        self.starts_launcher
+    }
+}
 
 /// Whether a launcher that got the lock only after waiting should exit at once: one the path
 /// unit started (`from_game`) whose game closed while another launcher ran. Not one an update
@@ -304,7 +371,7 @@ pub fn run(
     let mut waited = false;
     let lock = crate::instance::acquire_while(store.dir(), || {
         waited = true;
-        Instant::now() < deadline || (from_game && marker_up())
+        keep_waiting(Instant::now(), deadline, from_game, marker_up())
     });
     let _instance = match lock {
         Ok(Some(_)) if exit_after_wait(from_game, after_update, waited, marker_up()) => {
@@ -362,18 +429,28 @@ pub fn run(
     let mut next_tick = Instant::now();
     // The dialog is shown at most once per process.
     let mut asked = false;
-    let mut starter = Starter::new();
-    let lifetime = starter.keep();
-    if lifetime == Lifetime::WithGame {
+    #[cfg(unix)]
+    if from_game && autostart::session_env(|n| std::env::var_os(n)).is_empty() {
         eprintln!(
-            "axidps: runs while Guild Wars 2 runs{}",
-            if from_game {
-                " (started by the game)"
-            } else {
-                ""
-            }
+            "axidps: started by the game with no display (DISPLAY and WAYLAND_DISPLAY are unset in systemd --user); the overlay cannot open. Start AxiDPS once from AxiOM in your desktop session to fix this"
         );
     }
+    let mut starter = Starter::new();
+    let mut caps = DllCaps::default();
+    let mut lifetime = starter.keep(caps.starts_launcher(game.as_deref()));
+    let log_lifetime = |lifetime: Lifetime| {
+        if lifetime == Lifetime::WithGame {
+            eprintln!(
+                "axidps: runs while Guild Wars 2 runs{}",
+                if from_game {
+                    " (started by the game)"
+                } else {
+                    ""
+                }
+            );
+        }
+    };
+    log_lifetime(lifetime);
     let mut watch = GameWatch::new(lifetime, Instant::now());
     let mut next_game_look = Instant::now();
     while !stop.load(Ordering::SeqCst) {
@@ -393,7 +470,6 @@ pub fn run(
             if let Some(log) = &log {
                 log.maintain();
             }
-            starter.keep();
             if game.is_none() {
                 game = resolve_game(store);
             }
@@ -407,9 +483,20 @@ pub fn run(
             if let Some(dir) = &game
                 && !running
                 && keeper.ensure_once(dir) == Some(Outcome::NeedsElevation)
+                // With the game, the quit path asks (and waits); asking here too would show a
+                // second prompt while the first may still be up.
+                && lifetime == Lifetime::Always
             {
                 // Not waited for: the loop keeps supervising while the UAC prompt is up.
                 keeper.request_elevation(dir, false);
+            }
+            // After `ensure`: the DLL it just installed may be the first that starts the
+            // launcher.
+            let now_lifetime = starter.keep(caps.starts_launcher(game.as_deref()));
+            if now_lifetime != lifetime {
+                lifetime = now_lifetime;
+                log_lifetime(lifetime);
+                watch = GameWatch::new(lifetime, now);
             }
         }
         if now >= next_game_look {
@@ -470,12 +557,8 @@ fn finish_after_game(
     if gw2_running() {
         return false;
     }
-    if let Some(dir) = game
-        && keeper.ensure_once(dir) == Some(Outcome::NeedsElevation)
-        // Waited for: once this process is gone, nothing installs until the game has started.
-        && keeper.request_elevation(dir, true)
-    {
-        keeper.ensure_once(dir);
+    if let Some(dir) = game {
+        keeper.ensure_before_quit(dir);
     }
     if gw2_running() {
         return false;
@@ -489,8 +572,6 @@ fn finish_after_game(
 
 /// `--install-game`: one `ensure`, then done.
 pub fn install_game(layout: &Layout, store: &Store) -> ExitCode {
-    // So the game can start the launcher even before the launcher's first run.
-    Starter::new().keep();
     let Some(game) = resolve_game(store).or_else(|| ask_user(store)) else {
         println!("Guild Wars 2 was not found; the launcher asks for its folder at its next start.");
         return ExitCode::SUCCESS;
@@ -520,6 +601,9 @@ pub fn install_game(layout: &Layout, store: &Store) -> ExitCode {
         Some(_) => {}
         None => println!("The game folder was not changed; the launcher retries while it runs."),
     }
+    // So the game can start the launcher even before the launcher's first run, if the DLL now
+    // in the game folder can.
+    Starter::new().keep(DllCaps::default().starts_launcher(Some(&game)));
     if keeper.save_failed {
         return ExitCode::FAILURE;
     }
@@ -545,10 +629,16 @@ fn uninstall_in(game: &Path, store: &Store, game_running: bool) -> Result<(), St
     })
 }
 
-/// Stops the other launchers, then removes what starts them (units, autostart entry, launcher
-/// path). In that order: a running launcher would put the files back within 15 s, and its
+/// Disables the path unit, stops the other launchers, then removes what starts them (units,
+/// autostart entry, launcher path). In that order: the path unit would start a stopped launcher
+/// again while the game runs, a running launcher would put the files back within 15 s, and its
 /// `Starter` would write them back in between.
-fn quiet_launchers(stop_others: impl FnOnce(), remove_autostart: impl FnOnce() -> io::Result<()>) {
+fn quiet_launchers(
+    disable: impl FnOnce(),
+    stop_others: impl FnOnce(),
+    remove_autostart: impl FnOnce() -> io::Result<()>,
+) {
+    disable();
     stop_others();
     if let Err(e) = remove_autostart() {
         eprintln!("axidps: cannot remove what starts the launcher: {e}");
@@ -557,7 +647,11 @@ fn quiet_launchers(stop_others: impl FnOnce(), remove_autostart: impl FnOnce() -
 
 /// `--uninstall`.
 pub fn uninstall(store: &Store) -> ExitCode {
-    quiet_launchers(crate::game::stop_other_launchers, autostart::remove);
+    quiet_launchers(
+        autostart::disable,
+        crate::game::stop_other_launchers,
+        autostart::remove,
+    );
     let Some(game) = resolve_game(store) else {
         println!("Guild Wars 2 was not found; nothing to restore.");
         return ExitCode::SUCCESS;
@@ -737,13 +831,14 @@ mod tests {
     fn uninstall_stops_launchers_before_removing_autostart() {
         let order = std::cell::RefCell::new(Vec::new());
         quiet_launchers(
+            || order.borrow_mut().push("disable"),
             || order.borrow_mut().push("stop"),
             || {
                 order.borrow_mut().push("autostart");
                 Err(io::Error::other("ignored"))
             },
         );
-        assert_eq!(*order.borrow(), ["stop", "autostart"]);
+        assert_eq!(*order.borrow(), ["disable", "stop", "autostart"]);
     }
 
     #[test]
@@ -763,6 +858,64 @@ mod tests {
                 "/p/logs"
             ]
         );
+    }
+
+    #[test]
+    fn lock_wait_follows_the_deadline_and_the_marker() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(60);
+        // An update's launcher waits until the deadline.
+        assert!(keep_waiting(t0, later, false, false));
+        assert!(!keep_waiting(later, later, false, false));
+        // The game's launcher waits while the marker exists, and stops when it goes.
+        assert!(keep_waiting(later, t0, true, true));
+        assert!(!keep_waiting(later, t0, true, false));
+        // A manual start never waits for the marker.
+        assert!(!keep_waiting(later, t0, false, true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quit_path_asks_again_and_waits_after_an_earlier_request() {
+        use std::os::unix::fs::PermissionsExt;
+        let e = env();
+        fs::write(&e.layout.dll, OURS).unwrap();
+        fs::set_permissions(&e.game, fs::Permissions::from_mode(0o555)).unwrap();
+        let mut keeper = Keeper::new(&e.store, &e.layout, "0.2.0");
+        if fs::write(e.game.join("probe"), b"").is_ok() {
+            return; // running as root: nothing is denied
+        }
+        // The loop's request, not waited for.
+        assert_eq!(keeper.ensure_once(&e.game), Some(Outcome::NeedsElevation));
+        keeper.elevate = |_, _| Ok(false);
+        keeper.request_elevation(&e.game, false);
+        assert!(keeper.elevation_requested);
+        // The quit path's: waited for. The fake "grants" by making the folder writable.
+        thread_local!(static WAITED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+        keeper.elevate = |game, wait| {
+            WAITED.with(|w| w.set(wait));
+            fs::set_permissions(game, fs::Permissions::from_mode(0o755))?;
+            Ok(true)
+        };
+        keeper.ensure_before_quit(&e.game);
+        assert!(WAITED.with(|w| w.get()));
+        assert_eq!(fs::read(e.game.join("d3d11.dll")).unwrap(), OURS);
+    }
+
+    #[test]
+    fn dll_caps_follow_the_installed_file() {
+        let e = env();
+        let mut caps = DllCaps::default();
+        assert!(!caps.starts_launcher(None));
+        assert!(!caps.starts_launcher(Some(&e.game)));
+        fs::write(e.game.join("d3d11.dll"), OURS).unwrap();
+        assert!(!caps.starts_launcher(Some(&e.game)));
+        fs::write(
+            e.game.join("d3d11.dll"),
+            b"MZ axidps-dll-version=0.3.0\0 axidps-dll-caps=starts-launcher\0 more",
+        )
+        .unwrap();
+        assert!(caps.starts_launcher(Some(&e.game)));
     }
 
     #[test]
