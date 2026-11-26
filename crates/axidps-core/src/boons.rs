@@ -313,6 +313,55 @@ impl BoonTracker {
         self.totals.get(&player)
     }
 
+    /// The rows given so far under `from` are `to`'s: a player's rows from before its account
+    /// was known move to the account's id, as holder and as source.
+    pub fn rename(&mut self, from: u32, to: u32) {
+        if from == to {
+            return;
+        }
+        let (f, t) = (u64::from(from), u64::from(to));
+        let keys: Vec<(u32, u32)> = self.pairs.keys().copied().collect();
+        for key in keys {
+            let Some(pair) = self.pairs.get_mut(&key) else {
+                continue;
+            };
+            let mut changed = false;
+            for e in pair.log.events.iter_mut().skip(1) {
+                if e.src_agent == f {
+                    e.src_agent = t;
+                    changed = true;
+                }
+                // Stack-active and stack-reset rows carry an instance id there, not an agent.
+                if e.dst_agent == f && !matches!(e.is_statechange, STACK_ACTIVE | STACK_RESET) {
+                    e.dst_agent = t;
+                    changed = true;
+                }
+            }
+            if key.0 != from {
+                if changed {
+                    self.dirty.insert(key);
+                }
+                continue;
+            }
+            let Some(moved) = self.pairs.remove(&key) else {
+                continue;
+            };
+            self.dirty.remove(&key);
+            let new_key = (to, key.1);
+            match self.pairs.get_mut(&new_key) {
+                Some(have) => {
+                    have.log.events.extend(moved.log.events.into_iter().skip(1));
+                    // Rows in time order, as they would have arrived under one id.
+                    have.log.events[1..].sort_by_key(|e| e.time);
+                }
+                None => {
+                    self.pairs.insert(new_key, moved);
+                }
+            }
+            self.dirty.insert(new_key);
+        }
+    }
+
     #[cfg(test)]
     pub fn rows_held(&self) -> usize {
         self.pairs.len()
@@ -833,6 +882,21 @@ mod tests {
         assert_eq!(f.get(2, PROTECTION)[0], 2000);
         assert_eq!(f.get(3, QUICKNESS)[0], 5000);
         assert_eq!(f.get(1, PROTECTION)[3], 2000);
+    }
+
+    /// Rows under a raw id join the account id's own rows (holder and source), as one stream.
+    #[test]
+    fn rename_merges_rows() {
+        let mut f = Feed::new();
+        f.ev(1000, apply(7, 2, FURY, 1, 3000, true));
+        f.ev(1000, apply(1, 7, PROTECTION, 2, 2000, true));
+        f.ev(2000, apply(70, 2, FURY, 3, 4000, false));
+        f.tr.rename(7, 70);
+        f.tick(10_000, &|id| (id < ENEMY || id == 70).then_some(1));
+        // Fury on 70: 1000..4000 from the first stack, then the queued one to 8000.
+        assert_eq!(f.get(70, FURY)[0], 7000);
+        assert_eq!(f.get(70, PROTECTION)[3], 2000);
+        assert!(f.tr.totals(7).is_none());
     }
 
     #[test]

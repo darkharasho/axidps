@@ -2,7 +2,7 @@
 //! (or the last one), as schema v1 JSON, plus `timeline`: the squad's damage dealt (`out`) and
 //! taken (`in`) per `bucket_ms` of the fight, for the overlay's chart.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -293,6 +293,8 @@ pub struct LiveStats {
     by_account: BTreeMap<String, u32>,
     canon_of: BTreeMap<u32, u32>,
     live_of: BTreeMap<u32, u32>,
+    /// Ids the tracker holds rows under before their account was known.
+    uncanon: BTreeSet<u32>,
     /// Game time of the tracker's last tick.
     boon_tick: Option<u64>,
 }
@@ -340,6 +342,7 @@ impl LiveStats {
             by_account: BTreeMap::new(),
             canon_of: BTreeMap::new(),
             live_of: BTreeMap::new(),
+            uncanon: BTreeSet::new(),
             boon_tick: None,
         }
     }
@@ -519,6 +522,7 @@ impl LiveStats {
         self.last_timeline = Value::Null;
         self.last_healing = Value::Null;
         self.boons.clear();
+        self.uncanon.clear();
         self.boon_tick = None;
         // The stacks held at the start are the fight's first rows.
         let initial = self.buff_stacks.initial(start_ms);
@@ -813,6 +817,7 @@ impl LiveStats {
                     self.by_account.clear();
                     self.canon_of.clear();
                     self.live_of.clear();
+                    self.uncanon.clear();
                 }
                 self.boon_map = Some((map_id, shard));
             }
@@ -872,6 +877,10 @@ impl LiveStats {
         if self.canon_of.get(&id).is_some_and(|&old| old != c) {
             self.retire_account(id);
         }
+        if self.uncanon.remove(&id) {
+            // Rows fed before the account was known went in under the raw id.
+            self.boons.rename(id, c);
+        }
         self.canon_of.insert(id, c);
         self.live_of.insert(c, id);
     }
@@ -906,6 +915,11 @@ impl LiveStats {
                 }
                 STACK_ACTIVE | STACK_RESET => r.src = self.canon(r.src),
                 _ => continue,
+            }
+            for id in [r.src, r.dst] {
+                if id != 0 && id < ACCOUNT_IDS {
+                    self.uncanon.insert(id);
+                }
             }
             keep.push(r);
         }
@@ -2533,6 +2547,50 @@ mod tests {
                 .unwrap()
                 >= 2800
         );
+    }
+
+    /// Player 7's boons start before its account name arrives: they count for the account, as
+    /// holder and as source, once it does.
+    #[test]
+    fn boons_before_the_account_is_known_count_for_it() {
+        let mut p = processor();
+        let mut l = LiveStats::new();
+        for e in world_events() {
+            run(&mut p, &mut l, Step::Push(0, e));
+        }
+        run(&mut p, &mut l, Step::Push(0, add(7, 2)));
+        run(&mut p, &mut l, Step::Push(0, map_event()));
+        let enter = Event::Combat {
+            id: 1,
+            in_combat: true,
+        };
+        run(&mut p, &mut l, Step::Push(1000, enter));
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1500, boon_apply(7, 4, PROTECTION, 900, 600_000)),
+        );
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1500, boon_apply(1, 7, 1187, 901, 600_000)),
+        );
+        run(&mut p, &mut l, Step::Push(2000, strike(1, NPC, 400, 0)));
+        run(&mut p, &mut l, Step::Tick(2500));
+        let _ = l.snapshot(p.registry(), 0);
+        for e in name_events(7, NameField::Character, "Xena")
+            .into_iter()
+            .chain(name_events(7, NameField::Account, ":X.0001"))
+        {
+            run(&mut p, &mut l, Step::Push(3000, e));
+        }
+        run(&mut p, &mut l, Step::Push(4000, strike(1, NPC, 400, 0)));
+        run(&mut p, &mut l, Step::Tick(5000));
+        let v = l.snapshot(p.registry(), 0);
+        assert_eq!(v["state"], "fight");
+        let x = &player(&v, "Xena").unwrap()["boons"];
+        assert_eq!(x["717"][0], 3500);
+        assert_eq!(x["1187"][3], 3500);
     }
 
     /// A processor that saves any fight: one squad member and no minimum length.
