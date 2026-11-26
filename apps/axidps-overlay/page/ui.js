@@ -173,6 +173,7 @@ const ui = {
   update: null,        // the launcher's self-update status (host, from update-status.json)
   zones: [],           // the game's own UI (host, from MumbleLink): [{id, label, x, y, w, h}]
   notice: "",          // the hub's Windows tab note (a window that could not open)
+  text: null,          // the hub's focused name field: {id, value, caret, orig}; keys come from the DLL
 };
 // Persisted by the host in ~/.config/axidps/ui.json.
 // pos/open/cfg are keyed by window key (w.key: a plugin window's full id `<plugin>/<window>`,
@@ -364,6 +365,7 @@ function requestEdit(on) {
 }
 
 function renderAll() {
+  if (ui.text && !isOpen(hub)) endText(true); // the hub closed: keep what was typed
   applyCap();
   document.body.classList.toggle("editing", ui.editing);
   document.body.classList.toggle("compact", !!saved.compact);
@@ -436,7 +438,8 @@ function report() {
     const first = windows.filter(x => x.flags), rest = windows.filter(x => !x.flags);
     windows.splice(0, windows.length, ...first.concat(rest).slice(0, MAX_OPEN));
   }
-  const msg = JSON.stringify({windows, edit_seq: ui.editSeq, hide_zones: !!saved.hideZones});
+  const msg = JSON.stringify({windows, edit_seq: ui.editSeq, hide_zones: !!saved.hideZones,
+    text_focus: !!ui.text && isOpen(hub)});
   if (msg !== lastReport) { lastReport = msg; toHost(msg); }
 }
 
@@ -852,6 +855,35 @@ function updateSpec(id, patch) {
   saved.custom[i] = next;
   syncCustom(); save(); renderAll();
 }
+// The hub's name field: focus enters on a click in it (caret at the end) and leaves on Enter
+// (commit), Esc (cancel), a click elsewhere or the hub closing (commit).
+function startText(id) {
+  const spec = saved.custom.find(s => s.id === id);
+  if (!spec || (ui.text && ui.text.id === id)) return;
+  if (ui.text) endText(true);
+  ui.text = {id, value: spec.name, caret: spec.name.length, orig: spec.name};
+  renderAll();
+}
+function endText(commit) {
+  const t = ui.text;
+  if (!t) return;
+  ui.text = null;
+  if (commit && t.value !== t.orig) updateSpec(t.id, {name: t.value}); // empty: the default name
+  else renderAll();
+}
+function textKey(k) {
+  if (!ui.text) return;
+  const r = axidpsCustom.applyKey(ui.text, k);
+  if (r.done) { endText(r.done === "commit"); return; }
+  ui.text = Object.assign({}, ui.text, {value: r.value, caret: r.caret});
+  renderAll();
+}
+const nameField = spec => {
+  const t = ui.text && ui.text.id === spec.id ? ui.text : null;
+  if (!t) return `<span class="field" data-cact="name">${esc(spec.name)}</span>`;
+  return `<span class="field focus" data-cact="name">${esc(t.value.slice(0, t.caret))}<i class="caret"></i>` +
+    `${esc(t.value.slice(t.caret))}</span>`;
+};
 // The history keeps chart series only for the stats an open chart window draws.
 function trackCharts() {
   const keys = new Set();
@@ -1085,7 +1117,7 @@ function customCard(spec, full, filterOpen) {
   const sortName = spec.sort.key === "name" ? "Name" : STATS[spec.sort.key].label;
   return `<div class="tbl cw" data-c="${spec.id}"><div class="tbl-h"><b>${esc(spec.name)}</b><span class="grow"></span>` +
     `<button data-cact="copy"${full ? " disabled" : ""}>Copy</button><button data-cact="del">Remove</button></div>` +
-    crow("Name", `<span class="field" data-cact="name">${esc(spec.name)}</span>`) +
+    crow("Name", nameField(spec)) +
     crow("Rows", seg("rows", spec.rows)) +
     crow("Who", seg("who", spec.who.base) + `<div class="chips">${filters}</div>`) +
     crow("Span", seg("span", spec.span)) +
@@ -1104,7 +1136,8 @@ function renderBuilder(w) {
   const tables = wins.filter(x => x.def.table);
   if (full) w.addMenu = false;
   const feedSpecs = w.filterOpen ? players().map(p => p.spec).join() : "";
-  const key = JSON.stringify([saved.custom, tables.map(t => t.id + t.def.blurb[0]), w.filterOpen || "", !!w.addMenu, feedSpecs]);
+  const key = JSON.stringify([saved.custom, tables.map(t => t.id + t.def.blurb[0]), w.filterOpen || "", !!w.addMenu, feedSpecs,
+    ui.text]);
   if (w.builderKey === key) return;
   w.builderKey = key;
   w.body.querySelector(".tbls").innerHTML = tables.map(t => builtinCard(t, full)).join("") +
@@ -1137,7 +1170,7 @@ function builderAct(hw, b) {
   const stats = spec.stats.map(s => Object.assign({}, s));
   const chip = b.closest("[data-i]"), i = chip ? Number(chip.dataset.i) : -1;
   switch (act) {
-    case "name": return; // typing arrives with the keyboard forwarding (focus the field here)
+    case "name": return startText(id);
     case "del":
       if (hw.filterOpen === id) hw.filterOpen = "";
       return removeCustom(id);
@@ -1245,6 +1278,12 @@ const hub = defineWindow({
       `<span class="tog"><i></i></span></div></section>` +
       `</main></div>`;
     const q = sel => w.body.querySelector(sel);
+    // A click anywhere in the hub but the focused name field ends the typing (keeps it) first.
+    w.body.addEventListener("click", e => {
+      const f = ui.text && e.target.closest && e.target.closest('[data-cact="name"]');
+      const card = f && f.closest("[data-c]");
+      if (ui.text && !(card && card.dataset.c === ui.text.id)) endText(true);
+    }, true);
     q("nav").onclick = e => {
       const t = e.target.closest("[data-tab]");
       if (t) { w.tab = t.dataset.tab; w.def.render(w); paintIcons(w.el); scheduleReport(); }
@@ -1435,9 +1474,15 @@ window.axidps = {
     save();
     renderAll();
   },
-  // A click outside the hub, or Esc (the DLL's modal handling).
+  // A click outside the hub, or Esc (the DLL's modal handling). While the name field has focus Esc
+  // arrives as a key instead; a click outside then only ends the typing.
   dismiss() {
+    if (ui.text) { endText(true); return; }
     if (ui.session.hub) setOpen(hub, false);
+  },
+  // A key for the focused name field (DLL, while the page reports text_focus).
+  key(k) {
+    textKey(k);
   },
   // The v1 meter position from the DLL's ini, used only if the layout has none yet.
   legacy(x, y) {

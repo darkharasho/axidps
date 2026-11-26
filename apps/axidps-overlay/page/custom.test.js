@@ -363,3 +363,43 @@ test("history returning player counts from inside the span", () => {
   assert.strictEqual(byName(v, "A").damage, 10000);
   assert.strictEqual(byName(v, "B").damage, 8500);
 });
+
+test("applyKey inserts at the caret", () => {
+  assert.deepStrictEqual(C.applyKey({ value: "xy", caret: 1 }, "a"), { value: "xay", caret: 2, done: null });
+  assert.deepStrictEqual(C.applyKey({ value: "", caret: 0 }, "é"), { value: "é", caret: 1, done: null });
+});
+
+test("applyKey Backspace and Delete", () => {
+  assert.deepStrictEqual(C.applyKey({ value: "xy", caret: 0 }, "Backspace"), { value: "xy", caret: 0, done: null });
+  assert.deepStrictEqual(C.applyKey({ value: "xy", caret: 2 }, "Backspace"), { value: "x", caret: 1, done: null });
+  assert.deepStrictEqual(C.applyKey({ value: "xy", caret: 2 }, "Delete"), { value: "xy", caret: 2, done: null });
+  assert.deepStrictEqual(C.applyKey({ value: "xy", caret: 0 }, "Delete"), { value: "y", caret: 0, done: null });
+});
+
+test("applyKey moves and clamps the caret", () => {
+  const k = (caret, key) => C.applyKey({ value: "abc", caret }, key).caret;
+  assert.strictEqual(k(1, "ArrowLeft"), 0);
+  assert.strictEqual(k(0, "ArrowLeft"), 0);
+  assert.strictEqual(k(1, "ArrowRight"), 2);
+  assert.strictEqual(k(3, "ArrowRight"), 3);
+  assert.strictEqual(k(2, "Home"), 0);
+  assert.strictEqual(k(1, "End"), 3);
+  assert.strictEqual(k(9, "ArrowLeft"), 2, "an out-of-range caret is clamped first");
+});
+
+test("applyKey Enter commits and Escape cancels", () => {
+  assert.deepStrictEqual(C.applyKey({ value: "ab", caret: 1 }, "Enter"), { value: "ab", caret: 1, done: "commit" });
+  assert.deepStrictEqual(C.applyKey({ value: "ab", caret: 1 }, "Escape"), { value: "ab", caret: 1, done: "cancel" });
+});
+
+test("applyKey refuses past NAME_MAX", () => {
+  const full = "x".repeat(C.NAME_MAX);
+  assert.deepStrictEqual(C.applyKey({ value: full, caret: 3 }, "y"), { value: full, caret: 3, done: null });
+  assert.strictEqual(C.applyKey({ value: full.slice(1), caret: 0 }, "y").value.length, C.NAME_MAX);
+});
+
+test("applyKey ignores unknown keys and strings", () => {
+  for (const key of ["F1", "Tab", "ab", "\u0007", "\u007f", "", null, 5]) {
+    assert.deepStrictEqual(C.applyKey({ value: "ab", caret: 1 }, key), { value: "ab", caret: 1, done: null }, String(key));
+  }
+});

@@ -398,7 +398,29 @@ const axidpsCustom = (() => {
 
   const blankSpec = id => normalizeSpec({}, id);
 
+  // One key in a name field (the DLL forwards them while the field has focus): a character to
+  // insert at the caret, or an editing key. done: "commit" (Enter), "cancel" (Escape) or null.
+  // Characters are single UTF-16 units (the DLL drops the rest); the value stays <= NAME_MAX.
+  const KEY_RE = /^[^\u0000-\u001f\u007f-\u009f\ud800-\udfff]$/;
+  function applyKey(field, key) {
+    const value = String(field.value);
+    let caret = Math.max(0, Math.min(value.length, Math.floor(Number(field.caret)) || 0));
+    const out = (v, c, done = null) => ({value: v, caret: c, done});
+    switch (key) {
+      case "Backspace": return caret ? out(value.slice(0, caret - 1) + value.slice(caret), caret - 1) : out(value, caret);
+      case "Delete": return out(value.slice(0, caret) + value.slice(caret + 1), caret);
+      case "ArrowLeft": return out(value, Math.max(0, caret - 1));
+      case "ArrowRight": return out(value, Math.min(value.length, caret + 1));
+      case "Home": return out(value, 0);
+      case "End": return out(value, value.length);
+      case "Enter": return out(value, caret, "commit");
+      case "Escape": return out(value, caret, "cancel");
+    }
+    if (typeof key !== "string" || !KEY_RE.test(key) || value.length >= NAME_MAX) return out(value, caret);
+    return out(value.slice(0, caret) + key + value.slice(caret), caret + 1);
+  }
+
   return {STATS, BASE_KEYS, MAX_CUSTOM, MAX_STATS, NAME_MAX, SPANS, LOOKS,
-    filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec, createHistory};
+    filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec, createHistory, applyKey};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsCustom;

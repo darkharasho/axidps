@@ -150,7 +150,7 @@ impl Shm {
 
 /// The page's window report: `{"windows":[{name, ax, ay, w, h, sx, sy, drag:[x,y,w,h], flags,
 /// r (corner radius), blur (0-3)}],
-/// "edit_seq": n, "hide_zones": bool}`.
+/// "edit_seq": n, "hide_zones": bool, "text_focus": bool}`.
 fn parse_windows(v: &serde_json::Value) -> Option<Table> {
     let i = |o: &serde_json::Value, k: &str| o.get(k).and_then(|x| x.as_i64()).map(|x| x as i32);
     let list = v.get("windows")?.as_array()?;
@@ -185,10 +185,17 @@ fn parse_windows(v: &serde_json::Value) -> Option<Table> {
             windows.push(w);
         }
     }
-    let hide = v.get("hide_zones").and_then(|x| x.as_bool()) == Some(true);
+    let on = |k: &str| v.get(k).and_then(|x| x.as_bool()) == Some(true);
+    let mut flags = 0;
+    if on("hide_zones") {
+        flags |= fmt::TABLE_HIDE_ZONES;
+    }
+    if on("text_focus") {
+        flags |= fmt::TABLE_TEXT_FOCUS;
+    }
     Some(Table {
         edit_seq: i(v, "edit_seq").unwrap_or(0) as u32,
-        flags: if hide { fmt::TABLE_HIDE_ZONES } else { 0 },
+        flags,
         windows,
     })
 }
@@ -833,6 +840,11 @@ impl App {
                     Self::js(st, "axidps.dismiss()".into());
                     continue;
                 }
+                fmt::kind::KEY if loaded => {
+                    let name = serde_json::to_string(i.name()).unwrap_or_default();
+                    Self::js(st, format!("axidps.key({name})"));
+                    continue;
+                }
                 fmt::kind::LEGACY_POS if loaded => {
                     Self::js(st, format!("axidps.legacy({}, {})", i.x, i.y));
                     continue;
@@ -1224,6 +1236,28 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn parse_windows_reads_table_flags() {
+        let flags = |v: serde_json::Value| parse_windows(&v).map(|t| t.flags);
+        assert_eq!(flags(serde_json::json!({"windows": []})), Some(0));
+        assert_eq!(
+            flags(serde_json::json!({"windows": [], "hide_zones": true})),
+            Some(fmt::TABLE_HIDE_ZONES)
+        );
+        assert_eq!(
+            flags(serde_json::json!({"windows": [], "text_focus": true})),
+            Some(fmt::TABLE_TEXT_FOCUS)
+        );
+        assert_eq!(
+            flags(serde_json::json!({"windows": [], "hide_zones": true, "text_focus": true})),
+            Some(fmt::TABLE_HIDE_ZONES | fmt::TABLE_TEXT_FOCUS)
+        );
+        assert_eq!(
+            flags(serde_json::json!({"windows": [], "text_focus": 1})),
+            Some(0)
+        );
     }
 
     #[test]
