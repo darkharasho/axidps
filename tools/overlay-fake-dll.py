@@ -122,12 +122,37 @@ def composite(shm, path, dim=False):
     return wins
 
 
+# The squad boons, as the feed sends them: {"<id>": [up, self, group, squad]} in ms (stack-ms for
+# Might and Stability), nonzero ones only. Players 0 and 1 are the supports.
+DEMO_BOONS = [740, 725, 1187, 30328, 717, 718, 726, 743, 1122, 719, 26980, 873, 5974]
+DEMO_INTENSITY = {740: 18, 1122: 2}
+
+
+def demo_boons(i, ms):
+    out = {}
+    for j, b in enumerate(DEMO_BOONS):
+        up = (0.95 - 0.06 * ((i + j) % 9)) * ms
+        if (i * 5 + j) % 11 == 0:
+            up = 0
+        give = 0.6 if i < 2 else 0.05 * (j % 3)
+        row = [up, up * give * 0.4, ms * give * 0.8, ms * give * 0.45]
+        k = DEMO_INTENSITY.get(b, 1)
+        row = [int(x * k) for x in row]
+        if any(row):
+            out[str(b)] = row
+    return out
+
+
 def demo_live(path, t):
     names = ["Sentinel Vael", "Darkpaw", "Ironwake", "Morrow Kestrel", "Brannoc", "Ysolde Tam", "Oren"]
     ps = [dict(name=n, account=n.split()[0] + ".1234", prof=1 + i, elite=0, group=1 + i % 2, me=i == 3,
                damage=(900000 - i * 90000) * t // 60, power=0, condi=0, dps=(900000 - i * 90000) / 60.0,
                downs=i % 3, kills=i % 2, deaths=0, downed=i % 2, taken=300000 - i * 10000,
                strips=10 - i, cleanses=3 + i) for i, n in enumerate(names)]
+    for i, p in enumerate(ps):
+        p_boons = demo_boons(i, t * 1000)
+        if p_boons:
+            p["boons"] = p_boons
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(dict(v=1, t=int(time.time() * 1000), state="fight",
