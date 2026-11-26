@@ -101,3 +101,21 @@ test("specFromBuiltin", () => {
   const o = specFromBuiltin({ title: "S", cols: ["cleanses"], cfg: { cols: ["strips"] } }, "c2");
   assert.deepStrictEqual(o.stats.map(x => x.key), ["strips"]);
 });
+
+test("normalizeSpec accepts every schema value", () => {
+  for (const b of ["squad", "group", "me"]) assert.strictEqual(normalizeSpec({ who: { base: b } }, "c1").who.base, b);
+  assert.strictEqual(normalizeSpec({ who: { base: "all" } }, "c1").who.base, "squad");
+  for (const r of ["players", "total"]) assert.strictEqual(normalizeSpec({ rows: r }, "c1").rows, r);
+  assert.strictEqual(normalizeSpec({ rows: "x" }, "c1").rows, "players");
+  for (const a of ["total", "per_s", "share"]) assert.strictEqual(normalizeSpec({ stats: [{ key: "damage", as: a }] }, "c1").stats[0].as, a);
+  assert.strictEqual(normalizeSpec({ stats: [{ key: "damage", as: "x" }] }, "c1").stats[0].as, "total");
+  assert.strictEqual(normalizeSpec({ stats: [{ key: "hps", as: "total" }] }, "c1").stats[0].as, "per_s");
+});
+
+test("migrateTables gives default columns when none are valid", () => {
+  for (const cfg of [{}, { cols: ["nope"] }]) {
+    const saved = { tables: [{ id: "t2", title: "X" }], cfg: { t2: cfg } };
+    migrateTables(saved);
+    assert.deepStrictEqual(saved.custom[0].stats, [{ key: "damage", as: "total" }, { key: "dps", as: "per_s" }]);
+  }
+});
