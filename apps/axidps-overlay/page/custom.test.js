@@ -192,3 +192,166 @@ test("limit falls back to maxRows", () => {
   const r = computeRows(mk({ stats: [{ key: "damage" }] }), { players: fixture(), seconds: 1 }, String, 3);
   assert.strictEqual(r.rows.length, 3);
 });
+
+// ---- history ----
+const { createHistory } = C;
+const feed = (state, ms, players) => ({
+  v: 1, t: ms, state, fight: state === "idle" ? null : { duration_ms: ms },
+  players: players.map(p => Object.assign({ account: p.name.toLowerCase(), prof: 1, elite: 0, spec: "Firebrand",
+    group: 1, me: false, heal_full: false }, p)),
+  timeline: [], healing: null,
+});
+const byName = (v, n) => v.players.find(p => p.name === n);
+const fightTo = (h, end, players, state = "fight") => {
+  for (let ms = 0; ms <= end; ms += 500) h.push(feed(state, ms, players(ms)));
+};
+
+test("history last:10", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => [{ name: "A", damage: ms / 10 }]);
+  const v = h.view("last:10");
+  assert.strictEqual(byName(v, "A").damage, 1000);
+  assert.strictEqual(v.seconds, 10);
+  assert.strictEqual(byName(v, "A").account, "a");
+  assert.strictEqual(byName(v, "A").spec, "Firebrand");
+  assert.strictEqual(h.view("fight"), null);
+});
+test("history last:N early", () => {
+  const h = createHistory();
+  fightTo(h, 4000, ms => [{ name: "A", damage: ms / 10 }]);
+  const v = h.view("last:10");
+  assert.strictEqual(v.seconds, 4);
+  assert.strictEqual(byName(v, "A").damage, 400);
+});
+test("history after the fight", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => [{ name: "A", damage: ms / 10 }]);
+  for (let i = 0; i < 4; i++) h.push(feed("last", 30000, [{ name: "A", damage: 3000 }]));
+  assert.strictEqual(byName(h.view("last:10"), "A").damage, 1000);
+});
+test("history joiner counts from first snapshot", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => ms < 25000 ? [{ name: "A", damage: ms }]
+    : [{ name: "A", damage: ms }, { name: "B", damage: 50 + (ms - 25000) * 40 / 5000 }]);
+  assert.strictEqual(byName(h.view("last:10"), "B").damage, 40);
+});
+test("history leaver dropped", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => ms <= 20000 ? [{ name: "A", damage: ms }, { name: "B", damage: ms }] : [{ name: "A", damage: ms }]);
+  assert.strictEqual(byName(h.view("last:10"), "B"), undefined);
+  assert.ok(byName(h.view("last:10"), "A"));
+});
+test("history no negatives", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => [{ name: "A", damage: ms <= 20000 ? 900 : 100 }]);
+  assert.strictEqual(byName(h.view("last:10"), "A").damage, 0);
+});
+test("history new fight clears ring", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => [{ name: "A", damage: ms }, { name: "B", damage: ms }]);
+  h.push(feed("last", 30000, [{ name: "A", damage: 30000 }, { name: "B", damage: 30000 }]));
+  h.push(feed("fight", 0, [{ name: "A", damage: 0 }]));
+  h.push(feed("fight", 500, [{ name: "A", damage: 7 }]));
+  const v = h.view("last:60");
+  assert.strictEqual(v.players.length, 1);
+  assert.strictEqual(byName(v, "A").damage, 7);
+  assert.strictEqual(v.seconds, 0.5);
+});
+test("history session", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => [{ name: "A", damage: ms / 30 }]);
+  for (let i = 0; i < 3; i++) h.push(feed("last", 30000, [{ name: "A", damage: 1000 }]));
+  h.push(feed("idle", 0, []));
+  fightTo(h, 5000, ms => [{ name: "A", damage: ms / 25 }]);
+  const v = h.view("session");
+  assert.strictEqual(byName(v, "A").damage, 1200);
+  assert.strictEqual(v.seconds, 35);
+  assert.strictEqual(byName(v, "A").name, "A");
+});
+test("history session without a clean end", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => [{ name: "A", damage: ms / 30 }]);
+  h.push(null);
+  h.push(feed("fight", 500, [{ name: "A", damage: 0 }]));
+  const v = h.view("session");
+  assert.strictEqual(byName(v, "A").damage, 1000);
+  assert.strictEqual(v.seconds, 30.5);
+});
+test("history session restart", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => [{ name: "A", damage: ms / 30 }]);
+  h.push(feed("fight", 1000, [{ name: "A", damage: 10 }]));
+  h.push(feed("fight", 2000, [{ name: "A", damage: 20 }]));
+  const v = h.view("session");
+  assert.strictEqual(byName(v, "A").damage, 1020);
+  assert.strictEqual(v.seconds, 32);
+});
+test("history clearSession and clear", () => {
+  const h = createHistory();
+  fightTo(h, 30000, ms => [{ name: "A", damage: ms / 30 }]);
+  h.push(feed("last", 30000, [{ name: "A", damage: 1000 }]));
+  h.clear();
+  assert.strictEqual(h.view("last:10").players.length, 0);
+  assert.strictEqual(byName(h.view("session"), "A").damage, 1000);
+  h.clearSession();
+  const v = h.view("session");
+  assert.strictEqual(v.seconds, 0);
+  assert.deepStrictEqual(v.players, []);
+});
+test("history clearSession mid-fight counts from now", () => {
+  const h = createHistory();
+  fightTo(h, 10000, ms => [{ name: "A", damage: ms / 10 }]);
+  h.clearSession();
+  for (let ms = 10500; ms <= 20000; ms += 500) h.push(feed("fight", ms, [{ name: "A", damage: ms / 10 }]));
+  h.push(feed("last", 20000, [{ name: "A", damage: 2000 }]));
+  const v = h.view("session");
+  assert.strictEqual(byName(v, "A").damage, 1000);
+  assert.strictEqual(v.seconds, 10);
+});
+test("history series", () => {
+  const h = createHistory();
+  h.track(new Set(["damage"]));
+  fightTo(h, 3000, ms => [{ name: "A", damage: ms / 10 }, { name: "B", damage: ms / 20 }]);
+  const s = h.series(["damage"], ps => ps);
+  assert.strictEqual(s.step, 1000);
+  assert.strictEqual(s.t0, 0);
+  assert.deepStrictEqual(s.values[0], [150, 150, 150]);
+  assert.deepStrictEqual(h.series(["damage"], ps => ps.filter(p => p.name === "A")).values[0], [100, 100, 100]);
+  assert.deepStrictEqual(h.series(["damage"], ps => filterWho(ps, { base: "squad", filters: ["spec:Firebrand"] })).values[0], [150, 150, 150]);
+  assert.deepStrictEqual(h.series(["healing"], ps => ps).values[0], [0, 0, 0]);
+  h.track(new Set());
+  assert.deepStrictEqual(h.series(["damage"], ps => ps).values[0], [0, 0, 0]);
+});
+test("history series cap", () => {
+  const h = createHistory();
+  h.track(new Set(["damage"]));
+  for (let s = 0; s < 4000; s++) h.push(feed("fight", s * 1000, [{ name: "A", damage: s }]));
+  const r = h.series(["damage"], ps => ps);
+  assert.strictEqual(r.values[0].length, 3600);
+  assert.strictEqual(r.t0, 399000);
+  assert.ok(r.values[0].every(x => x === 1));
+});
+test("history budget", () => {
+  const h = createHistory();
+  h.track(new Set(["damage", "healing"]));
+  const keys = C.BASE_KEYS;
+  const players = ms => Array.from({ length: 50 }, (_, i) => {
+    const p = { name: "P" + i, group: 1 + (i % 10), me: i === 0 };
+    keys.forEach((k, j) => { p[k] = (ms / 1000) * (i + j + 1); });
+    return p;
+  });
+  for (let ms = 0; ms <= 3600000; ms += 500) h.push(feed("fight", ms, players(ms)));
+  assert.ok(h.bytes() < 10e6, `bytes ${h.bytes()}`);
+  assert.ok(h.bytes() > 0);
+  const all = Object.keys(C.STATS);
+  const specs = Array.from({ length: 8 }, (_, i) => normalizeSpec({
+    stats: all.slice(i, i + 8).concat(all).slice(0, 8).map(key => ({ key, as: i % 2 ? "share" : "total" })),
+    span: "last:60",
+  }, "c" + (i + 1)));
+  const render = () => { for (const s of specs) computeRows(s, h.view(s.span), String, 50); };
+  for (let i = 0; i < 20; i++) render();
+  const t = performance.now();
+  for (let i = 0; i < 200; i++) render();
+  const mean = (performance.now() - t) / 200;
+  assert.ok(mean < 1, `mean ${mean} ms`);
+});
