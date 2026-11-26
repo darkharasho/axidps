@@ -3292,7 +3292,7 @@ mod tests {
         for &id in &ids {
             l.event(1, &strike(id, NPC, 100, 0));
         }
-        let mut sim = crate::boons::tests::Traffic::new(0x9e37_79b9_7f4a_7c15, ids.clone(), ENEMY);
+        let mut sim = crate::boons::tests::Traffic::new(9_377_917, ids.clone(), ENEMY);
         let (mut costs, mut base) = (Vec::new(), Vec::new());
         let (mut events, mut feeds) = (0usize, 0usize);
         for t in (100..=fight_ms).step_by(100) {

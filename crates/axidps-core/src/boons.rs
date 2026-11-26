@@ -1595,7 +1595,7 @@ pub(crate) mod tests {
     /// gives what simulating everything gives, for intensity, queue and healing-ordered boons.
     #[test]
     fn probe_resumes_like_the_full_run() {
-        let mut seed = 0x51f1_5eedu64;
+        let mut seed = 5_115_511u64;
         let mut rnd = |n: u64| {
             seed ^= seed << 13;
             seed ^= seed >> 7;
@@ -1682,7 +1682,7 @@ pub(crate) mod tests {
     fn checkpoints_equal_full_resimulation() {
         for healing in [0i16, 1] {
             let players: Vec<u32> = (10..22).collect();
-            let mut traffic = Traffic::new(0x7357_c0de, players.clone(), ENEMY);
+            let mut traffic = Traffic::new(7_357, players.clone(), ENEMY);
             let mut stacks = Stacks::default();
             let (mut a, mut b) = (BoonTracker::new(), BoonTracker::new());
             b.checkpoints = false;
