@@ -41,13 +41,9 @@ pub const APPIMAGE_LINK: &str = "axidps.AppImage";
 /// launcher the service starts can open the overlay window. Imported only when the session has
 /// a display (`DISPLAY` or `WAYLAND_DISPLAY`).
 #[cfg_attr(windows, allow(dead_code))]
-pub const SESSION_ENV: [&str; 5] = [
-    "DISPLAY",
-    "WAYLAND_DISPLAY",
-    "XAUTHORITY",
-    "XDG_RUNTIME_DIR",
-    "DBUS_SESSION_BUS_ADDRESS",
-];
+/// Not `XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS`: the user manager has its own, and a
+/// launcher started from ssh or a sandbox could replace them for every user service.
+pub const SESSION_ENV: [&str; 3] = ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"];
 
 /// Runs `systemctl --user <args>`: `Ok(true)` when it exited 0, `Err` when it cannot run.
 #[cfg_attr(windows, allow(dead_code))]
@@ -262,9 +258,20 @@ struct LinuxIn<'a> {
     session: &'a [&'a str],
 }
 
-/// Sets (`Some(exe)`) or deletes (`None`) the launcher's login `Run` value on Windows.
+/// The launcher's login `Run` value on Windows (`HKCU\...\Run`, value `axidps`).
 #[cfg_attr(unix, allow(dead_code))]
-pub type RunKey<'a> = &'a dyn Fn(Option<&Path>) -> io::Result<()>;
+pub trait RunValue {
+    /// The value's text, `None` when it is not there.
+    fn get(&self) -> Option<String>;
+    /// Writes `Some(text)` or deletes (`None`) the value.
+    fn set(&self, value: Option<&str>) -> io::Result<()>;
+}
+
+/// The `Run` value text that starts `exe`, as the installer writes it.
+#[cfg_attr(unix, allow(dead_code))]
+pub fn run_value_for(exe: &Path) -> String {
+    format!("\"{}\"", exe.display())
+}
 
 /// Keeps the launcher's start right while it runs: called once at start and then every check.
 /// Once [`Lifetime::WithGame`], a process stays so; [`Lifetime::Always`] becomes `WithGame` as
@@ -324,7 +331,7 @@ impl Starter {
                 dir.as_deref(),
                 exe.as_deref(),
                 dll_starts_launcher,
-                &win::set_run_key,
+                &win::Registry,
             )
         }
     }
@@ -428,7 +435,7 @@ impl Starter {
         config_dir: Option<&Path>,
         exe: Option<&Path>,
         dll_starts_launcher: bool,
-        run_key: RunKey,
+        run: &dyn RunValue,
     ) -> Lifetime {
         let written = match (config_dir, exe) {
             (Some(dir), Some(exe)) => write_if_changed(
@@ -448,7 +455,13 @@ impl Starter {
         let with_game = self.with_game || starts;
         // Kept while the game folder's DLL cannot start the launcher, even in a process that
         // already runs with the game (an older DLL was put back).
-        let key = if starts { run_key(None) } else { run_key(exe) };
+        // Written only when it differs, so the registry is not rewritten every check.
+        let want = if starts { None } else { exe.map(run_value_for) };
+        let key = if run.get() == want {
+            Ok(())
+        } else {
+            run.set(want.as_deref())
+        };
         if let Err(e) = key {
             self.log_once(|| format!("cannot update the login start: {e}"));
         } else if written.is_ok() {
@@ -462,42 +475,78 @@ impl Starter {
 #[cfg(windows)]
 mod win {
     use std::io;
-    use std::path::Path;
 
     use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
     use windows::Win32::System::Registry::{
-        HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW,
+        HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
     };
-    use windows::core::w;
+    use windows::core::{PCWSTR, w};
+
+    const KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    const NAME: PCWSTR = w!("axidps");
 
     /// `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `axidps` (the installer's).
-    pub fn set_run_key(exe: Option<&Path>) -> io::Result<()> {
-        let key = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        let name = w!("axidps");
-        // SAFETY: plain registry calls; every string is NUL-terminated and outlives the call.
-        let status = unsafe {
-            match exe {
-                Some(exe) => {
-                    let data: Vec<u16> = format!("\"{}\"", exe.display())
-                        .encode_utf16()
-                        .chain(std::iter::once(0))
-                        .collect();
-                    RegSetKeyValueW(
-                        HKEY_CURRENT_USER,
-                        key,
-                        name,
-                        REG_SZ.0,
-                        Some(data.as_ptr().cast()),
-                        (data.len() * 2) as u32,
-                    )
+    pub struct Registry;
+
+    impl super::RunValue for Registry {
+        fn get(&self) -> Option<String> {
+            let mut size = 0u32;
+            // SAFETY: plain registry calls; the buffer is as large as the size passed.
+            unsafe {
+                let probe = RegGetValueW(
+                    HKEY_CURRENT_USER,
+                    KEY,
+                    NAME,
+                    RRF_RT_REG_SZ,
+                    None,
+                    None,
+                    Some(&mut size),
+                );
+                if probe.is_err() {
+                    return None;
                 }
-                None => RegDeleteKeyValueW(HKEY_CURRENT_USER, key, name),
+                let mut buf = vec![0u16; (size as usize).div_ceil(2)];
+                let read = RegGetValueW(
+                    HKEY_CURRENT_USER,
+                    KEY,
+                    NAME,
+                    RRF_RT_REG_SZ,
+                    None,
+                    Some(buf.as_mut_ptr().cast()),
+                    Some(&mut size),
+                );
+                if read.is_err() {
+                    return None;
+                }
+                let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                Some(String::from_utf16_lossy(&buf[..len]))
             }
-        };
-        if status.is_ok() || (exe.is_none() && status == ERROR_FILE_NOT_FOUND) {
-            Ok(())
-        } else {
-            Err(io::Error::from_raw_os_error(status.0 as i32))
+        }
+
+        fn set(&self, value: Option<&str>) -> io::Result<()> {
+            // SAFETY: plain registry calls; every string is NUL-terminated and outlives the call.
+            let status = unsafe {
+                match value {
+                    Some(text) => {
+                        let data: Vec<u16> =
+                            text.encode_utf16().chain(std::iter::once(0)).collect();
+                        RegSetKeyValueW(
+                            HKEY_CURRENT_USER,
+                            KEY,
+                            NAME,
+                            REG_SZ.0,
+                            Some(data.as_ptr().cast()),
+                            (data.len() * 2) as u32,
+                        )
+                    }
+                    None => RegDeleteKeyValueW(HKEY_CURRENT_USER, KEY, NAME),
+                }
+            };
+            if status.is_ok() || (value.is_none() && status == ERROR_FILE_NOT_FOUND) {
+                Ok(())
+            } else {
+                Err(io::Error::from_raw_os_error(status.0 as i32))
+            }
         }
     }
 }
@@ -536,7 +585,13 @@ pub fn remove() -> io::Result<()> {
             }
             None => Ok(()),
         };
-        path.and(win::set_run_key(None))
+        use RunValue as _;
+        let key = if win::Registry.get().is_some() {
+            win::Registry.set(None)
+        } else {
+            Ok(())
+        };
+        path.and(key)
     }
 }
 
@@ -808,12 +863,12 @@ mod tests {
     fn a_graphical_session_is_imported_before_enabling() {
         let tmp = tempfile::tempdir().unwrap();
         let fake = Fake::new(works);
-        let session = ["WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"];
+        let session = ["WAYLAND_DISPLAY", "XAUTHORITY"];
         keep_with(&mut Starter::new(), tmp.path(), EXEC, true, &session, &fake);
         assert_eq!(
             fake.take(),
             [
-                "import-environment WAYLAND_DISPLAY XDG_RUNTIME_DIR",
+                "import-environment WAYLAND_DISPLAY XAUTHORITY",
                 "daemon-reload",
                 "enable --now axidps-launch.path"
             ]
@@ -826,11 +881,16 @@ mod tests {
             move |n: &str| set.contains(&n).then(|| std::ffi::OsString::from("x"))
         };
         assert_eq!(
-            session_env(env(&["DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"])),
-            ["DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"]
+            session_env(env(&[
+                "DISPLAY",
+                "XAUTHORITY",
+                "XDG_RUNTIME_DIR",
+                "DBUS_SESSION_BUS_ADDRESS"
+            ])),
+            ["DISPLAY", "XAUTHORITY"]
         );
         assert_eq!(session_env(env(&["WAYLAND_DISPLAY"])), ["WAYLAND_DISPLAY"]);
-        assert!(session_env(env(&["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"])).is_empty());
+        assert!(session_env(env(&["XAUTHORITY", "XDG_RUNTIME_DIR"])).is_empty());
         assert!(session_env(|_| Some("".into())).is_empty());
     }
 
@@ -965,52 +1025,77 @@ mod tests {
         assert!(tmp.path().join("systemd/user").join(PATH_UNIT).exists());
     }
 
+    /// A fake `Run` value that records writes.
+    #[derive(Default)]
+    struct FakeRun {
+        value: RefCell<Option<String>>,
+        writes: RefCell<Vec<Option<String>>>,
+    }
+
+    impl RunValue for FakeRun {
+        fn get(&self) -> Option<String> {
+            self.value.borrow().clone()
+        }
+        fn set(&self, value: Option<&str>) -> io::Result<()> {
+            *self.value.borrow_mut() = value.map(str::to_owned);
+            self.writes.borrow_mut().push(value.map(str::to_owned));
+            Ok(())
+        }
+    }
+
     #[test]
     fn windows_login_start_is_kept_until_the_dll_starts_the_launcher() {
         let tmp = tempfile::tempdir().unwrap();
         let exe = Path::new(r"C:\Users\u\AppData\Local\Programs\axidps\axidps.exe");
-        let key: RefCell<Vec<Option<PathBuf>>> = RefCell::new(Vec::new());
-        let run_key = |e: Option<&Path>| -> io::Result<()> {
-            key.borrow_mut().push(e.map(Path::to_path_buf));
-            Ok(())
+        let value = run_value_for(exe);
+        assert_eq!(
+            value,
+            r#""C:\Users\u\AppData\Local\Programs\axidps\axidps.exe""#
+        );
+        // As the installer left it.
+        let run = FakeRun {
+            value: RefCell::new(Some(value.clone())),
+            ..FakeRun::default()
         };
         let mut s = Starter::new();
-        // An older DLL: the path is written for later, the Run value stays.
+        // An older DLL: the path is written for later, the Run value stays (and is not
+        // rewritten).
         assert_eq!(
-            s.keep_windows(Some(tmp.path()), Some(exe), false, &run_key),
+            s.keep_windows(Some(tmp.path()), Some(exe), false, &run),
             Lifetime::Always
         );
-        assert_eq!(key.take(), [Some(exe.to_path_buf())]);
+        assert!(run.writes.take().is_empty());
         let file = tmp.path().join(axidps_protocol::paths::LAUNCHER_PATH_FILE);
         let text = std::fs::read_to_string(&file).unwrap();
         assert_eq!(
             axidps_protocol::paths::parse_launcher_path(&text).as_deref(),
             Some(exe)
         );
-        // The new DLL is in: the Run value goes.
+        // The new DLL is in: the Run value goes, once.
         assert_eq!(
-            s.keep_windows(Some(tmp.path()), Some(exe), true, &run_key),
+            s.keep_windows(Some(tmp.path()), Some(exe), true, &run),
             Lifetime::WithGame
         );
-        assert_eq!(key.take(), [None]);
+        assert_eq!(run.writes.take(), [None]);
         let before = std::fs::metadata(&file).unwrap().modified().unwrap();
-        s.keep_windows(Some(tmp.path()), Some(exe), true, &run_key);
+        s.keep_windows(Some(tmp.path()), Some(exe), true, &run);
+        assert!(run.writes.take().is_empty());
         assert_eq!(
             std::fs::metadata(&file).unwrap().modified().unwrap(),
             before
         );
-        key.take();
         // An older DLL put back: the Run value returns, the process still quits with the game.
         assert_eq!(
-            s.keep_windows(Some(tmp.path()), Some(exe), false, &run_key),
+            s.keep_windows(Some(tmp.path()), Some(exe), false, &run),
             Lifetime::WithGame
         );
-        assert_eq!(key.take(), [Some(exe.to_path_buf())]);
+        assert_eq!(run.writes.take(), [Some(value.clone())]);
         // No config folder: nothing can start it with the game, so the login start stays.
+        let fresh = FakeRun::default();
         assert_eq!(
-            Starter::new().keep_windows(None, Some(exe), true, &run_key),
+            Starter::new().keep_windows(None, Some(exe), true, &fresh),
             Lifetime::Always
         );
-        assert_eq!(key.take(), [Some(exe.to_path_buf())]);
+        assert_eq!(fresh.writes.take(), [Some(value)]);
     }
 }
