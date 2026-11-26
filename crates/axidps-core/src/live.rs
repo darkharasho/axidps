@@ -295,6 +295,8 @@ pub struct LiveStats {
     live_of: BTreeMap<u32, u32>,
     /// Ids the tracker holds rows under before their account was known.
     uncanon: BTreeSet<u32>,
+    /// Per account id: whether it was squad, and its subgroup, when last seen this fight.
+    boon_seen: BTreeMap<u32, (bool, Option<u8>)>,
     /// Game time of the tracker's last tick.
     boon_tick: Option<u64>,
 }
@@ -343,6 +345,7 @@ impl LiveStats {
             canon_of: BTreeMap::new(),
             live_of: BTreeMap::new(),
             uncanon: BTreeSet::new(),
+            boon_seen: BTreeMap::new(),
             boon_tick: None,
         }
     }
@@ -523,6 +526,7 @@ impl LiveStats {
         self.last_healing = Value::Null;
         self.boons.clear();
         self.uncanon.clear();
+        self.boon_seen.clear();
         self.boon_tick = None;
         // The stacks held at the start are the fight's first rows.
         let initial = self.buff_stacks.initial(start_ms);
@@ -863,6 +867,15 @@ impl LiveStats {
         self.canon_of.get(&id).copied().unwrap_or(id)
     }
 
+    /// The tracker id a row's boons are under: its account's, unless another live id stands for
+    /// the account now (that row shows them).
+    fn boon_id(&self, id: u32, account: &str) -> u32 {
+        match self.by_account.get(account) {
+            Some(&c) if self.live_of.get(&c).is_none_or(|&l| l == id) => c,
+            _ => self.canon(id),
+        }
+    }
+
     /// Remember which account `id` is, once the registry knows it. An account's id for the
     /// tracker is its own number (above every live id), so a reused live id never meets it.
     fn note_account(&mut self, reg: &Registry, id: u32) {
@@ -934,10 +947,31 @@ impl LiveStats {
             _ => {}
         }
         self.boon_tick = Some(now);
+        for (&c, &id) in &self.live_of {
+            if let Some(a) = reg.agent(id) {
+                self.boon_seen.insert(c, (reg.is_squad(id), a.subgroup));
+            }
+        }
         let live_of = &self.live_of;
-        let live = |c: u32| live_of.get(&c).copied().unwrap_or(c);
-        let groups = |c: u32| reg.agent(live(c)).and_then(|a| a.subgroup);
-        let squad = |c: u32| reg.is_squad(live(c));
+        let seen = &self.boon_seen;
+        // A player who left keeps the squad and subgroup it had (axilog keeps every player of
+        // the log as a holder, source and target).
+        let here = |c: u32| {
+            live_of
+                .get(&c)
+                .copied()
+                .filter(|&id| reg.agent(id).is_some())
+        };
+        let groups = |c: u32| match here(c) {
+            Some(id) => reg.agent(id).and_then(|a| a.subgroup),
+            None => seen
+                .get(&c)
+                .map_or_else(|| reg.agent(c).and_then(|a| a.subgroup), |s| s.1),
+        };
+        let squad = |c: u32| match here(c) {
+            Some(id) => reg.is_squad(id),
+            None => seen.get(&c).map_or_else(|| reg.is_squad(c), |s| s.0),
+        };
         // TODO(B1 Task 4): healing power is a gear stat that must not leave the core; Task 4
         // decides where Regeneration's stack order gets it.
         self.boons.tick(now, &groups, &squad, &|_| 0);
@@ -1225,7 +1259,7 @@ impl LiveStats {
             let dps = per_s(damage);
             let boons: serde_json::Map<String, Value> = self
                 .boons
-                .totals(self.canon(id))
+                .totals(self.boon_id(id, &who.account))
                 .into_iter()
                 .flatten()
                 .filter(|(_, v)| v.iter().any(|&n| n > 0))
@@ -2591,6 +2625,54 @@ mod tests {
         let x = &player(&v, "Xena").unwrap()["boons"];
         assert_eq!(x["717"][0], 3500);
         assert_eq!(x["1187"][3], 3500);
+    }
+
+    /// Player 7 leaves mid-fight: its boons, the credit it gave and the credit it got stay, as
+    /// axilog counts every player of the log.
+    #[test]
+    fn departed_players_keep_their_boons() {
+        let mut p = processor();
+        let mut l = LiveStats::new();
+        for e in world_events() {
+            run(&mut p, &mut l, Step::Push(0, e));
+        }
+        for e in named(7, 2, "Xena", ":X.0001") {
+            run(&mut p, &mut l, Step::Push(0, e));
+        }
+        run(&mut p, &mut l, Step::Push(0, map_event()));
+        let enter = Event::Combat {
+            id: 1,
+            in_combat: true,
+        };
+        run(&mut p, &mut l, Step::Push(1000, enter));
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1000, boon_apply(7, 4, PROTECTION, 900, 2000)),
+        );
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(1000, boon_apply(1, 7, 1187, 901, 2000)),
+        );
+        run(&mut p, &mut l, Step::Push(1500, strike(7, NPC, 400, 0)));
+        run(&mut p, &mut l, Step::Tick(2000));
+        let _ = l.snapshot(p.registry(), 0);
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(2500, Event::AgentRemove { id: 7 }),
+        );
+        run(&mut p, &mut l, Step::Push(4000, strike(1, NPC, 400, 0)));
+        run(&mut p, &mut l, Step::Tick(5000));
+        let v = l.snapshot(p.registry(), 0);
+        assert_eq!(v["state"], "fight");
+        assert_eq!(
+            player(&v, "Xena").unwrap()["boons"],
+            json!({"717": [2000, 0, 0, 0], "1187": [0, 0, 0, 2000]})
+        );
+        assert_eq!(player(&v, "Char 4").unwrap()["boons"]["717"][3], 2000);
+        assert_eq!(player(&v, "Char 1").unwrap()["boons"]["1187"][0], 2000);
     }
 
     /// A processor that saves any fight: one squad member and no minimum length.
