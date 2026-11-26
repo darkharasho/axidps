@@ -1095,7 +1095,8 @@ function filterChoices(spec) {
   for (const f of specs.map(x => "spec:" + x).concat(spec.who.filters)) if (!out.includes(f)) out.push(f);
   return out;
 }
-const seg = (f, cur) => `<div class="seg" data-f="${f}">` + SEG_TEXT[f].map(([v, t]) =>
+// only: the values offered (default: all of them).
+const seg = (f, cur, only) => `<div class="seg" data-f="${f}">` + SEG_TEXT[f].filter(([v]) => !only || only.includes(v)).map(([v, t]) =>
   `<button data-cact="set" data-v="${v}"${v === cur ? ' class="on"' : ""}>${t}</button>`).join("") + `</div>`;
 const crow = (label, body) => `<div class="crow"><span>${label}</span><div>${body}</div></div>`;
 
@@ -1160,7 +1161,8 @@ function customCard(spec, full, filterOpen, boonOpen, note) {
     crow("Rows", seg("rows", spec.rows)) +
     crow("Who", seg("who", spec.who.base) + `<div class="chips">${filters}</div>`) +
     crow("Span", seg("span", spec.span)) +
-    crow("Look", seg("look", spec.look)) +
+    // A boons window is a table.
+    crow("Look", seg("look", spec.look, boons ? ["table"] : null)) +
     crow("Stats", chipsHtml) +
     (note ? `<div class="cnote">${esc(note)}</div>` : "") +
     crow("Sort", `<button data-cact="sortkey" data-tip="sort by the name or one of its stats">${esc(sortName)}</button>` +
@@ -1222,9 +1224,12 @@ function builderAct(hw, b) {
     case "name": return startText(id);
     case "del":
       if (hw.filterOpen === id) hw.filterOpen = "";
+      if (hw.boonOpen && hw.boonOpen.id === id) hw.boonOpen = null;
       return removeCustom(id);
     case "set": {
       const f = b.closest("[data-f]").dataset.f;
+      // A boons window or a chart has no per-boon picker to leave open.
+      if (hw.boonOpen && hw.boonOpen.id === id && (f === "rows" && v === "boons" || f === "look" && v === "chart")) hw.boonOpen = null;
       if (f === "who") return updateSpec(id, {who: {base: v, filters: spec.who.filters}});
       const next = updateSpec(id, {[f]: v});
       // Say what the change took away.
