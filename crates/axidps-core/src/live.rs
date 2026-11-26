@@ -10,6 +10,11 @@ use std::time::{Duration, Instant};
 use axidps_protocol::v2::{AgentKind, AgentState, Event};
 use serde_json::{Value, json};
 
+use crate::boons::{self, BoonTracker, SQUAD_BOONS};
+use crate::buffs::{
+    self, BUFF_APPLY, BUFF_DURATION, BUFF_INITIAL, BUFF_REMOVE_ALL, BUFF_REMOVE_ONE, STACK_ACTIVE,
+    STACK_RESET,
+};
 use crate::processor::{FightOutcome, Processor};
 use crate::registry::Registry;
 use crate::replay::Step;
@@ -271,6 +276,22 @@ pub struct LiveStats {
     wvw: bool,
     /// The local player, as the registry last knew it.
     pov: Option<u32>,
+    /// Boon uptime and generation this fight, fed from `buff_stacks`' rows.
+    boons: BoonTracker,
+    /// Our own copy of the buff stacks (the processor's rows are not kept), in and out of fights.
+    buff_stacks: buffs::Stacks,
+    /// The map the stacks and roster belong to (ids are reused per map).
+    boon_map: Option<(u32, u32)>,
+    /// Agent -> (is a player, team) from the poll, to leave enemy holders out of the tracker.
+    roster: BTreeMap<u32, (bool, u32)>,
+    roster_pov: Option<u32>,
+    /// One id per account for the tracker: agent -> first id seen with its account, and back to
+    /// the account's current id.
+    by_account: BTreeMap<String, u32>,
+    canon_of: BTreeMap<u32, u32>,
+    live_of: BTreeMap<u32, u32>,
+    /// Game time of the tracker's last tick.
+    boon_tick: Option<u64>,
 }
 
 impl Default for LiveStats {
@@ -308,6 +329,15 @@ impl LiveStats {
             counting: Counting::default(),
             wvw: false,
             pov: None,
+            boons: BoonTracker::new(),
+            buff_stacks: buffs::Stacks::default(),
+            boon_map: None,
+            roster: BTreeMap::new(),
+            roster_pov: None,
+            by_account: BTreeMap::new(),
+            canon_of: BTreeMap::new(),
+            live_of: BTreeMap::new(),
+            boon_tick: None,
         }
     }
 
@@ -485,6 +515,11 @@ impl LiveStats {
         self.last_rows.clear();
         self.last_timeline = Value::Null;
         self.last_healing = Value::Null;
+        self.boons.clear();
+        self.boon_tick = None;
+        // The stacks held at the start are the fight's first rows.
+        let initial = self.buff_stacks.initial(start_ms);
+        self.feed_boons(start_ms, initial);
         self.generation += 1;
     }
 
@@ -502,7 +537,9 @@ impl LiveStats {
             return;
         }
         self.now_ms = end_ms.max(self.start_ms);
+        self.tick_boons(reg, true);
         self.last_rows = self.rows(reg);
+        self.boons.clear();
         self.last_timeline = self.timeline();
         self.last_healing = self.healing(reg);
         self.heal_out.clear();
@@ -609,7 +646,7 @@ impl LiveStats {
     /// Count one live event at game time `t`. Ignored outside a fight.
     pub fn event(&mut self, t: u64, ev: &Event) {
         self.track_masters(ev);
-        let removed = self.track_stacks(ev);
+        let removed = self.track_stacks(t, ev);
         if self.state == LiveState::Idle
             && matches!(
                 ev,
@@ -760,8 +797,126 @@ impl LiveStats {
         }
     }
 
+    /// Keep our stack copy, the roster and the map current (in and out of fights), and feed the
+    /// rows a stack event wrote to the boon tracker while a fight records.
+    fn track_boons(&mut self, t: u64, ev: &Event) {
+        match *ev {
+            Event::Map { map_id, shard, .. } => {
+                if self.boon_map.is_some_and(|m| m != (map_id, shard)) {
+                    // Instance ids are reused per map.
+                    self.buff_stacks.clear();
+                    self.roster.clear();
+                    self.roster_pov = None;
+                    self.by_account.clear();
+                    self.canon_of.clear();
+                    self.live_of.clear();
+                }
+                self.boon_map = Some((map_id, shard));
+            }
+            Event::AgentAdd { id, kind, team, .. } => {
+                self.roster.insert(id, (kind == AgentKind::Player, team));
+            }
+            Event::Pov { id } => self.roster_pov = Some(id),
+            Event::AgentRemove { id } => {
+                self.roster.remove(&id);
+                self.buff_stacks.forget_agent(id);
+            }
+            Event::BuffApply { .. }
+            | Event::BuffRemove { .. }
+            | Event::BuffRemoveAll { .. }
+            | Event::BuffStack { .. } => {
+                let rows = self.buff_stacks.apply(t, ev);
+                if self.state == LiveState::Fight {
+                    self.feed_boons(t, rows);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether `id` can not be a squad player: a pet, an NPC, or a player on another team than the
+    /// POV. An agent not seen yet, or a player not named yet, may still turn out to be squad.
+    fn foreign(&self, id: u32) -> bool {
+        match self.roster.get(&id) {
+            None => false,
+            Some(&(player, team)) => {
+                !player
+                    || self
+                        .roster_pov
+                        .and_then(|p| self.roster.get(&p))
+                        .is_some_and(|&(_, pt)| pt != team)
+            }
+        }
+    }
+
+    /// One id per account, so a rejoining player keeps its boons.
+    fn canon(&self, id: u32) -> u32 {
+        self.canon_of.get(&id).copied().unwrap_or(id)
+    }
+
+    /// Remember which account `id` is, once the registry knows it.
+    fn note_account(&mut self, reg: &Registry, id: u32) {
+        let Some(a) = reg.agent(id) else {
+            return;
+        };
+        if a.kind != AgentKind::Player || a.account.is_empty() {
+            return;
+        }
+        let c = *self.by_account.entry(a.account.clone()).or_insert(id);
+        self.canon_of.insert(id, c);
+        self.live_of.insert(c, id);
+    }
+
+    /// Give the tracker `rows` written at `t`: sources resolved to their master and to one id per
+    /// account, holders that can not be squad left out (the tracker keeps every row it gets, and
+    /// a big fight has hundreds of enemy holders).
+    fn feed_boons(&mut self, t: u64, rows: Vec<buffs::Row>) {
+        let mut keep = Vec::new();
+        for mut r in rows {
+            let squad_boon = SQUAD_BOONS.contains(&r.skill);
+            let holder = boons::owner(&r);
+            if !squad_boon || self.foreign(holder) {
+                continue;
+            }
+            let source = |s: &Self, id: u32| if id == 0 { 0 } else { s.canon(s.owner(id)) };
+            match r.statechange {
+                BUFF_INITIAL | BUFF_APPLY => {
+                    r.src = source(self, r.src);
+                    r.dst = self.canon(r.dst);
+                }
+                BUFF_DURATION => r.dst = self.canon(r.dst),
+                BUFF_REMOVE_ONE | BUFF_REMOVE_ALL => {
+                    r.src = self.canon(r.src);
+                    r.dst = source(self, r.dst);
+                }
+                STACK_ACTIVE | STACK_RESET => r.src = self.canon(r.src),
+                _ => continue,
+            }
+            keep.push(r);
+        }
+        self.boons.rows(t, &keep);
+    }
+
+    /// Bring the boon totals to the latest game time: at most once a second, or `force`d.
+    fn tick_boons(&mut self, reg: &Registry, force: bool) {
+        let now = self.now_ms;
+        match self.boon_tick {
+            Some(last) if last == now || (!force && now < last + 1000) => return,
+            _ => {}
+        }
+        self.boon_tick = Some(now);
+        let live_of = &self.live_of;
+        let live = |c: u32| live_of.get(&c).copied().unwrap_or(c);
+        let groups = |c: u32| reg.agent(live(c)).and_then(|a| a.subgroup);
+        let squad = |c: u32| reg.is_squad(live(c));
+        // TODO(B1 Task 4): healing power is a gear stat that must not leave the core; Task 4
+        // decides where Regeneration's stack order gets it.
+        self.boons.tick(now, &groups, &squad, &|_| 0);
+    }
+
     /// Keep the instance map current; a removal returns (remover, target, buff, stacks removed).
-    fn track_stacks(&mut self, ev: &Event) -> Option<(u32, u32, u32, u64)> {
+    fn track_stacks(&mut self, t: u64, ev: &Event) -> Option<(u32, u32, u32, u64)> {
+        self.track_boons(t, ev);
         match *ev {
             Event::BuffApply {
                 dst, buff, inst, ..
@@ -807,6 +962,19 @@ impl LiveStats {
         }
         if let Some(start) = current {
             if self.state != LiveState::Fight {
+                // The poll may have named agents before this core was watching.
+                let reg = p.registry();
+                for a in reg.live_agents() {
+                    if let Some(team) = a.team {
+                        self.roster
+                            .entry(a.id)
+                            .or_insert((a.kind == AgentKind::Player, team));
+                    }
+                    self.note_account(reg, a.id);
+                }
+                if let Some(id) = reg.pov() {
+                    self.roster_pov = Some(id);
+                }
                 self.begin(start, p.map_id().unwrap_or(0));
             } else if self.map == 0
                 && let Some(m) = p.map_id()
@@ -819,12 +987,15 @@ impl LiveStats {
         if let Some(id) = p.registry().pov() {
             self.pov = Some(id);
         }
+        if let Some(Event::AgentAdd { id, .. } | Event::AgentName { id, .. }) = ev {
+            self.note_account(p.registry(), id);
+        }
         if let Some(ev) = ev
             && let Some(t) = time
         {
             if self.skips(p.registry(), &ev) {
                 self.track_masters(&ev);
-                self.track_stacks(&ev);
+                self.track_stacks(t, &ev);
             } else {
                 self.event(t, &ev);
             }
@@ -970,6 +1141,9 @@ impl LiveStats {
     /// Rows for the squad members in `reg` and everyone with numbers who was last seen as one,
     /// highest damage first.
     fn rows(&mut self, reg: &Registry) -> Vec<Value> {
+        if self.state == LiveState::Fight {
+            self.tick_boons(reg, false);
+        }
         let mut ids: std::collections::BTreeSet<u32> = self.acc.keys().copied().collect();
         ids.extend(
             reg.live_agents()
@@ -1016,9 +1190,15 @@ impl LiveStats {
                 }
             };
             let dps = per_s(damage);
-            rows.push((
-                damage,
-                json!({
+            let boons: serde_json::Map<String, Value> = self
+                .boons
+                .totals(self.canon(id))
+                .into_iter()
+                .flatten()
+                .filter(|(_, v)| v.iter().any(|&n| n > 0))
+                .map(|(b, v)| (b.to_string(), json!(v)))
+                .collect();
+            let mut row = json!({
                     "name": who.name,
                     "account": who.account,
                     "prof": who.prof,
@@ -1046,8 +1226,11 @@ impl LiveStats {
                     // Complete for the POV and for players sharing their heals; for anyone
                     // else it is what the best-informed sharer saw.
                     "heal_full": heal_full,
-                }),
-            ));
+            });
+            if !boons.is_empty() {
+                row["boons"] = Value::Object(boons);
+            }
+            rows.push((damage, row));
         }
         rows.sort_by_key(|r| std::cmp::Reverse(r.0));
         rows.into_iter().map(|(_, v)| v).collect()
@@ -2054,7 +2237,134 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         want.sort();
+        // `boons` is optional (only players with a boon have it), keyed by squad boon id.
+        got.retain(|k| k != "boons");
         assert_eq!(got, want);
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(1000, &boon_apply(1, 4, PROTECTION, 900, 2000));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        let boons = v["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["boons"].as_object())
+            .flatten()
+            .map(|(k, _)| k.parse::<u32>().unwrap())
+            .collect::<Vec<_>>();
+        assert!(!boons.is_empty());
+        assert!(boons.iter().all(|b| SQUAD_BOONS.contains(b)));
+    }
+
+    fn boon_apply(dst: u32, src: u32, buff: u32, inst: u32, duration: u32) -> Event {
+        Event::BuffApply {
+            dst,
+            src,
+            buff,
+            inst,
+            duration,
+            level: 0,
+            active: true,
+        }
+    }
+
+    const PROTECTION: u32 = 717;
+
+    /// Boons are cumulative ms per player: [up, self, group, squad]. Player 4 (group 2) protects
+    /// player 1 (group 3) for 2 s: up for 1, squad-wide generation for 4.
+    #[test]
+    fn feed_carries_cumulative_boons() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(1000, &boon_apply(1, 4, PROTECTION, 900, 2000));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        assert_eq!(
+            player(&v, "Char 1").unwrap()["boons"],
+            json!({"717": [2000, 0, 0, 0]})
+        );
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 0, 2000]})
+        );
+    }
+
+    #[test]
+    fn minion_boons_credit_the_master() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.set_master(PET, 4);
+        l.begin(0, 38);
+        l.event(1000, &boon_apply(1, PET, PROTECTION, 900, 2000));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        assert_eq!(
+            player(&v, "Char 4").unwrap()["boons"],
+            json!({"717": [0, 0, 0, 2000]})
+        );
+    }
+
+    #[test]
+    fn feed_omits_empty_boons() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        // An enemy holds it and a non-squad boon on a squad player does not count.
+        l.event(1000, &boon_apply(ENEMY, 4, PROTECTION, 900, 2000));
+        l.event(1000, &boon_apply(1, 4, 736, 901, 2000));
+        l.advance(5000);
+        let v = l.snapshot(&r, 1);
+        assert!(player(&v, "Char 1").unwrap().get("boons").is_none());
+        assert!(player(&v, "Char 4").unwrap().get("boons").is_none());
+    }
+
+    /// Rows of holders known to be enemies or pets never reach the tracker.
+    #[test]
+    fn foreign_holders_are_not_tracked() {
+        let mut l = LiveStats::new();
+        for e in world_events() {
+            l.event(0, &e);
+        }
+        l.begin(0, 38);
+        l.event(1000, &boon_apply(ENEMY, 4, PROTECTION, 900, 2000));
+        l.event(1000, &boon_apply(NPC, 4, PROTECTION, 901, 2000));
+        l.event(1000, &boon_apply(1, 4, PROTECTION, 902, 2000));
+        assert_eq!(l.boons.rows_held(), 1);
+    }
+
+    /// 50 players holding the 13 squad boons add at most 40 KB to the feed.
+    #[test]
+    fn boons_feed_size_is_bounded() {
+        let mut r = Registry::new();
+        let mut l = LiveStats::new();
+        for id in 10..60u32 {
+            for e in squad_events(id, (id % 5 + 1) as u8) {
+                r.apply(0, &e);
+            }
+        }
+        r.apply(0, &Event::Pov { id: 10 });
+        l.begin(0, 38);
+        let mut inst = 1000;
+        for id in 10..60u32 {
+            for &b in &SQUAD_BOONS {
+                inst += 1;
+                let src = 10 + (id - 9) % 50;
+                l.event(1000, &boon_apply(id, src, b, inst, 600_000));
+            }
+        }
+        l.advance(600_000);
+        let v = l.snapshot(&r, 1);
+        let with: usize = v["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| serde_json::to_string(&p["boons"]).unwrap().len())
+            .sum();
+        assert!(with > 0, "boons are present");
+        assert!(with <= 40_000, "boons take {with} bytes");
+        println!("boons bytes: {with}");
     }
 
     /// A processor that saves any fight: one squad member and no minimum length.

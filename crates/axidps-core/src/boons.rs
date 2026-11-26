@@ -100,7 +100,7 @@ fn capacity(boon: u32) -> u32 {
 }
 
 /// The stack's holder.
-fn owner(r: &Row) -> u32 {
+pub fn owner(r: &Row) -> u32 {
     match r.statechange {
         BUFF_INITIAL | BUFF_APPLY | BUFF_DURATION => r.dst,
         _ => r.src,
@@ -306,9 +306,16 @@ impl BoonTracker {
     }
 
     /// `[up, self, group, squad]` per boon for `player`, cumulative since [`Self::clear`], as of
-    /// the last tick.
+    /// the last tick. `group` and `squad` are SUMS over the targets (a player's ms on each
+    /// squadmate added up), not axilog's per-target average: divide by the target count to
+    /// compare with axilog.
     pub fn totals(&self, player: u32) -> Option<&BTreeMap<u32, [u64; 4]>> {
         self.totals.get(&player)
+    }
+
+    #[cfg(test)]
+    pub fn rows_held(&self) -> usize {
+        self.pairs.len()
     }
 
     /// Start over (a new fight).
