@@ -174,6 +174,15 @@ test("rows total", () => {
   const s = computeRows(mk({ rows: "total", stats: [{ key: "damage", as: "share" }] }), v, String, 5);
   assert.strictEqual(s.rows[0].values[0], 100);
 });
+test("rows total heal_full only when everyone's is", () => {
+  const spec = mk({ rows: "total", stats: [{ key: "healing" }] });
+  const total = ps => computeRows(spec, { players: ps, seconds: 1 }, String, 5).rows[0].p.heal_full;
+  const ps = fixture();
+  ps[0].heal_full = true;
+  assert.strictEqual(total(ps), false);
+  assert.strictEqual(total(ps.map(p => ({ ...p, heal_full: true }))), true);
+  assert.strictEqual(total([]), false);
+});
 test("sort by name asc", () => {
   const ps = fixture().reverse();
   const r = computeRows(mk({ stats: [{ key: "damage" }], sort: { key: "name", asc: true } }), { players: ps, seconds: 1 }, String, 5);
@@ -222,6 +231,14 @@ test("history last:N early", () => {
   const v = h.view("last:10");
   assert.strictEqual(v.seconds, 4);
   assert.strictEqual(byName(v, "A").damage, 400);
+});
+test("history last:N when the ring starts mid-fight", () => {
+  const h = createHistory();
+  for (let ms = 20000; ms <= 30000; ms += 500) h.push(feed("fight", ms, [{ name: "A", damage: ms / 10 }]));
+  const v = h.view("last:60");
+  assert.strictEqual(v.seconds, 10);
+  assert.strictEqual(byName(v, "A").damage, 1000);
+  assert.strictEqual(h.view("last:10").seconds, 10);
 });
 test("history after the fight", () => {
   const h = createHistory();
