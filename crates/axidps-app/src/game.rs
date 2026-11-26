@@ -8,6 +8,10 @@ pub fn gw2_running() -> bool {
     // If the process list cannot be read, assume the game runs: the caller then leaves the
     // game folder alone instead of replacing files under a live game.
     let Ok(mut sys) = System::new() else {
+        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("axidps: cannot list processes; taking Guild Wars 2 as running");
+        }
         return true;
     };
     sys.refresh_processes_specifics(

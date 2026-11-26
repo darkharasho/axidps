@@ -116,6 +116,8 @@ pub struct Status {
 /// streams it into a writer (the installer).
 pub type Fetch<'a> = &'a dyn Fn(&str) -> Result<Vec<u8>, UpdateError>;
 pub type Download<'a> = &'a dyn Fn(&str, &mut dyn Write) -> Result<(), UpdateError>;
+/// [`apply`], or a stand-in for it in tests.
+type Apply<'a> = &'a dyn Fn(Os, &Path, Option<&Path>) -> io::Result<()>;
 
 pub fn asset_for(r: &Release, os: Os) -> Option<&Asset> {
     static PATTERNS: OnceLock<[Regex; 2]> = OnceLock::new();
@@ -742,6 +744,39 @@ impl Updater {
 
     /// Called once per run-loop tick. Never blocks on the network.
     pub fn tick(&mut self, now: Instant, supervisor: &mut Supervisor) {
+        self.receive(now);
+        if !self.in_flight && (self.check_requested || now >= self.next_check) {
+            self.check_requested = false;
+            self.next_check = now + CHECK_EVERY;
+            self.start_check();
+        }
+        if self.ready.is_some() && !self.apply_blocked && now >= self.next_wait {
+            self.try_apply(now, supervisor);
+        }
+    }
+
+    /// Applies an update that is waiting, now: the caller has seen the game close and is about
+    /// to quit. On success the process exits; otherwise this returns.
+    pub fn apply_pending(&mut self, now: Instant, supervisor: &mut Supervisor) {
+        self.apply_pending_with(now, supervisor, Os::current(), &apply);
+    }
+
+    /// `apply_pending` with the platform and the apply step passed in.
+    fn apply_pending_with(
+        &mut self,
+        now: Instant,
+        supervisor: &mut Supervisor,
+        os: Os,
+        apply: Apply,
+    ) {
+        self.receive(now);
+        if self.ready.is_some() && !self.apply_blocked {
+            self.try_apply_with(now, supervisor, os, false, apply);
+        }
+    }
+
+    /// Takes in the results of finished checks.
+    fn receive(&mut self, now: Instant) {
         while let Ok(msg) = self.rx.try_recv() {
             self.in_flight = false;
             match msg {
@@ -763,14 +798,6 @@ impl Updater {
                     self.set_status(s);
                 }
             }
-        }
-        if !self.in_flight && (self.check_requested || now >= self.next_check) {
-            self.check_requested = false;
-            self.next_check = now + CHECK_EVERY;
-            self.start_check();
-        }
-        if self.ready.is_some() && !self.apply_blocked && now >= self.next_wait {
-            self.try_apply(now, supervisor);
         }
     }
 
@@ -794,7 +821,7 @@ impl Updater {
         supervisor: &mut Supervisor,
         os: Os,
         game_running: bool,
-        apply: &dyn Fn(Os, &Path, Option<&Path>) -> io::Result<()>,
+        apply: Apply,
     ) {
         let Some(ready) = &self.ready else {
             return;
@@ -1266,6 +1293,37 @@ mod tests {
         u.try_apply_with(Instant::now(), &mut sup, Os::Linux, false, &fail);
         assert!(seen.get());
         assert_eq!(u.status.unwrap().state, State::Available);
+    }
+
+    #[test]
+    fn pending_update_is_applied_at_once_when_the_game_has_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut u = ready_updater(tmp.path(), b"genuine");
+        let mut sup = Supervisor::new(vec![]);
+        let now = Instant::now();
+        // Waiting for the game: the next try would only be after WAIT_RECHECK.
+        u.try_apply_with(
+            now,
+            &mut sup,
+            Os::Linux,
+            true,
+            &|_: Os, _: &Path, _: Option<&Path>| panic!("game runs"),
+        );
+        let applied = std::cell::Cell::new(false);
+        let apply = |_: Os, _: &Path, _: Option<&Path>| -> io::Result<()> {
+            applied.set(true);
+            Err(io::Error::other("test: no exit"))
+        };
+        u.apply_pending_with(now, &mut sup, Os::Linux, &apply);
+        assert!(applied.get());
+        // Nothing waiting: nothing applied.
+        let mut idle = Updater::with(Some(tmp.path().into()), None, now);
+        idle.apply_pending_with(
+            now,
+            &mut sup,
+            Os::Linux,
+            &|_: Os, _: &Path, _: Option<&Path>| panic!("nothing to apply"),
+        );
     }
 
     #[test]
