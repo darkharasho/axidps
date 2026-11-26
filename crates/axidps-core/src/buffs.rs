@@ -78,6 +78,22 @@ pub struct Row {
     pub pad: u32,
 }
 
+/// arcdps's iff byte for "unknown".
+pub const IFF_UNKNOWN: u8 = 2;
+
+impl Row {
+    /// The row's iff byte, as arcdps writes it on buff rows that parsers read: a remove with no
+    /// remover (an expiry or an overstack) is unknown; everything else is written as 0.
+    pub fn iff(&self) -> u8 {
+        let remove = matches!(self.statechange, BUFF_REMOVE_ONE | BUFF_REMOVE_ALL);
+        if remove && self.dst == 0 && self.dst_raw.is_none() {
+            IFF_UNKNOWN
+        } else {
+            0
+        }
+    }
+}
+
 /// A remove row (`kind` 2 single, 3 one stack of a remove-all): the agent losing the buff is the
 /// source, the remover the destination; overstack holds the elapsed ms (low 16 bits, capped) and
 /// the stack source's instance id (high 16).
@@ -724,6 +740,51 @@ mod tests {
             }
         );
         assert_eq!(s.len(), 1);
+    }
+
+    /// Removes with no remover (expiry, overstack) are iff unknown, as arcdps writes them;
+    /// removes by someone, and every other row, are 0.
+    #[test]
+    fn removes_without_a_remover_are_iff_unknown() {
+        let mut s = Stacks::default();
+        let a = s.apply(1000, &apply(5, 7, 740, 1, 3000, true));
+        s.apply(1000, &apply(5, 7, 740, 2, 3000, true));
+        s.apply(1000, &apply(5, 7, 740, 3, 3000, true));
+        assert_eq!(a[0].iff(), 0);
+        let gone = s.apply(
+            2000,
+            &Event::BuffRemove {
+                dst: 5,
+                remover: 0,
+                inst: 1,
+            },
+        );
+        assert_eq!(gone[0].iff(), IFF_UNKNOWN);
+        let stripped = s.apply(
+            2000,
+            &Event::BuffRemove {
+                dst: 5,
+                remover: 9,
+                inst: 2,
+            },
+        );
+        assert_eq!(stripped[0].iff(), 0);
+        let all = s.apply(
+            2500,
+            &Event::BuffRemoveAll {
+                dst: 5,
+                remover: 0,
+                buff: 740,
+            },
+        );
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|r| r.iff() == IFF_UNKNOWN));
+        let active = Row {
+            statechange: STACK_ACTIVE,
+            dst_raw: Some(4),
+            ..Row::default()
+        };
+        assert_eq!(active.iff(), 0);
     }
 
     #[test]

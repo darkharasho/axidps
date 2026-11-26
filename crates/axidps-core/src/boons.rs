@@ -121,7 +121,7 @@ fn to_raw(t: u64, r: &Row) -> RawEvent {
         dst_instid: 0,
         src_master_instid: 0,
         dst_master_instid: 0,
-        iff: 0,
+        iff: r.iff(),
         buff: r.buff,
         result: r.result,
         is_activation: 0,
@@ -897,6 +897,34 @@ mod tests {
         assert_eq!(f.get(70, FURY)[0], 7000);
         assert_eq!(f.get(70, PROTECTION)[3], 2000);
         assert!(f.tr.totals(7).is_none());
+    }
+
+    /// A remove with no remover is an expiry or an overstack: axilog drops it (its simulation
+    /// ends the stack itself), so it does not end the stack early. A strip does.
+    #[test]
+    fn removes_without_a_remover_do_not_end_the_stack() {
+        let mut f = Feed::new();
+        f.ev(1000, apply(1, 2, PROTECTION, 1, 5000, true));
+        f.ev(
+            3000,
+            Event::BuffRemove {
+                dst: 1,
+                remover: 0,
+                inst: 1,
+            },
+        );
+        f.ev(1000, apply(3, 2, FURY, 2, 5000, true));
+        f.ev(
+            3000,
+            Event::BuffRemove {
+                dst: 3,
+                remover: ENEMY,
+                inst: 2,
+            },
+        );
+        f.tick(20_000, &one_group);
+        assert_eq!(f.get(1, PROTECTION)[0], 5000);
+        assert_eq!(f.get(3, FURY)[0], 2000);
     }
 
     #[test]
