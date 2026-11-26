@@ -3266,6 +3266,88 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The boon tick's budget on a big, long fight: 50 squad players in 10 subgroups, 10
+    /// minutes, every squad boon from many sources (subgroup and squad-wide pulses every few
+    /// seconds, self boons, might and stability stacking, queued duration stacks going active,
+    /// strips), a feed every 500 ms. Prints each feed's `snapshot` cost (it runs the boon tick)
+    /// and checks p99 is under 5 ms in a release build. Run it with
+    /// `cargo test --release -p axidps-core --lib -- --ignored --nocapture boon_tick_budget`.
+    #[test]
+    #[ignore = "timing; run in release"]
+    fn boon_tick_budget_50_players_10_minutes() {
+        let (n, fight_ms) = (50u32, 600_000u64);
+        let ids: Vec<u32> = (10..10 + n).collect();
+        let group = |id: u32| ((id - 10) / 5 + 1) as u8;
+        let mut r = Registry::new();
+        let mut l = LiveStats::new();
+        for &id in &ids {
+            for e in squad_events(id, group(id)) {
+                r.apply(0, &e);
+                l.event(0, &e);
+            }
+        }
+        r.apply(0, &Event::Pov { id: 10 });
+        l.event(0, &Event::Pov { id: 10 });
+        l.begin(0, 38);
+        for &id in &ids {
+            l.event(1, &strike(id, NPC, 100, 0));
+        }
+        let mut sim = crate::boons::tests::Traffic::new(0x9e37_79b9_7f4a_7c15, ids.clone(), ENEMY);
+        let (mut costs, mut base) = (Vec::new(), Vec::new());
+        let (mut events, mut feeds) = (0usize, 0usize);
+        for t in (100..=fight_ms).step_by(100) {
+            for e in sim.step(t) {
+                l.event(t, &e);
+                events += 1;
+            }
+            if t % 500 == 0 {
+                l.advance(t);
+                let t0 = Instant::now();
+                let v = l.snapshot(&r, 0);
+                costs.push(t0.elapsed().as_secs_f64() * 1e3);
+                feeds += 1;
+                std::hint::black_box(v);
+                // The same feed again, with no boon tick due.
+                let t0 = Instant::now();
+                std::hint::black_box(l.snapshot(&r, 0));
+                base.push(t0.elapsed().as_secs_f64() * 1e3);
+            }
+        }
+        let pct = |v: &[f64], p: f64| {
+            let mut v = v.to_vec();
+            v.sort_by(f64::total_cmp);
+            v[((v.len() - 1) as f64 * p).round() as usize]
+        };
+        println!(
+            "boon tick: {feeds} feeds, {events} buff events ({:.0}/s), {} rows held",
+            events as f64 / (fight_ms as f64 / 1000.0),
+            l.boons.rows_stored()
+        );
+        for (i, (minute, without)) in costs.chunks(120).zip(base.chunks(120)).enumerate() {
+            println!(
+                "  minute {}: p50 {:.3} p99 {:.3} max {:.3} ms (no tick: p50 {:.3} p99 {:.3})",
+                i + 1,
+                pct(minute, 0.5),
+                pct(minute, 0.99),
+                pct(minute, 1.0),
+                pct(without, 0.5),
+                pct(without, 0.99)
+            );
+        }
+        let (p50, p99, max) = (pct(&costs, 0.5), pct(&costs, 0.99), pct(&costs, 1.0));
+        println!(
+            "  all: p50 {p50:.3} p99 {p99:.3} max {max:.3} ms (no tick: p50 {:.3} p99 {:.3})",
+            pct(&base, 0.5),
+            pct(&base, 0.99)
+        );
+        let v = l.snapshot(&r, 0);
+        let up = player(&v, "Char 30").unwrap()["boons"]["740"][0].as_u64();
+        assert!(up.is_some_and(|u| u > 0), "might counted");
+        if !cfg!(debug_assertions) {
+            assert!(p99 < 5.0, "p99 {p99:.3} ms");
+        }
+    }
+
     #[test]
     fn write_atomic_reports_errors() {
         let path = std::env::temp_dir()

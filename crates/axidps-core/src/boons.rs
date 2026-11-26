@@ -6,15 +6,26 @@
 //! clipped to `now` are final up to `now`. Sources arrive already resolved: a minion's rows carry
 //! its master at the row's time, and each account has one id.
 //!
+//! A pair re-simulates from a checkpoint, not from its first row: the stacks axilog's simulator
+//! held after the rows behind it (read back from the simulator's own output and replayed as
+//! apply events), and the segments that ended by then. Anything that would change how the rows
+//! behind it simulate (a renamed id, the log-wide stack-id flag, a row older than the
+//! checkpoint) drops it, and the pair simulates from its first row again. The totals are the
+//! same as simulating every row each tick (`checkpoints_equal_full_resimulation`). The rows stay
+//! (a restart needs them).
+//!
 //! Group and squad credit follow axilog's rollup: one subgroup per player for the whole fight
 //! (whatever `groups` says at the tick), and every squad player except the source as a target.
 //! The tracker sums a source's ms over its targets; `LiveStats` divides by the target count.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use axilog_core::analysis::buffs::events::extract_buff_events_with_registry;
+use axilog_core::analysis::buffs::events::{
+    BuffEvent, BuffEventKind, extract_buff_events_with_registry,
+};
 use axilog_core::analysis::buffs::generation::{HeldSegment, run_segments, run_sim};
 use axilog_core::analysis::buffs::simulator::capacity_for;
+use axilog_core::analysis::buffs::stack_type_for;
 use axilog_core::analysis::damage::InstidRegistry;
 use axilog_core::evtc::{RawEvent, RawHeader, RawLog};
 
@@ -39,14 +50,55 @@ const FAR: u64 = u64::MAX / 4;
 /// Totals per player and boon: `[up, self, group, squad]`, in ms (stack-ms for intensity).
 type Totals = BTreeMap<u32, BTreeMap<u32, [u64; 4]>>;
 
+/// One simulation's state at a checkpoint.
+#[derive(Default)]
+struct Part {
+    /// The stacks held, as apply events at the time of the last event behind the checkpoint.
+    seed: Vec<BuffEvent>,
+    /// Segments that ended by then (an intensity stack still held is cut there; its rest comes
+    /// from the seed).
+    kept: Vec<HeldSegment>,
+    /// The latest end in `kept`, and `kept` clipped at or after it.
+    kept_end: u64,
+    kept_up: u64,
+    kept_by_source: BTreeMap<u32, u64>,
+}
+
+/// Where a pair's simulation starts.
+struct Checkpoint {
+    /// The first row after it (row 0 is the marker; 1 with nothing behind).
+    row: usize,
+    /// The latest time of the rows behind it; every row after it is later. `None` with nothing
+    /// behind.
+    at: Option<u64>,
+    /// The credit simulation, and Regeneration's queue simulation.
+    parts: [Part; 2],
+}
+
+impl Checkpoint {
+    fn start() -> Self {
+        Checkpoint {
+            row: 1,
+            at: None,
+            parts: Default::default(),
+        }
+    }
+}
+
 /// One holder's rows for one boon, and its last simulation.
 struct Pair {
     /// Row 0 is the stack-id marker slot (sc 0 until any stack-active row is seen, then 27).
     log: RawLog,
+    /// Since the checkpoint.
     segments: Vec<HeldSegment>,
     /// Regeneration only: the queue simulation axilog's uptime uses (its credit uses the healing
     /// logic in `segments`).
     up_segments: Option<Vec<HeldSegment>>,
+    cp: Checkpoint,
+    /// Band-aid boons only (axilog rewrites some of their removals from the other rows of the
+    /// same stack): row indices per stack instance, and how many rows they cover.
+    by_inst: BTreeMap<u32, Vec<usize>>,
+    indexed: usize,
     /// Some segment ends after the last clip: the totals still move without new rows.
     open: bool,
     /// Simulated since the last clip.
@@ -68,6 +120,8 @@ pub struct BoonTracker {
     capacities: BTreeMap<u32, u32>,
     /// The last tick's time.
     clipped_at: Option<u64>,
+    /// Re-simulate from checkpoints (off only to test them against full re-simulation).
+    checkpoints: bool,
 }
 
 impl Default for BoonTracker {
@@ -180,6 +234,176 @@ fn clip(segments: &[HeldSegment], now: u64, intensity: bool) -> (u64, BTreeMap<u
     (up, by_source)
 }
 
+/// `kept` and `segments` clipped to `[.., now)`; `kept`'s part comes from its cache when it has
+/// ended by `now` (kept segments end where `segments` start, so the two add up).
+fn clip_part(
+    part: &Part,
+    segments: &[HeldSegment],
+    now: u64,
+    intensity: bool,
+) -> (u64, BTreeMap<u32, u64>) {
+    if now < part.kept_end {
+        let all: Vec<HeldSegment> = part.kept.iter().chain(segments).copied().collect();
+        return clip(&all, now, intensity);
+    }
+    let (mut up, mut by_source) = clip(segments, now, intensity);
+    up += part.kept_up;
+    for (&src, &ms) in &part.kept_by_source {
+        *by_source.entry(src).or_default() += ms;
+    }
+    (up, by_source)
+}
+
+/// Whether axilog's band aid can rewrite `boon`'s removals.
+fn band_aid(boon: u32) -> bool {
+    stack_type_for(boon).is_some_and(|t| t.band_aid_scope().is_some())
+}
+
+/// The stack instance a row names.
+fn inst_of(e: &RawEvent) -> u32 {
+    if e.is_statechange == STACK_ACTIVE {
+        e.dst_agent as u32
+    } else {
+        e.pad
+    }
+}
+
+fn seed_event(time: u64, holder: u32, boon: u32, source: u64, ms: u64) -> Option<BuffEvent> {
+    Some(BuffEvent {
+        time,
+        buff_id: boon,
+        owner: u64::from(holder),
+        agent: source,
+        buff_instance: 0,
+        kind: BuffEventKind::Apply {
+            duration_ms: u32::try_from(ms).ok()?,
+            is_shields: false,
+        },
+    })
+}
+
+/// How one simulation runs.
+struct Sim<'a> {
+    holder: u32,
+    boon: u32,
+    capacity: u32,
+    intensity: bool,
+    /// Regeneration's credit simulation (axilog's healing logic).
+    healing: Option<&'a dyn Fn(u64) -> i16>,
+}
+
+impl Sim<'_> {
+    fn run(&self, events: Vec<BuffEvent>, end: u64) -> Vec<HeldSegment> {
+        match self.healing {
+            Some(h) => run_sim(events, self.capacity, self.intensity, end, true, h).segments,
+            None => run_segments(events, self.capacity, self.intensity, end),
+        }
+    }
+
+    /// The state after `events` (a checkpoint's seed and the events after it, up to the new
+    /// one): the stacks held, as a seed, and the segments that ended. `None` when the
+    /// simulator's output does not pin the state down.
+    fn probe(&self, events: Vec<BuffEvent>) -> Option<(Vec<BuffEvent>, Vec<HeldSegment>)> {
+        let Some(s) = events.iter().map(|e| e.time).max() else {
+            return Some((Vec::new(), Vec::new()));
+        };
+        let far = self.run(events.clone(), FAR);
+        if !self.intensity {
+            // The queue drains at the end: one segment per stack held, in queue order, from the
+            // clock (the last event's time); every earlier segment starts before it.
+            let split = far.iter().position(|g| g.start >= s).unwrap_or(far.len());
+            let (kept, drain) = far.split_at(split);
+            if drain.iter().any(|g| g.start < s) {
+                return None;
+            }
+            // A seed re-sorts Regeneration's stacks by healing power: they must tie.
+            if let Some(h) = self.healing
+                && drain.windows(2).any(|w| h(w[0].source) != h(w[1].source))
+            {
+                return None;
+            }
+            let seed = drain
+                .iter()
+                .map(|g| seed_event(s, self.holder, self.boon, g.source, g.end - g.start))
+                .collect::<Option<Vec<_>>>()?;
+            return Some((seed, kept.to_vec()));
+        }
+        // Intensity: run to the far end, the stacks held at `s` are credited last, in expiry
+        // order (ties in the simulator's order), each up to its expiry. Their order in the
+        // simulator: fill it to capacity with stacks that outlast them, then apply one marker
+        // per stack held. Each marker evicts the stack with the least time left (the same
+        // order), in its place, and a remove-all then credits every stack in the simulator's
+        // order: marker `j` stands where the `j`-th stack to expire was.
+        let apply = |agent: u64| BuffEvent {
+            time: s,
+            buff_id: self.boon,
+            owner: u64::from(self.holder),
+            agent,
+            buff_instance: 0,
+            kind: BuffEventKind::Apply {
+                duration_ms: u32::MAX,
+                is_shields: false,
+            },
+        };
+        const FILL: u64 = u64::MAX / 2;
+        let remove_all = BuffEvent {
+            kind: BuffEventKind::RemoveAll,
+            ..apply(0)
+        };
+        let mut probe = events;
+        probe.push(remove_all);
+        // Ended at `s` by a remove-all, the stacks held end there instead: the runs agree on
+        // everything before (stacks that end at `s` included).
+        let cut = self.run(probe.clone(), FAR);
+        let done = far.iter().zip(&cut).take_while(|(a, b)| a == b).count();
+        let ends = &far[done..];
+        if ends.is_empty() {
+            return Some((Vec::new(), far));
+        }
+        let (k, capacity) = (ends.len(), self.capacity as usize);
+        if k > capacity
+            || cut.len() != done + k
+            || ends
+                .iter()
+                .any(|g| g.end <= s || g.end - s >= u64::from(u32::MAX))
+        {
+            return None;
+        }
+        probe.pop();
+        probe.extend((k..capacity).map(|_| apply(FILL)));
+        probe.extend((0..k as u64).map(|j| apply(FILL + 1 + j)));
+        probe.push(remove_all);
+        let marked = self.run(probe, FAR);
+        if marked.len() != done + k + capacity || marked[..done] != far[..done] {
+            return None;
+        }
+        let (evicted, order) = marked[done..].split_at(k);
+        let same = |a: &HeldSegment, b: &HeldSegment| a.source == b.source && a.start == b.start;
+        if evicted
+            .iter()
+            .zip(ends)
+            .any(|(e, g)| !same(e, g) || e.end != s)
+        {
+            return None;
+        }
+        let mut seed = Vec::with_capacity(k);
+        for g in &order[..k] {
+            let j = usize::try_from(g.source.checked_sub(FILL + 1)?).ok()?;
+            let stack = ends.get(j)?;
+            seed.push(seed_event(
+                s,
+                self.holder,
+                self.boon,
+                stack.source,
+                stack.end - s,
+            )?);
+        }
+        let mut kept = far[..done].to_vec();
+        kept.extend_from_slice(evicted);
+        Some((seed, kept))
+    }
+}
+
 impl BoonTracker {
     pub fn new() -> Self {
         BoonTracker {
@@ -191,6 +415,7 @@ impl BoonTracker {
             header: header(),
             capacities: SQUAD_BOONS.iter().map(|&b| (b, capacity(b))).collect(),
             clipped_at: None,
+            checkpoints: true,
         }
     }
 
@@ -202,6 +427,9 @@ impl BoonTracker {
                 self.stack_ids = true;
                 // axilog reads the flag log-wide: every pair simulates again with it.
                 self.dirty.extend(self.pairs.keys().copied());
+                for pair in self.pairs.values_mut() {
+                    pair.cp = Checkpoint::start();
+                }
             }
             if !self.capacities.contains_key(&r.skill)
                 || !matches!(
@@ -226,12 +454,19 @@ impl BoonTracker {
                     log,
                     segments: Vec::new(),
                     up_segments: None,
+                    cp: Checkpoint::start(),
+                    by_inst: BTreeMap::new(),
+                    indexed: 1,
                     open: false,
                     fresh: false,
                     up: 0,
                     by_source: BTreeMap::new(),
                 }
             });
+            if pair.cp.at.is_some_and(|at| now <= at) {
+                // Older than the checkpoint: the rows behind it simulate differently.
+                pair.cp = Checkpoint::start();
+            }
             pair.log.events.push(to_raw(now, r));
             self.dirty.insert(key);
         }
@@ -261,18 +496,41 @@ impl BoonTracker {
                 continue;
             };
             pair.log.events[0].is_statechange = marker;
-            let events = extract_buff_events_with_registry(
-                &pair.log,
-                &self.registry,
-                &BTreeSet::from([key.1]),
-            );
+            let boons = BTreeSet::from([key.1]);
+            if band_aid(key.1) {
+                index(pair);
+            }
+            if !self.checkpoints {
+                pair.cp = Checkpoint::start();
+            }
+            let events = events_after(pair, &self.registry, &boons);
             let capacity = self.capacities.get(&key.1).copied().unwrap_or(1);
             let intensity = INTENSITY.contains(&key.1);
             let regeneration = key.1 == REGENERATION;
-            pair.up_segments =
-                regeneration.then(|| run_segments(events.clone(), capacity, intensity, FAR));
-            pair.segments =
-                run_sim(events, capacity, intensity, FAR, regeneration, &healing).segments;
+            let credit = Sim {
+                holder: key.0,
+                boon: key.1,
+                capacity,
+                intensity,
+                healing: regeneration.then_some(&healing as &dyn Fn(u64) -> i16),
+            };
+            let queue = Sim {
+                healing: None,
+                intensity: false,
+                ..credit
+            };
+            if self.checkpoints {
+                advance(pair, &events, now, &credit, regeneration.then_some(&queue));
+            }
+            let after: Vec<BuffEvent> = match pair.cp.at {
+                Some(at) => events.into_iter().filter(|e| e.time > at).collect(),
+                None => events,
+            };
+            let seeded = |part: &Part| -> Vec<BuffEvent> {
+                part.seed.iter().chain(&after).copied().collect()
+            };
+            pair.up_segments = regeneration.then(|| queue.run(seeded(&pair.cp.parts[1]), FAR));
+            pair.segments = credit.run(seeded(&pair.cp.parts[0]), FAR);
             pair.fresh = true;
         }
         // Time went back (a fight's end is its last activity, before later ticks): every pair is
@@ -282,11 +540,12 @@ impl BoonTracker {
         for (&(_, boon), pair) in &mut self.pairs {
             if pair.fresh || pair.open || back {
                 let intensity = INTENSITY.contains(&boon);
-                (pair.up, pair.by_source) = clip(&pair.segments, now, intensity);
-                let mut open = pair.segments.iter().any(|s| s.end > now);
+                let [credit, queue] = &pair.cp.parts;
+                (pair.up, pair.by_source) = clip_part(credit, &pair.segments, now, intensity);
+                let mut open = credit.kept_end > now || pair.segments.iter().any(|s| s.end > now);
                 if let Some(up) = &pair.up_segments {
-                    pair.up = clip(up, now, intensity).0;
-                    open |= up.iter().any(|s| s.end > now);
+                    pair.up = clip_part(queue, up, now, intensity).0;
+                    open |= queue.kept_end > now || up.iter().any(|s| s.end > now);
                 }
                 pair.open = open;
                 pair.fresh = false;
@@ -295,7 +554,7 @@ impl BoonTracker {
 
         self.totals.clear();
         for (&(holder, boon), pair) in &self.pairs {
-            if !squad(holder) || pair.segments.is_empty() {
+            if !squad(holder) || (pair.segments.is_empty() && pair.cp.parts[0].kept.is_empty()) {
                 continue;
             }
             self.totals
@@ -359,6 +618,7 @@ impl BoonTracker {
             }
             if key.0 != from {
                 if changed {
+                    pair.restart();
                     self.dirty.insert(key);
                 }
                 continue;
@@ -373,8 +633,11 @@ impl BoonTracker {
                     have.log.events.extend(moved.log.events.into_iter().skip(1));
                     // Rows in time order, as they would have arrived under one id.
                     have.log.events[1..].sort_by_key(|e| e.time);
+                    have.restart();
                 }
                 None => {
+                    let mut moved = moved;
+                    moved.restart();
                     self.pairs.insert(new_key, moved);
                 }
             }
@@ -387,6 +650,12 @@ impl BoonTracker {
         self.pairs.len()
     }
 
+    /// Rows kept over every pair.
+    #[cfg(test)]
+    pub fn rows_stored(&self) -> usize {
+        self.pairs.values().map(|p| p.log.events.len() - 1).sum()
+    }
+
     /// Start over (a new fight).
     pub fn clear(&mut self) {
         self.pairs.clear();
@@ -397,8 +666,117 @@ impl BoonTracker {
     }
 }
 
+impl Pair {
+    /// Simulate from the first row again (rows behind the checkpoint changed or moved).
+    fn restart(&mut self) {
+        self.cp = Checkpoint::start();
+        self.by_inst.clear();
+        self.indexed = 1;
+    }
+}
+
+/// Bring a band-aid pair's instance index up to date.
+fn index(pair: &mut Pair) {
+    for i in pair.indexed..pair.log.events.len() {
+        let inst = inst_of(&pair.log.events[i]);
+        if inst != 0 {
+            pair.by_inst.entry(inst).or_default().push(i);
+        }
+    }
+    pair.indexed = pair.log.events.len();
+}
+
+/// The pair's events after its checkpoint (or all of them). A band-aid boon's are read with
+/// the rows behind the checkpoint the band aid looks at: the other rows of the same stacks. (It
+/// also reads the whole log for one removal that lets it run, but any removal it rewrites is one
+/// of those.)
+fn events_after(pair: &Pair, registry: &InstidRegistry, boons: &BTreeSet<u32>) -> Vec<BuffEvent> {
+    let Some(at) = pair.cp.at else {
+        return extract_buff_events_with_registry(&pair.log, registry, boons);
+    };
+    let rows = &pair.log.events;
+    let mut log = empty_log(pair.log.header.clone());
+    log.events.push(rows[0].clone());
+    if band_aid(*boons.first().unwrap_or(&0)) {
+        let behind: BTreeSet<usize> = rows[pair.cp.row..]
+            .iter()
+            .filter_map(|e| pair.by_inst.get(&inst_of(e)))
+            .flatten()
+            .copied()
+            .filter(|&i| i < pair.cp.row)
+            .collect();
+        log.events
+            .extend(behind.into_iter().map(|i| rows[i].clone()));
+    }
+    log.events.extend_from_slice(&rows[pair.cp.row..]);
+    extract_buff_events_with_registry(&log, registry, boons)
+        .into_iter()
+        .filter(|e| e.time > at)
+        .collect()
+}
+
+/// Move the pair's checkpoint up to the rows before `now` (later rows can still arrive at
+/// `now`). `events` are the pair's events after the current checkpoint. Kept where it is when
+/// the rows are out of time order or a simulation's state can not be read back.
+fn advance(pair: &mut Pair, events: &[BuffEvent], now: u64, credit: &Sim, queue: Option<&Sim>) {
+    let rows = &pair.log.events;
+    let from = pair.cp.row;
+    let mut to = from;
+    while to < rows.len() && rows[to].time < now {
+        to += 1;
+    }
+    let Some(at) = rows[from..to].iter().map(|e| e.time).max() else {
+        return;
+    };
+    if rows[to..].iter().any(|e| e.time <= at) {
+        return;
+    }
+    let behind: Vec<BuffEvent> = events
+        .iter()
+        .filter(|e| pair.cp.at.is_none_or(|old| e.time > old) && e.time <= at)
+        .copied()
+        .collect();
+    let mut probed: [Option<(Vec<BuffEvent>, Vec<HeldSegment>)>; 2] = Default::default();
+    for (i, sim) in [Some(credit), queue].into_iter().enumerate() {
+        let Some(sim) = sim else {
+            continue;
+        };
+        let events = pair.cp.parts[i]
+            .seed
+            .iter()
+            .chain(&behind)
+            .copied()
+            .collect();
+        let Some(p) = sim.probe(events) else {
+            return;
+        };
+        probed[i] = Some(p);
+    }
+    pair.cp.row = to;
+    pair.cp.at = Some(at);
+    for ((part, p), intensity) in pair
+        .cp
+        .parts
+        .iter_mut()
+        .zip(probed)
+        .zip([credit.intensity, false])
+    {
+        let Some((seed, ended)) = p else {
+            continue;
+        };
+        let (up, by_source) = clip(&ended, FAR, intensity);
+        for (src, ms) in by_source {
+            *part.kept_by_source.entry(src).or_default() += ms;
+        }
+        part.kept_up += up;
+        part.kept_end = ended.iter().map(|g| g.end).fold(part.kept_end, u64::max);
+        part.kept.extend(ended);
+        part.seed = seed;
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::buffs::Stacks;
     use axidps_protocol::v2::{Event, StackChange};
@@ -454,6 +832,227 @@ mod tests {
                 .and_then(|m| m.get(&boon))
                 .copied()
                 .unwrap_or_default()
+        }
+    }
+
+    /// Seeded WvW-like boon traffic on `players`, as the game sends it: two supports per
+    /// subgroup of five pulse their subgroup every 3 s (four duration boons, three might, one
+    /// stability) and ten squad players every 6 s; everyone gives themselves a boon every 2 s;
+    /// queued duration stacks go active when the one ticking ends; might and stability stack to
+    /// 25 (stability ticks one stack at a time, the rest frozen until it ends); two strips and a
+    /// duration change every 500 ms. `step(t)` is every 100 ms.
+    pub(crate) struct Traffic {
+        seed: u64,
+        inst: u32,
+        players: Vec<u32>,
+        enemy: u32,
+        /// (holder, boon) -> stacks (inst, ms): a duration boon's queue (its first stack ticks
+        /// until the second field), an intensity boon's stacks with their end times (`FROZEN`
+        /// for a frozen stability stack, whose duration is in `frozen`).
+        held: BTreeMap<(u32, u32), Held>,
+        frozen: BTreeMap<u32, u64>,
+        out: Vec<Event>,
+    }
+
+    const FROZEN: u64 = u64::MAX;
+
+    /// A holder's stacks of one boon (see `Traffic::held`).
+    type Held = (Vec<(u32, u64)>, u64);
+
+    const DURATION_BOONS: [u32; 11] = [725, 1187, 30328, 717, 718, 726, 743, 719, 26980, 873, 5974];
+
+    impl Traffic {
+        pub(crate) fn new(seed: u64, players: Vec<u32>, enemy: u32) -> Self {
+            Traffic {
+                seed,
+                inst: 1000,
+                players,
+                enemy,
+                held: BTreeMap::new(),
+                frozen: BTreeMap::new(),
+                out: Vec::new(),
+            }
+        }
+
+        fn rand(&mut self, n: u64) -> u64 {
+            self.seed ^= self.seed << 13;
+            self.seed ^= self.seed >> 7;
+            self.seed ^= self.seed << 17;
+            self.seed % n
+        }
+
+        fn duration_boon(&mut self) -> u32 {
+            DURATION_BOONS[self.rand(DURATION_BOONS.len() as u64) as usize]
+        }
+
+        fn apply(&mut self, t: u64, dst: u32, src: u32, buff: u32, ms: u64) {
+            self.inst += 1;
+            let inst = self.inst;
+            let intensity = INTENSITY.contains(&buff);
+            let (stacks, ends) = self.held.entry((dst, buff)).or_default();
+            if intensity && stacks.len() >= 25 {
+                let (old, _) = stacks.remove(0);
+                self.out.push(Event::BuffRemove {
+                    dst,
+                    remover: 0,
+                    inst: old,
+                });
+            } else if !intensity && stacks.len() >= 9 {
+                return;
+            }
+            let ticking = stacks.iter().filter(|s| s.1 != FROZEN).count();
+            let active = if buff == STABILITY {
+                ticking < 1
+            } else {
+                intensity || stacks.is_empty()
+            };
+            if intensity && !active {
+                stacks.push((inst, FROZEN));
+                self.frozen.insert(inst, ms);
+            } else if intensity {
+                stacks.push((inst, t + ms));
+            } else {
+                if active {
+                    *ends = t + ms;
+                }
+                stacks.push((inst, ms));
+            }
+            self.out
+                .push(apply(dst, src, buff, inst, ms as u32, active));
+        }
+
+        fn expire(&mut self, t: u64) {
+            for (&(dst, buff), (stacks, ends)) in &mut self.held {
+                if INTENSITY.contains(&buff) {
+                    stacks.retain(|&(inst, end)| {
+                        if end <= t {
+                            self.out.push(Event::BuffRemove {
+                                dst,
+                                remover: 0,
+                                inst,
+                            });
+                        }
+                        end > t
+                    });
+                    // A frozen stability stack starts ticking when a ticking one ends.
+                    while stacks.iter().filter(|s| s.1 != FROZEN).count() < 1 {
+                        let Some(s) = stacks.iter_mut().find(|s| s.1 == FROZEN) else {
+                            break;
+                        };
+                        let ms = self.frozen.remove(&s.0).unwrap_or(1000);
+                        *s = (s.0, t + ms);
+                        self.out.push(Event::BuffStack {
+                            dst,
+                            inst: s.0,
+                            change: StackChange::Active,
+                            value: ms as u32,
+                        });
+                    }
+                } else if !stacks.is_empty() && *ends <= t {
+                    let (inst, _) = stacks.remove(0);
+                    self.out.push(Event::BuffRemove {
+                        dst,
+                        remover: 0,
+                        inst,
+                    });
+                    if let Some(&(next, ms)) = stacks.first() {
+                        *ends = t + ms;
+                        self.out.push(Event::BuffStack {
+                            dst,
+                            inst: next,
+                            change: StackChange::Active,
+                            value: ms as u32,
+                        });
+                    }
+                }
+            }
+        }
+
+        /// The events at `t`.
+        pub(crate) fn step(&mut self, t: u64) -> Vec<Event> {
+            self.expire(t);
+            let ids = self.players.clone();
+            let n = ids.len() as u64;
+            let group = |i: usize| i / 5;
+            for (k, &src) in ids.iter().enumerate() {
+                let phase = t + k as u64 * 300;
+                if k % 5 < 2 && phase.is_multiple_of(3000) {
+                    for (m, &dst) in ids.iter().enumerate() {
+                        if group(m) != group(k) {
+                            continue;
+                        }
+                        for _ in 0..4 {
+                            let (b, ms) = (self.duration_boon(), 2000 + self.rand(4000));
+                            self.apply(t, dst, src, b, ms);
+                        }
+                        for _ in 0..3 {
+                            let ms = 8000 + self.rand(2000);
+                            self.apply(t, dst, src, MIGHT, ms);
+                        }
+                        let ms = 3000 + self.rand(2000);
+                        self.apply(t, dst, src, STABILITY, ms);
+                    }
+                }
+                if k % 5 < 2 && phase.is_multiple_of(6000) {
+                    for _ in 0..10 {
+                        let dst = ids[self.rand(n) as usize];
+                        for _ in 0..2 {
+                            let (b, ms) = (self.duration_boon(), 3000 + self.rand(3000));
+                            self.apply(t, dst, src, b, ms);
+                        }
+                    }
+                }
+                if (t + k as u64 * 100).is_multiple_of(2000) {
+                    let b = self.duration_boon();
+                    self.apply(t, src, src, b, 4000);
+                }
+            }
+            if t.is_multiple_of(500) {
+                for _ in 0..2 {
+                    let dst = ids[self.rand(n) as usize];
+                    let b = if self.rand(2) == 0 {
+                        STABILITY
+                    } else {
+                        self.duration_boon()
+                    };
+                    if let Some((stacks, _)) = self.held.get_mut(&(dst, b))
+                        && !stacks.is_empty()
+                    {
+                        // One stack (stability, frozen ones too) or all of them, by an enemy.
+                        if b == STABILITY {
+                            let i = (self.seed % stacks.len() as u64) as usize;
+                            let (inst, _) = stacks.remove(i);
+                            self.out.push(Event::BuffRemove {
+                                dst,
+                                remover: self.enemy,
+                                inst,
+                            });
+                        } else {
+                            stacks.clear();
+                            self.out.push(Event::BuffRemoveAll {
+                                dst,
+                                remover: self.enemy,
+                                buff: b,
+                            });
+                        }
+                    }
+                }
+                // A ticking duration stack gets a new duration.
+                let dst = ids[self.rand(n) as usize];
+                let b = self.duration_boon();
+                if let Some((stacks, ends)) = self.held.get_mut(&(dst, b))
+                    && let Some(&(inst, _)) = stacks.first()
+                {
+                    *ends = t + 3000;
+                    self.out.push(Event::BuffStack {
+                        dst,
+                        inst,
+                        change: StackChange::Duration,
+                        value: 3000,
+                    });
+                }
+            }
+            std::mem::take(&mut self.out)
         }
     }
 
@@ -989,5 +1588,175 @@ mod tests {
         f.ev(5000, apply(1, 1, FURY, 2, 1000, true));
         f.tick(9000, &one_group);
         assert_eq!(f.get(1, FURY), [1000, 1000, 0, 0]);
+    }
+
+    /// Random event streams for one pair (few sources, few durations, so stacks often tie),
+    /// cut at a random point: the state read back at the cut, simulated on with the rest,
+    /// gives what simulating everything gives, for intensity, queue and healing-ordered boons.
+    #[test]
+    fn probe_resumes_like_the_full_run() {
+        let mut seed = 0x51f1_5eedu64;
+        let mut rnd = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let zero = |_: u64| 0i16;
+        let varies = |a: u64| (a % 2) as i16;
+        let mut resumed_cases = 0;
+        for case in 0..4000 {
+            let (intensity, healing): (bool, Option<&dyn Fn(u64) -> i16>) = match case % 4 {
+                0 => (true, None),
+                1 => (false, None),
+                2 => (false, Some(&zero)),
+                _ => (false, Some(&varies)),
+            };
+            let boon = if intensity { MIGHT } else { PROTECTION };
+            let sim = Sim {
+                holder: 1,
+                boon,
+                capacity: if intensity {
+                    3 + rnd(4) as u32
+                } else {
+                    2 + rnd(4) as u32
+                },
+                intensity,
+                healing,
+            };
+            let mut events = Vec::new();
+            let mut t = 1000u64;
+            for _ in 0..(5 + rnd(40)) {
+                t += [0, 0, 100, 500, 1000][rnd(5) as usize];
+                let src = 2 + rnd(3);
+                let kind = match rnd(12) {
+                    0 => BuffEventKind::RemoveAll,
+                    1 | 2 => BuffEventKind::RemoveSingle {
+                        removed_duration_ms: [500, 1000, 2000, 2500][rnd(4) as usize],
+                    },
+                    3 => BuffEventKind::Extend {
+                        extended_ms: 1000,
+                        new_duration_ms: [1000, 2000, 3000][rnd(3) as usize],
+                    },
+                    _ => BuffEventKind::Apply {
+                        duration_ms: [0, 1000, 2000, 3000, 3000, 5000][rnd(6) as usize],
+                        is_shields: rnd(4) == 0,
+                    },
+                };
+                events.push(BuffEvent {
+                    kind,
+                    ..apply_be(t, 1, src, boon, 0, false)
+                });
+            }
+            let cut = rnd(events.len() as u64) as usize;
+            // Cut between times, as checkpoints are.
+            let at = events[cut].time;
+            let (behind, rest): (Vec<_>, Vec<_>) = events.iter().partition(|e| e.time <= at);
+            let Some((seed_events, kept)) = sim.probe(behind) else {
+                continue;
+            };
+            resumed_cases += 1;
+            let full = sim.run(events.clone(), FAR);
+            let mut resumed = kept.clone();
+            resumed.extend(sim.run(seed_events.iter().chain(&rest).copied().collect(), FAR));
+            if !intensity {
+                assert_eq!(resumed, full, "case {case}");
+            }
+            for now in [at, at + 700, t, t + 2500, t + 60_000] {
+                assert_eq!(
+                    clip(&resumed, now, intensity),
+                    clip(&full, now, intensity),
+                    "case {case} at {now}"
+                );
+            }
+        }
+        // Only healing that differs between the stacks held keeps a state from being read.
+        assert!(resumed_cases > 3400, "{resumed_cases} resumed");
+    }
+
+    /// Two trackers on the same rows, one simulating from checkpoints and one from the first
+    /// row at every tick: the same totals at every tick (and at an end tick back in time), with
+    /// the stack-id flag coming late, the band aid's first qualifying strip coming late, a
+    /// rename, rows older than the last tick, and Regeneration ordered by healing power.
+    #[test]
+    fn checkpoints_equal_full_resimulation() {
+        for healing in [0i16, 1] {
+            let players: Vec<u32> = (10..22).collect();
+            let mut traffic = Traffic::new(0x7357_c0de, players.clone(), ENEMY);
+            let mut stacks = Stacks::default();
+            let (mut a, mut b) = (BoonTracker::new(), BoonTracker::new());
+            b.checkpoints = false;
+            let groups = |id: u32| match id {
+                10..22 => Some(1 + ((id - 10) / 5) as u8),
+                113 => Some(1),
+                _ => None,
+            };
+            let heal = move |id: u32| if healing == 0 { 0 } else { (id % 3) as i16 };
+            let tick = |tr: &mut BoonTracker, now| {
+                tr.tick(
+                    now,
+                    &groups,
+                    &|id| groups(id).is_some(),
+                    &|id| id != 11,
+                    &heal,
+                );
+            };
+            let mut renamed = false;
+            let mut checkpointed = 0;
+            for t in (100..=90_000).step_by(100) {
+                let mut evs = traffic.step(t);
+                // No stack-active rows for 20 s, no strips for 30 s.
+                evs.retain(|e| match e {
+                    Event::BuffStack { .. } => t > 20_000,
+                    Event::BuffRemove { remover, .. } | Event::BuffRemoveAll { remover, .. } => {
+                        *remover == 0 || t > 30_000
+                    }
+                    _ => true,
+                });
+                let mut batch: Vec<(u64, Event)> = evs.into_iter().map(|e| (t, e)).collect();
+                if t % 7_000 == 0 {
+                    // A late row: older than the last tick.
+                    batch.push((
+                        t - 1_500,
+                        apply(12, 15, MIGHT, 900_000 + t as u32, 4000, true),
+                    ));
+                    batch.push((
+                        t - 1_500,
+                        apply(14, 12, FURY, 900_001 + t as u32, 2000, false),
+                    ));
+                }
+                for (at, e) in batch {
+                    let mut rows = stacks.apply(at, &e);
+                    if renamed {
+                        for r in &mut rows {
+                            for id in [&mut r.src, &mut r.dst] {
+                                if *id == 13 {
+                                    *id = 113;
+                                }
+                            }
+                        }
+                    }
+                    a.rows(at, &rows);
+                    b.rows(at, &rows);
+                }
+                if t == 60_000 {
+                    a.rename(13, 113);
+                    b.rename(13, 113);
+                    renamed = true;
+                }
+                if t % 500 == 0 {
+                    tick(&mut a, t);
+                    tick(&mut b, t);
+                    assert_eq!(a.totals, b.totals, "at {t} (healing {healing})");
+                    checkpointed += a.pairs.values().filter(|p| p.cp.at.is_some()).count();
+                }
+            }
+            // The fight ends at its last activity, before the last ticks.
+            tick(&mut a, 86_300);
+            tick(&mut b, 86_300);
+            assert_eq!(a.totals, b.totals, "end tick (healing {healing})");
+            assert!(a.totals.len() >= players.len());
+            assert!(checkpointed > 10_000, "checkpoints used: {checkpointed}");
+        }
     }
 }
