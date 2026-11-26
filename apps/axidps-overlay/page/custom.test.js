@@ -732,3 +732,15 @@ test("history last:N with sub-second feeds divides by the span it covers", () =>
   assert.strictEqual(early.view("last:10").seconds, 4.5);
   assert.ok(Math.abs(byName(early.view("last:10"), "A").dps - 1000) < 1e-6);
 });
+
+test("chart look drops boon stats", () => {
+  const s = normalizeSpec({ look: "chart", stats: [{ key: "boon:1187:up" }, { key: "dps" }, { key: "boon:740:squad" }] }, "c1");
+  assert.deepStrictEqual(s.stats.map(x => x.key), ["dps"]);
+  const only = normalizeSpec({ look: "chart", stats: [{ key: "boon:1187:up" }] }, "c1");
+  assert.deepStrictEqual(only.stats, [{ key: "damage", as: "total" }]);
+  assert.strictEqual(only.sort.key, "damage");
+  // Bars and number keep them.
+  for (const look of ["bars", "number", "table"]) {
+    assert.deepStrictEqual(normalizeSpec({ look, stats: [{ key: "boon:1187:up" }] }, "c1").stats.map(x => x.key), ["boon:1187:up"]);
+  }
+});

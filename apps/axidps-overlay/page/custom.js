@@ -89,7 +89,14 @@ const axidpsCustom = (() => {
     let name = typeof raw.name === "string" ? raw.name.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, NAME_MAX).trim() : "";
     if (!name) name = `Window ${idNum(id)}`;
     const rows = ROWS.includes(raw.rows) ? raw.rows : "players";
-    const stats = normStats(raw.stats, rows === "boons");
+    // A boons window is a table (its rows are boons, not players); a chart has no boon stats
+    // (uptime summed over players over time means nothing).
+    const look = rows === "boons" ? "table" : LOOKS.includes(raw.look) ? raw.look : "table";
+    let stats = normStats(raw.stats, rows === "boons");
+    if (look === "chart") {
+      stats = stats.filter(s => !isBoon(s.key));
+      if (!stats.length) stats = [{key: "damage", as: "total"}];
+    }
     const who = isObj(raw.who) ? raw.who : {};
     const filters = (Array.isArray(who.filters) ? who.filters : [])
       .filter(f => typeof f === "string" && FILTER_RE.test(f)).slice(0, MAX_FILTERS);
@@ -102,8 +109,7 @@ const axidpsCustom = (() => {
       id, name, rows, stats,
       who: {base: BASES.includes(who.base) ? who.base : "squad", filters},
       span: SPANS.includes(raw.span) ? raw.span : "fight",
-      // A boons window is a table (its rows are boons, not players).
-      look: rows === "boons" ? "table" : LOOKS.includes(raw.look) ? raw.look : "table",
+      look,
       sort: {key: sortKey, asc: sort.asc === true},
       limit: lim >= 1 ? Math.min(lim, MAX_LIMIT) : null,
     };
