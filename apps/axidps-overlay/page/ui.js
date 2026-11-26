@@ -991,7 +991,7 @@ const launcher = defineWindow({
 const BUILD = window.AXIDPS_BUILD || "dev";
 const TABS = [
   ["windows", "Windows", "grid", "Show and hide the axidps windows."],
-  ["tables", "Tables", "columns", "Pick and order each table's columns, or add tables of your own."],
+  ["tables", "Custom windows", "columns", "Build your own windows from what axidps counts."],
   ["appearance", "Appearance", "layers", "Themes, opacity and blur for every window."],
   ["settings", "Settings", "sliders", "What axidps counts, and how."],
   ["plugins", "Plugins", "plug", "Add windows and tools made by others."],
@@ -1026,6 +1026,164 @@ function themeCard(t) {
     `<div class="rows">${bar(c("accent"), 92)}${bar(c("good"), 70)}${bar(c("dim"), 48)}</div></div>`;
 }
 
+// ---- the Custom windows tab (the builder): a card per window --------------------------------
+
+// Profession names for the "+ spec…" filters (ids 1-9, the kit's PROF colour order).
+const PROF_NAMES = ["", "Guardian", "Warrior", "Engineer", "Ranger", "Thief", "Elementalist", "Mesmer",
+  "Necromancer", "Revenant"];
+const FILTER_MAX = 9;
+const filterLabel = f => f.startsWith("prof:") ? (PROF_NAMES[Number(f.slice(5))] || f) : f.slice(5);
+const SEG_TEXT = {
+  rows: [["players", "players"], ["total", "total"]],
+  who: [["squad", "squad"], ["group", "my subgroup"], ["me", "me"]],
+  span: [["fight", "fight"], ["last:10", "10s"], ["last:30", "30s"], ["last:60", "60s"], ["session", "session"]],
+  look: [["table", "table"], ["bars", "bars"], ["number", "number"], ["chart", "chart"]],
+};
+const AS_TEXT = {total: "total", per_s: "/s", share: "%"};
+// The as toggle's next value: total, /s, % (no % for a number: it would always read 100%).
+const nextAs = (as, look) => {
+  const order = look === "number" ? ["total", "per_s"] : ["total", "per_s", "share"];
+  return order[(order.indexOf(as) + 1) % order.length];
+};
+// The filters a card offers: every profession, the specs in the current feed, and its own.
+function filterChoices(spec) {
+  const out = PROF_NAMES.slice(1).map((_, i) => "prof:" + (i + 1));
+  const specs = [...new Set(players().map(p => p.spec).filter(x => typeof x === "string" && /^[A-Za-z ]{1,24}$/.test(x)))].sort();
+  for (const f of specs.map(x => "spec:" + x).concat(spec.who.filters)) if (!out.includes(f)) out.push(f);
+  return out;
+}
+const seg = (f, cur) => `<div class="seg" data-f="${f}">` + SEG_TEXT[f].map(([v, t]) =>
+  `<button data-cact="set" data-v="${v}"${v === cur ? ' class="on"' : ""}>${t}</button>`).join("") + `</div>`;
+const crow = (label, body) => `<div class="crow"><span>${label}</span><div>${body}</div></div>`;
+
+// A built-in table's card: its name and Copy (they are not editable).
+function builtinCard(t, full) {
+  return `<div class="tbl" data-c="${t.id}"><div class="tbl-h"><b>${esc(t.def.blurb[0])}</b><span class="tag">built in</span>` +
+    `<span class="grow"></span><button data-cact="copy"${full ? " disabled" : ""} data-tip="a custom window with its columns">Copy</button></div></div>`;
+}
+// A custom window's card: every part of its spec.
+function customCard(spec, full, filterOpen) {
+  const C = axidpsCustom, n = spec.stats.length, chart = spec.look === "chart";
+  const chips = spec.stats.map((s, i) => {
+    const as = STATS[s.key].rate || chart ? "" :
+      `<button data-cact="as" class="as" data-tip="total, per second or % of everyone shown">${AS_TEXT[s.as]}</button>`;
+    return `<span class="chip on" data-k="${s.key}" data-i="${i}" data-tip="${esc(statTip(s))}">` +
+      `<button data-cact="left"${i ? "" : " disabled"}>&lsaquo;</button>${esc(STATS[s.key].label)}` +
+      `<button data-cact="right"${i < n - 1 ? "" : " disabled"}>&rsaquo;</button>${as}` +
+      `<button data-cact="rm"${n > 1 ? "" : " disabled"}>&times;</button></span>`;
+  }).join("") + Object.keys(STATS).filter(k => !spec.stats.some(s => s.key === k)).map(k =>
+    `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"${n >= C.MAX_STATS ? " disabled" : ""}>` +
+    `+ ${esc(STATS[k].label)}</button></span>`).join("");
+  const fl = spec.who.filters;
+  const filters = (filterOpen ? filterChoices(spec) : fl).map(f => {
+    const on = fl.includes(f);
+    return `<span class="chip${on ? " on" : ""}"><button data-cact="filter" data-v="${esc(f)}"` +
+      `${!on && fl.length >= FILTER_MAX ? " disabled" : ""}>${on ? "" : "+ "}${esc(filterLabel(f))}` +
+      `${on ? " &times;" : ""}</button></span>`;
+  }).join("") + `<span class="chip"><button data-cact="filters"${filterOpen ? ' class="on"' : ""}>` +
+    `${filterOpen ? "done" : "+ spec&hellip;"}</button></span>`;
+  const sortName = spec.sort.key === "name" ? "Name" : STATS[spec.sort.key].label;
+  return `<div class="tbl cw" data-c="${spec.id}"><div class="tbl-h"><b>${esc(spec.name)}</b><span class="grow"></span>` +
+    `<button data-cact="copy"${full ? " disabled" : ""}>Copy</button><button data-cact="del">Remove</button></div>` +
+    crow("Name", `<span class="field" data-cact="name">${esc(spec.name)}</span>`) +
+    crow("Rows", seg("rows", spec.rows)) +
+    crow("Who", seg("who", spec.who.base) + `<div class="chips">${filters}</div>`) +
+    crow("Span", seg("span", spec.span)) +
+    crow("Look", seg("look", spec.look)) +
+    crow("Stats", `<div class="chips">${chips}</div>`) +
+    crow("Sort", `<button data-cact="sortkey" data-tip="sort by the name or one of its stats">${esc(sortName)}</button>` +
+      `<button data-cact="sortdir" data-tip="${spec.sort.asc ? "lowest" : "highest"} first">${spec.sort.asc ? "&uarr;" : "&darr;"}</button>` +
+      `<span class="lbl">Rows</span><div class="step"><button data-cact="limit-">&minus;</button>` +
+      `<b>${spec.limit || "auto"}</b><button data-cact="limit+">+</button></div>`) +
+    `</div>`;
+}
+// The tab: a card per built-in table and per custom window, and the Add a window menu. Drawn
+// again only when something on it changes.
+function renderBuilder(w) {
+  const C = axidpsCustom, full = saved.custom.length >= C.MAX_CUSTOM;
+  const tables = wins.filter(x => x.def.table);
+  if (full) w.addMenu = false;
+  const feedSpecs = w.filterOpen ? players().map(p => p.spec).join() : "";
+  const key = JSON.stringify([saved.custom, tables.map(t => t.id + t.def.blurb[0]), w.filterOpen || "", !!w.addMenu, feedSpecs]);
+  if (w.builderKey === key) return;
+  w.builderKey = key;
+  w.body.querySelector(".tbls").innerHTML = tables.map(t => builtinCard(t, full)).join("") +
+    saved.custom.map(s => customCard(s, full, w.filterOpen === s.id)).join("");
+  const add = w.body.querySelector('[data-act="addtable"]');
+  add.disabled = full;
+  add.classList.toggle("on", !!w.addMenu);
+  const menu = w.body.querySelector(".addmenu");
+  menu.style.display = w.addMenu ? "" : "none";
+  menu.innerHTML = w.addMenu ? `<button data-cact="addblank">Blank</button>` +
+    tables.map(t => `<button data-cact="addfrom" data-v="${t.id}">Copy of ${esc(t.def.blurb[0])}</button>`).join("") +
+    saved.custom.map(s => `<button data-cact="addfrom" data-v="${s.id}">Copy of ${esc(s.name)}</button>`).join("") : "";
+}
+// A click on a card's control (data-cact) or the Add a window menu.
+function builderAct(hw, b) {
+  const act = b.dataset.cact, v = b.dataset.v;
+  if (act === "addblank" || act === "addfrom") {
+    hw.addMenu = false;
+    const from = act === "addfrom" ? wins.find(x => x.id === v) : null;
+    if (act === "addfrom" && !from) return;
+    addCustom(from);
+    return;
+  }
+  const card = b.closest("[data-c]");
+  const t = card && wins.find(x => x.id === card.dataset.c);
+  if (!t) return;
+  if (act === "copy") { addCustom(t); return; }
+  if (!t.def.custom) return;
+  const spec = t.def.spec, id = spec.id;
+  const stats = spec.stats.map(s => Object.assign({}, s));
+  const chip = b.closest("[data-i]"), i = chip ? Number(chip.dataset.i) : -1;
+  switch (act) {
+    case "name": return; // typing arrives with the keyboard forwarding (focus the field here)
+    case "del":
+      if (hw.filterOpen === id) hw.filterOpen = "";
+      return removeCustom(id);
+    case "set": {
+      const f = b.closest("[data-f]").dataset.f;
+      if (f === "who") return updateSpec(id, {who: {base: v, filters: spec.who.filters}});
+      return updateSpec(id, {[f]: v});
+    }
+    case "filters":
+      hw.filterOpen = hw.filterOpen === id ? "" : id;
+      return hw.def.render(hw);
+    case "filter": {
+      const fl = spec.who.filters;
+      const next = fl.includes(v) ? fl.filter(x => x !== v) : fl.length < FILTER_MAX ? fl.concat(v) : fl;
+      return updateSpec(id, {who: {base: spec.who.base, filters: next}});
+    }
+    case "add": {
+      const k = b.closest("[data-k]").dataset.k;
+      if (stats.length >= axidpsCustom.MAX_STATS) return;
+      return updateSpec(id, {stats: stats.concat({key: k, as: "total"})});
+    }
+    case "rm":
+      if (stats.length < 2 || i < 0) return;
+      stats.splice(i, 1);
+      return updateSpec(id, {stats});
+    case "left": case "right": {
+      const j = act === "left" ? i - 1 : i + 1;
+      if (i < 0 || j < 0 || j >= stats.length) return;
+      [stats[i], stats[j]] = [stats[j], stats[i]];
+      return updateSpec(id, {stats});
+    }
+    case "as":
+      if (i < 0) return;
+      stats[i].as = nextAs(stats[i].as, spec.look);
+      return updateSpec(id, {stats});
+    case "sortkey": {
+      const keys = ["name", ...new Set(spec.stats.map(s => s.key))];
+      const key = keys[(keys.indexOf(spec.sort.key) + 1) % keys.length];
+      return updateSpec(id, {sort: {key, asc: key === "name"}});
+    }
+    case "sortdir": return updateSpec(id, {sort: {key: spec.sort.key, asc: !spec.sort.asc}});
+    case "limit+": return updateSpec(id, {limit: spec.limit ? Math.min(MAX_ROWS, spec.limit + 1) : 1});
+    case "limit-": return updateSpec(id, {limit: spec.limit && spec.limit > 1 ? spec.limit - 1 : null});
+  }
+}
+
 // Everything in one place: a full window over the dimmed game, centred, closed by a click
 // outside it or Esc.
 const hub = defineWindow({
@@ -1049,7 +1207,8 @@ const hub = defineWindow({
       `<div class="plugs"><h3>Plugins</h3><div class="pcards"></div></div></section>` +
       // Tables
       `<section data-tab="tables"><div class="tbls"></div><div class="acts">` +
-      `<button data-act="addtable" data-tip="a new table window with columns you pick">${icon("plus", 12, "text")}Add a table</button></div>` +
+      `<button data-act="addtable" data-tip="a blank window, or a copy of one you have">${icon("plus", 12, "text")}Add a window</button>` +
+      `</div><div class="addmenu"></div>` +
       `<p class="note">Heal columns are complete only for you: the game reports no one else's heals, so ` +
       `for others they show what passed between them and you (dimmed).</p></section>` +
       // Appearance
@@ -1094,25 +1253,10 @@ const hub = defineWindow({
     q('[data-act="close"]').onclick = () => setOpen(w, false);
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
-    q('[data-act="addtable"]').onclick = () => addCustom(null);
-    q(".tbls").onclick = e => {
-      const b = e.target.closest("[data-tact]"), box = e.target.closest("[data-t]");
-      const t = box && wins.find(x => x.id === box.dataset.t);
-      if (!b || !t || b.disabled) return;
-      const act = b.dataset.tact, k = b.closest("[data-k]") && b.closest("[data-k]").dataset.k;
-      if (act === "grp") { const c = t.cfg; c.groupOnly = !c.groupOnly; t.offset = 0; save(); renderAll(); return; }
-      const cols = colsOf(t).slice(), i = cols.indexOf(k);
-      if (act === "reset") delete t.cfg.cols;
-      else {
-        if (act === "add" && i < 0) cols.push(k);
-        else if (act === "rm" && cols.length > 1) cols.splice(i, 1);
-        else if ((act === "left" && i > 0) || (act === "right" && i >= 0 && i < cols.length - 1)) {
-          const j = act === "left" ? i - 1 : i + 1;
-          [cols[i], cols[j]] = [cols[j], cols[i]];
-        }
-        t.cfg.cols = cols;
-      }
-      t.offset = 0; save(); renderAll();
+    q('[data-act="addtable"]').onclick = () => { w.addMenu = !w.addMenu; w.def.render(w); };
+    q('section[data-tab="tables"]').onclick = e => {
+      const b = e.target.closest("[data-cact]");
+      if (b && !b.disabled) builderAct(w, b);
     };
     q(".cards").onclick = e => {
       const t = e.target.closest("[data-w]");
@@ -1188,23 +1332,7 @@ const hub = defineWindow({
         `${m.reason ? `<span class="pl bad">${esc(m.reason)}</span>` : ""}</div>`).join("");
       w.body.querySelectorAll(".pcards").forEach(pc => pc.innerHTML = cards);
     }
-    if (w.tab === "tables") {
-      w.body.querySelector(".tbls").innerHTML = wins.filter(x => x.def.table).map(t => {
-        const cols = colsOf(t);
-        return `<div class="tbl" data-t="${t.id}"><div class="tbl-h"><b>${esc(t.def.blurb[0])}</b>` +
-          `<span class="grow"></span><button data-tact="grp" class="${t.cfg.groupOnly ? "on" : ""}" ` +
-          `data-tip="show only your subgroup">My subgroup</button>` +
-          `${t.cfg.cols ? `<button data-tact="reset">Defaults</button>` : ""}</div><div class="chips">` +
-          cols.map((k, i) => `<span class="chip on" data-k="${k}" data-tip="${esc(STATS[k].tip)}">` +
-            `<button data-tact="left"${i ? "" : " disabled"}>&lsaquo;</button>${esc(STATS[k].label)}` +
-            `<button data-tact="right"${i < cols.length - 1 ? "" : " disabled"}>&rsaquo;</button>` +
-            `<button data-tact="rm"${cols.length > 1 ? "" : " disabled"}>&times;</button></span>`).join("") +
-          Object.keys(STATS).filter(k => !cols.includes(k)).map(k =>
-            `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-tact="add">+ ${esc(STATS[k].label)}</button></span>`)
-            .join("") + `</div></div>`;
-      }).join("");
-      w.body.querySelector('[data-act="addtable"]').disabled = saved.custom.length >= axidpsCustom.MAX_CUSTOM;
-    }
+    if (w.tab === "tables") renderBuilder(w);
     w.body.querySelectorAll(".wc").forEach(t => {
       const on = isOpen(wins.find(x => x.id === t.dataset.w));
       t.classList.toggle("on", on);
