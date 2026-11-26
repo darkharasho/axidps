@@ -552,15 +552,18 @@ test("applyKey ignores unknown keys and strings", () => {
 const B = (boons, o) => P(Object.assign({ boons }, o));
 
 test("boon_stats_flatten_and_difference", () => {
-  const f = C.flattenPlayer({ name: "A", damage: 5, boons: { 1187: [3000, 1000, 500, 250], 740: [9000, 0, 0, 0] } });
-  assert.strictEqual(f["boon:1187:up"], 3000);
-  assert.strictEqual(f["boon:1187:self"], 1000);
-  assert.strictEqual(f["boon:1187:group"], 500);
-  assert.strictEqual(f["boon:1187:squad"], 250);
-  assert.strictEqual(f["boon:740:up"], 9000);
-  assert.strictEqual(f["boon:30328:up"], 0);
-  assert.strictEqual(f.damage, 5);
-  assert.ok(!("boons" in f));
+  // The history keeps the feed's nested boons as flat keys (ms; 0 for a boon not held).
+  const f = createHistory();
+  fightTo(f, 2000, ms => [{ name: "A", damage: ms, boons: { 1187: [ms * 3, ms, ms / 2, ms / 4], 740: [ms * 9, 0, 0, 0] } }]);
+  const fl = byName(f.view("last:10"), "A");
+  assert.strictEqual(fl["boon:1187:up"], 6000);
+  assert.strictEqual(fl["boon:1187:self"], 2000);
+  assert.strictEqual(fl["boon:1187:group"], 1000);
+  assert.strictEqual(fl["boon:1187:squad"], 500);
+  assert.strictEqual(fl["boon:740:up"], 18000);
+  assert.strictEqual(fl["boon:30328:up"], 0);
+  assert.strictEqual(fl.damage, 2000);
+  assert.ok(!("boons" in fl));
   // A span differences the cumulative ms like any summed stat; a total that goes down (the end
   // tick) gives 0, never a negative.
   const h = createHistory();
@@ -583,24 +586,21 @@ test("boon_stats_flatten_and_difference", () => {
   assert.strictEqual(h.view("session").seconds, 40);
 });
 
-test("boon_rate_zero_and_no_targets", () => {
+test("boon_rate_zero_and_per_target", () => {
   // Duration boons in %, intensity boons in stacks.
-  assert.strictEqual(C.boonRate("boon:1187:up", 2500, 10000, 1), 25);
-  assert.strictEqual(C.boonRate("boon:740:up", 250000, 10000, 1), 25);
+  assert.strictEqual(C.boonRate("boon:1187:up", 2500, 10000), 25);
+  assert.strictEqual(C.boonRate("boon:740:up", 250000, 10000), 25);
   // No boon: 0. No span: 0. Never NaN.
-  assert.strictEqual(C.boonRate("boon:1187:group", 0, 10000, 1), 0);
-  assert.strictEqual(C.boonRate("boon:1187:up", 500, 0, 1), 0);
-  assert.strictEqual(C.boonRate("boon:1187:up", NaN, 1000, 1), 0);
-  // No targets: null (shown as "–").
-  assert.strictEqual(C.boonRate("boon:1187:group", 4000, 10000, 0), null);
-  assert.strictEqual(C.boonRate("boon:1187:squad", 0, 10000, 0), null);
-  // Several targets: averaged.
-  assert.strictEqual(C.boonRate("boon:1187:squad", 4000, 10000, 2), 20);
+  assert.strictEqual(C.boonRate("boon:1187:group", 0, 10000), 0);
+  assert.strictEqual(C.boonRate("boon:1187:up", 500, 0), 0);
+  assert.strictEqual(C.boonRate("boon:1187:up", NaN, 1000), 0);
+  // Group and squad are per target in the feed already: not divided again.
+  assert.strictEqual(C.boonRate("boon:1187:squad", 4000, 10000), 40);
   // Negative ms (a total that went down) is 0.
-  assert.strictEqual(C.boonRate("boon:1187:up", -40, 10000, 1), 0);
+  assert.strictEqual(C.boonRate("boon:1187:up", -40, 10000), 0);
   assert.strictEqual(C.formatBoon("boon:1187:group", null), "–");
   assert.strictEqual(C.formatBoon("boon:1187:group", 0), "0%");
-  // The feed is already per target: computeRows passes targets 1, so group and squad are never null.
+  // The feed is already per target: group and squad are rates like uptime, never "–".
   const r = computeRows(mk({ stats: [{ key: "boon:1187:group" }] }), { players: [B({}), B({ 1187: [0, 0, 1000, 0] })], seconds: 10 }, String, 5);
   assert.deepStrictEqual(r.rows.map(x => x.values[0]).sort(), [0, 10]);
 });

@@ -194,29 +194,18 @@ const axidpsCustom = (() => {
     return typeof p[key] === "number" ? p[key] : 0;
   }
 
-  // The feed's p.boons as flat keys ("boon:<id>:<measure>", ms; 0 for every boon not held), so
-  // a span differences them like any summed stat. Returns a new object without p.boons.
-  function flattenPlayer(p) {
-    const out = Object.assign({}, p);
-    delete out.boons;
-    for (const k of BASE_KEYS) if (isBoon(k)) out[k] = boonMs(p, k);
-    return out;
-  }
-
   // A boon stat's value over a span of spanMs: % of the span for duration boons, average stacks
-  // for intensity boons. targets: how many players the ms are spread over; 0 gives null (no
-  // targets, shown as "–"). The feed's group and squad are already per target, so callers pass 1
-  // for every measure. Never negative, never NaN.
-  function boonRate(key, ms, spanMs, targets) {
-    if (targets === 0) return null;
+  // for intensity boons (the feed's group and squad are already per target). Never negative,
+  // never NaN.
+  function boonRate(key, ms, spanMs) {
     const st = STATS[key];
-    const n = Number(ms), span = Number(spanMs), t = Number(targets) || 1;
+    const n = Number(ms), span = Number(spanMs);
     if (!st || !(span > 0) || !(n > 0)) return 0;
-    const v = n / t / span;
+    const v = n / span;
     return st.intensity ? v : v * 100;
   }
 
-  // A boon value's text: "–" for null, stacks with 1 decimal, else % with 0 decimals.
+  // A boon value's text: "–" for no number, stacks with 1 decimal, else % with 0 decimals.
   function formatBoon(key, v) {
     if (v == null || !Number.isFinite(v)) return "\u2013";
     return STATS[key] && STATS[key].intensity ? v.toFixed(1) : `${Math.round(v)}%`;
@@ -228,7 +217,7 @@ const axidpsCustom = (() => {
   function statValue(p, key, seconds, live) {
     const st = STATS[key];
     if (!st) return 0;
-    if (st.kind === "boon") return boonRate(key, boonMs(p, key), seconds * 1000, 1);
+    if (st.kind === "boon") return boonRate(key, boonMs(p, key), seconds * 1000);
     if (!st.rate) return Number(p[key]) || 0;
     if (live) return Number(p[key]) || 0;
     if (!(seconds > 0)) return 0;
@@ -247,7 +236,7 @@ const axidpsCustom = (() => {
   function boonOver(players, key, seconds) {
     let ms = 0;
     for (const p of players) ms += Math.max(0, boonMs(p, key));
-    const v = boonRate(key, ms, seconds * 1000, 1);
+    const v = boonRate(key, ms, seconds * 1000);
     return STATS[key].measure === "up" ? (players.length ? v / players.length : 0) : v;
   }
 
@@ -321,7 +310,7 @@ const axidpsCustom = (() => {
   // History of the live feed for spans other than "fight": a 60 s ring of snapshots (last:N), the
   // session (summed finished fights) and 1 s chart series. The clock is fight.duration_ms, never
   // wall time. Players are keyed by account || name; only identity fields and BASE_KEYS are kept
-  // (boons flattened, see flattenPlayer). A snapshot entry is {id, v, b}: v the fight keys
+  // (boon keys from p.boons, see boonMs). A snapshot entry is {id, v, b}: v the fight keys
   // (Float64Array, NF), b the boon keys (Float32Array, or null for a player with no boons; missing
   // keys read as 0). The ring keeps the first snapshot of each fight second, plus the newest.
   // Worst case, 50 players with every boon: about 62 x 50 x (15 x 8 + 52 x 4) bytes = 1 MB of
@@ -618,6 +607,6 @@ const axidpsCustom = (() => {
 
   return {STATS, BASE_KEYS, FIGHT_KEYS, BOON_MEASURE_KEYS, CHART_KEYS, MAX_CUSTOM, MAX_STATS, NAME_MAX, SPANS, LOOKS, SQUAD_BOONS,
     filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec, createHistory, applyKey,
-    flattenPlayer, boonRate, formatBoon};
+    boonRate, formatBoon};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsCustom;
