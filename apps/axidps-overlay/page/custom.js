@@ -1,7 +1,7 @@
 // User-defined overlay windows ("custom windows"): the stat catalog, spec checks, migration from
 // the old fixed tables, and copying. Plain browser JS; a global in the page, module.exports in Node.
 const axidpsCustom = (() => {
-  // Every stat a custom window can show. Labels, tips and widths (px) match COLS in ui.js.
+  // Every stat a custom window can show: labels, tips and widths (px). The built-in tables read them too (ui.js).
   // count: whole-number display. heal: the game reports heals only for you.
   // rate: the base keys a per-second stat is computed from.
   const STATS = {
@@ -149,7 +149,8 @@ const axidpsCustom = (() => {
   }
 
   function totalPlayer(list) {
-    const t = {name: "Total", account: "", prof: 0, heal_full: list.some(p => p.heal_full)};
+    // Heal stats are full only if every player's are.
+    const t = {name: "Total", account: "", prof: 0, heal_full: list.length > 0 && list.every(p => p.heal_full)};
     for (const k of Object.keys(STATS)) t[k] = list.reduce((a, p) => a + (Number(p[k]) || 0), 0);
     return t;
   }
@@ -321,7 +322,9 @@ const axidpsCustom = (() => {
         for (let i = 0; i < NK; i++) d[i] = e.v[i] - r.v[i];
         out.push(player(e.id, d));
       }
-      return withRates(out, Math.min(n, now.ms / 1000));
+      // No snapshot N s back (the ring started mid-fight, or the fight is younger): the time the
+      // ring covers.
+      return withRates(out, ref ? n : Math.min(n, (now.ms - ring[0].ms) / 1000));
     }
 
     function viewSession() {
