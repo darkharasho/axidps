@@ -194,9 +194,209 @@ const axidpsCustom = (() => {
     return {rows, footer: parts.join(" \u00b7 ")};
   }
 
+  // History of the live feed for spans other than "fight": a 60 s ring of snapshots (last:N), the
+  // session (summed finished fights) and 1 s chart series. The clock is fight.duration_ms, never
+  // wall time. Players are keyed by account || name; only identity fields and BASE_KEYS are kept.
+  const IDENT = ["name", "account", "prof", "elite", "spec", "group", "me", "heal_full"];
+  const RING_MS = 60000, SERIES_CAP = 3600, NK = BASE_KEYS.length;
+  const pkey = p => String(p.account || p.name || "");
+
+  function createHistory() {
+    let ring = [];              // [{ms, map: Map<key, {id, v: Float64Array}>}], oldest first
+    let cur = null;             // newest snapshot of the current fight
+    let curAdded = true;        // current fight already in the session (or none)
+    let base = null;            // session baseline inside the current fight (after clearSession)
+    let session = new Map(), sessionMs = 0;
+    let prevState = null, prevMs = 0;
+    let tracked = new Set();
+    let cache = new Map();      // view per span until the next push or clear; callers must not mutate it
+    // Series: one sample per whole fight second; sample.vals: Map<key, Float64Array by slot> (NaN = absent).
+    let samples = [], slots = new Map(), slotId = [];
+
+    const snapOf = (f) => {
+      const map = new Map();
+      for (const p of Array.isArray(f.players) ? f.players : []) {
+        if (!p) continue;
+        const k = pkey(p);
+        if (!k) continue;
+        const id = {};
+        for (const n of IDENT) id[n] = p[n];
+        const v = new Float64Array(NK);
+        for (let i = 0; i < NK; i++) v[i] = Number(p[BASE_KEYS[i]]) || 0;
+        map.set(k, {id, v});
+      }
+      return {ms: Number(f.fight.duration_ms) || 0, map};
+    };
+
+    function addToSession() {
+      if (!cur || curAdded) return;
+      for (const [k, e] of cur.map) {
+        const b = base && base.map.get(k);
+        let s = session.get(k);
+        if (!s) session.set(k, s = {id: e.id, v: new Float64Array(NK)});
+        s.id = e.id;
+        for (let i = 0; i < NK; i++) s.v[i] += Math.max(0, e.v[i] - (b ? b.v[i] : 0));
+      }
+      sessionMs += Math.max(0, cur.ms - (base ? base.ms : 0));
+      curAdded = true;
+    }
+
+    function clearSeries() { samples = []; slots = new Map(); slotId = []; }
+
+    function sample(snap) {
+      const sec = Math.floor(snap.ms / 1000);
+      const last = samples[samples.length - 1];
+      if (last && sec <= last.s) return;
+      const vals = new Map();
+      if (tracked.size) {
+        for (const [k, e] of snap.map) {
+          let j = slots.get(k);
+          if (j === undefined) { j = slotId.length; slots.set(k, j); slotId.push(e.id); }
+          else slotId[j] = e.id;
+        }
+        for (const key of tracked) {
+          const ki = BASE_KEYS.indexOf(key);
+          const a = new Float64Array(slotId.length).fill(NaN);
+          for (const [k, e] of snap.map) a[slots.get(k)] = e.v[ki];
+          vals.set(key, a);
+        }
+      }
+      // Seconds the feed skipped repeat the previous sample, so values stay one per second.
+      if (last) for (let s = Math.max(last.s + 1, sec - SERIES_CAP); s < sec; s++) samples.push({s, vals: last.vals});
+      samples.push({s: sec, vals});
+      if (samples.length > SERIES_CAP + 1) samples.splice(0, samples.length - SERIES_CAP - 1);
+    }
+
+    function push(f) {
+      cache = new Map();
+      const state = f ? f.state : null;
+      const fight = !!(f && f.fight);
+      if (!fight) {
+        if (prevState === "fight") addToSession();
+        prevState = state;
+        return;
+      }
+      const snap = snapOf(f);
+      if (state === "fight" && (prevState !== "fight" || snap.ms < prevMs)) {
+        addToSession();
+        ring = []; cur = null; base = null; curAdded = false; clearSeries();
+      }
+      const newest = ring[ring.length - 1];
+      if (newest && newest.ms === snap.ms) ring[ring.length - 1] = snap;
+      else if (!newest || snap.ms > newest.ms) ring.push(snap);
+      let drop = -1;
+      for (let i = 0; i < ring.length && ring[i].ms <= snap.ms - RING_MS; i++) drop = i;
+      if (drop > 0) ring.splice(0, drop);
+      if (state === "fight" || prevState === "fight") cur = snap;
+      if (state === "fight") sample(snap);
+      else if (prevState === "fight") addToSession();
+      prevState = state; prevMs = snap.ms;
+    }
+
+    const player = (id, v) => {
+      const p = Object.assign({}, id);
+      for (let i = 0; i < NK; i++) p[BASE_KEYS[i]] = Math.max(0, v[i]);
+      return p;
+    };
+    const withRates = (players, seconds) => {
+      for (const p of players) {
+        p.dps = seconds > 0 ? p.damage / seconds : 0;
+        p.hps = seconds > 0 ? (p.healing + p.barrier) / seconds : 0;
+      }
+      return {players, seconds};
+    };
+
+    function viewLast(n) {
+      const now = ring[ring.length - 1];
+      if (!now) return {players: [], seconds: 0};
+      const target = now.ms - n * 1000;
+      let ref = null;
+      for (let i = ring.length - 1; i >= 0; i--) if (ring[i].ms <= target) { ref = ring[i]; break; }
+      const out = [], d = new Float64Array(NK);
+      for (const [k, e] of now.map) {
+        let r = ref && ref.map.get(k);
+        if (!r) for (const s of ring) { r = s.map.get(k); if (r) break; }
+        for (let i = 0; i < NK; i++) d[i] = e.v[i] - r.v[i];
+        out.push(player(e.id, d));
+      }
+      return withRates(out, Math.min(n, now.ms / 1000));
+    }
+
+    function viewSession() {
+      const live = cur && !curAdded;
+      const acc = new Map();
+      for (const [k, s] of session) acc.set(k, {id: s.id, v: Float64Array.from(s.v)});
+      if (live) for (const [k, e] of cur.map) {
+        const b = base && base.map.get(k);
+        let a = acc.get(k);
+        if (!a) acc.set(k, a = {id: e.id, v: new Float64Array(NK)});
+        a.id = e.id;
+        for (let i = 0; i < NK; i++) a.v[i] += Math.max(0, e.v[i] - (b ? b.v[i] : 0));
+      }
+      const ms = sessionMs + (live ? Math.max(0, cur.ms - (base ? base.ms : 0)) : 0);
+      return withRates([...acc.values()].map(a => player(a.id, a.v)), ms / 1000);
+    }
+
+    function view(span) {
+      if (cache.has(span)) return cache.get(span);
+      const m = /^last:(\d+)$/.exec(String(span));
+      const v = span === "session" ? viewSession() : m ? viewLast(Number(m[1])) : null;
+      cache.set(span, v);
+      return v;
+    }
+
+    function track(keys) {
+      const next = new Set([...(keys || [])].filter(k => BASE_KEYS.includes(k)));
+      for (const k of tracked) if (!next.has(k)) for (const s of samples) s.vals.delete(k);
+      tracked = next;
+    }
+
+    function series(keys, whoFn) {
+      const players = slotId.map(id => Object.assign({}, id));
+      const kept = new Set(typeof whoFn === "function" ? whoFn(players) : players);
+      const idx = [];
+      players.forEach((p, j) => { if (kept.has(p)) idx.push(j); });
+      const n = Math.max(0, samples.length - 1);
+      const values = (keys || []).map(key => {
+        const out = new Array(n).fill(0);
+        for (let i = 0; i < n; i++) {
+          const a = samples[i].vals.get(key), b = samples[i + 1].vals.get(key);
+          if (!a || !b) continue;
+          let sum = 0;
+          for (const j of idx) {
+            const d = b[j] - a[j];
+            if (d > 0) sum += d;
+          }
+          out[i] = sum;
+        }
+        return out;
+      });
+      return {t0: samples.length ? samples[0].s * 1000 : 0, step: 1000, values};
+    }
+
+    function bytes() {
+      let n = 0;
+      for (const s of ring) n += s.map.size * NK;
+      n += session.size * NK;
+      const seen = new Set();
+      for (const s of samples) for (const a of s.vals.values()) if (!seen.has(a)) { seen.add(a); n += a.length; }
+      return n * 8;
+    }
+
+    return {
+      push, view, track, series, bytes,
+      clear() { ring = []; clearSeries(); cache = new Map(); },
+      clearSession() {
+        cache = new Map();
+        session = new Map(); sessionMs = 0;
+        base = cur && !curAdded ? cur : null;
+      },
+    };
+  }
+
   const blankSpec = id => normalizeSpec({}, id);
 
   return {STATS, BASE_KEYS, MAX_CUSTOM, MAX_STATS, NAME_MAX, SPANS, LOOKS,
-    filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec};
+    filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec, createHistory};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsCustom;
