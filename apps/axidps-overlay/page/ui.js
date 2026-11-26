@@ -179,8 +179,13 @@ const ui = {
 // else its id); plugins: {<plugin id>: {enabled, granted}}; dev: developer mode (the host reads it at
 // start).
 let saved = {v: 1, pos: {}, open: {}, cfg: {}, theme: "midnight", opacity: 0.94, blur: 1, rows: 15, core: {}, app: {},
-  tables: [], hideZones: false, compact: false, plugins: {}, dev: false};
+  tables: [], custom: [], hideZones: false, compact: false, plugins: {}, dev: false};
 const wins = [];
+// The live feed's history, for custom windows' spans other than "fight" and their charts
+// (custom.js). Not `history`: that is the page's window.history.
+const spanHistory = axidpsCustom.createHistory();
+// Bumped when the chart history starts over (Clear fight, a new fight): charts compute again.
+let chartGen = 0;
 
 // Every page -> host message goes through `toHost`: the host puts a per-run token in the page URL's
 // fragment, read once here and cleared, and accepts only messages prefixed with it. Plugin frames
@@ -367,6 +372,7 @@ function renderAll() {
     w.el.classList.toggle("closed", !open);
     if (open && w.def.render) { w.def.render(w); paintIcons(w.el); }
   }
+  trackCharts();
   toPlugins();
   scheduleReport();
 }
@@ -475,35 +481,35 @@ function players() {
 function emptyText() { return axidpsKit.emptyText(statusView()); }
 
 const int = n => String(n || 0);
-function clearFight() { ui.cleared = true; for (const x of wins) x.offset = 0; renderAll(); }
+function clearFight() {
+  ui.cleared = true;
+  spanHistory.clear(); chartGen++;
+  for (const x of wins) x.offset = 0;
+  renderAll();
+}
 const sumOf = (ps, k) => ps.reduce((s, p) => s + (p[k] || 0), 0);
 
-// Every column a player table can show (Tables tab): label, tip, width (px), formatter. heal: the
-// game reports heals only for you, so anyone else's value is just what passed between you.
-const COLS = {
-  damage: {label: "Dmg", tip: "damage dealt", w: 62},
-  dps: {label: "DPS", tip: "damage per second", w: 52},
-  power: {label: "Power", tip: "strike damage dealt", w: 58},
-  condi: {label: "Condi", tip: "condition damage dealt", w: 52},
-  down_contrib: {label: "DnC", tip: "down contribution: damage that led to enemy downs", w: 52},
-  downs: {label: "Dn", tip: "enemies downed", w: 30, num: int},
-  kills: {label: "K", tip: "enemies killed", w: 30, num: int},
-  deaths: {label: "D", tip: "deaths", w: 26, num: int},
-  downed: {label: "Dn'd", tip: "times downed", w: 40, num: int},
-  taken: {label: "Taken", tip: "damage taken", w: 52},
-  cleanses: {label: "Cleanse", tip: "condition stacks cleansed from allies", w: 62, num: int},
-  strips: {label: "Strip", tip: "boon stacks stripped from enemies", w: 52, num: int},
-  healing: {label: "Heal", tip: "healing given (others: only what they gave you)", w: 56, heal: true},
-  barrier: {label: "Barr", tip: "barrier given (others: only what they gave you)", w: 52, heal: true},
-  hps: {label: "HPS", tip: "healing and barrier given per second (others: only to you)", w: 50, heal: true},
-  healing_in: {label: "Heal in", tip: "healing received (others: only what you gave them)", w: 58, heal: true},
-  barrier_in: {label: "Barr in", tip: "barrier received (others: only what you gave them)", w: 58, heal: true},
-};
-const MAX_TABLES = 4;
+// Every column a player table can show (Tables tab), the custom window catalog (custom.js): label,
+// tip, width (px); count: whole numbers. heal: the game reports heals only for you, so anyone
+// else's value is just what passed between you.
+const STATS = axidpsCustom.STATS;
+// A table cell's text for a catalog stat's value.
+const statText = (k, v) => (STATS[k].count ? int : fmt)(v);
 // The columns a table shows: the player's choice (Tables tab), else its defaults.
 function colsOf(w) {
-  const c = (w.cfg.cols || []).filter(k => COLS[k]);
+  const c = (w.cfg.cols || []).filter(k => STATS[k]);
   return c.length ? c : w.def.cols;
+}
+
+// A row's bar behind the name, `frac` percent long in its profession colour (theme rows style).
+const rowBar = (col, frac) => theme.s.rows === "line"
+  ? `linear-gradient(to right, ${col} ${frac}%, transparent ${frac}%) left bottom / 100% 2px no-repeat`
+  : `linear-gradient(to right, ${col}38 ${frac}%, transparent ${frac}%)`;
+// A table's name cell: the profession colour bar, the spec icon and the name.
+function nameCell(p, frac) {
+  const col = PROF[p.prof] || PROF[0];
+  return `<td class="l name" data-tip="${esc(p.account)}" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
+    `${p.spec ? `<img src="icons/${encodeURIComponent(p.spec)}.png" alt="">` : ""}${esc(p.name)}</td>`;
 }
 
 // What a table's layout depends on: its columns and compact mode.
@@ -515,7 +521,7 @@ function tableWindow(def) {
   const build = w => {
     // Compact (Settings) narrows every column with the smaller type.
     const k = saved.compact ? 0.8 : 1, px = n => Math.round(n * k);
-    const cols = colsOf(w).map(c => Object.assign({k: c}, COLS[c], {w: px(COLS[c].w)}));
+    const cols = colsOf(w).map(c => Object.assign({k: c}, STATS[c], {w: px(STATS[c].w)}));
     w.colKey = tableKey(w);
     w.body.style.width = (Math.round(def.nameW * (saved.compact ? 0.72 : 1)) + px(28) +
       cols.reduce((n, c) => n + c.w, 0)) + "px";
@@ -536,7 +542,7 @@ function tableWindow(def) {
     mount: build,
     render(w) {
       if (tableKey(w) !== w.colKey) build(w);
-      const cols = colsOf(w).map(k => Object.assign({k}, COLS[k]));
+      const cols = colsOf(w).map(k => Object.assign({k}, STATS[k]));
       const c = w.cfg;
       const k = c.sortKey === "name" || cols.some(x => x.k === c.sortKey) ? c.sortKey : cols[0].k;
       fightState(w);
@@ -553,15 +559,9 @@ function tableWindow(def) {
       const top = Math.max(1, ...ps.map(p => p[k] || 0).filter(v => typeof v === "number"));
       const shown = ps.slice(w.offset, w.offset + rows);
       w.body.querySelector("tbody").innerHTML = shown.map((p, i) => {
-        const col = PROF[p.prof] || PROF[0];
         const frac = (typeof p[k] === "number" ? Math.max(0, p[k]) / top * 100 : 0).toFixed(1);
-        return `<tr class="p${p.me ? " me" : ""}"><td>${w.offset + i + 1}</td>` +
-          `<td class="l name" data-tip="${esc(p.account)}" style="border-left-color:${col};` +
-          `background:${theme.s.rows === "line"
-            ? `linear-gradient(to right, ${col} ${frac}%, transparent ${frac}%) left bottom / 100% 2px no-repeat`
-            : `linear-gradient(to right, ${col}38 ${frac}%, transparent ${frac}%)`}">` +
-          `${p.spec ? `<img src="icons/${encodeURIComponent(p.spec)}.png" alt="">` : ""}${esc(p.name)}</td>` +
-          cols.map(cc => `<td${cc.heal && !p.heal_full ? ' class="part"' : ""}>${(cc.num || fmt)(p[cc.k])}</td>`)
+        return `<tr class="p${p.me ? " me" : ""}"><td>${w.offset + i + 1}</td>${nameCell(p, frac)}` +
+          cols.map(cc => `<td${cc.heal && !p.heal_full ? ' class="part"' : ""}>${statText(cc.k, p[cc.k])}</td>`)
             .join("") + `</tr>`;
       }).join("");
       const empty = w.body.querySelector(".empty");
@@ -603,41 +603,263 @@ tableWindow({
   sum: ps => `${fmt(sumOf(ps, "taken"))} taken · ${sumOf(ps, "downed")} downs · ${sumOf(ps, "deaths")} deaths`,
 });
 
-// The player's own tables (Tables tab): saved.tables [{id, title}], columns in saved.cfg[id].cols.
-function customTable(t) {
-  return tableWindow({
-    id: t.id, blurb: [t.title, "your columns", "columns"], title: t.title, nameW: 170, custom: true,
-    open: true, cfg: {sortKey: "damage", sortAsc: false, groupOnly: false},
-    at: () => besideMeter(["support"], 140),
-    cols: ["damage", "dps"],
-    sum: (ps, cols) => `${ps.length} players · ` +
-      cols.filter(c => !c.num).slice(0, 2).map(c => `${fmt(sumOf(ps, c.k))} ${c.label.toLowerCase()}`).join(" · "),
+// ---- custom windows (saved.custom: the player's specs; see custom.js) ------------------------
+
+const NO_VIEW = {players: [], seconds: 0};
+// The base keys a stat is counted from (dps: damage; hps: healing and barrier).
+const baseOf = k => STATS[k].rate || [k];
+// A custom window cell's text: a share in % ("–" when the sum is zero), counted totals as whole
+// numbers, everything else with fmt.
+function customText(s, v) {
+  if (s.as === "share") return v == null ? "–" : fmt(v) + "%";
+  return STATS[s.key].count && s.as === "total" ? int(v) : fmt(v);
+}
+const statHead = s => STATS[s.key].label + (s.as === "share" ? " %" : s.as === "per_s" && !STATS[s.key].rate ? "/s" : "");
+const statTip = s => STATS[s.key].tip + (s.as === "share" ? " (% of everyone shown)" :
+  s.as === "per_s" && !STATS[s.key].rate ? " per second" : "");
+// The numbers a spec's span covers: the live feed (fight), else the history; nothing after Clear fight.
+function customView(spec) {
+  if (spec.span === "fight") {
+    const f = ui.live && ui.live.fight;
+    return {players: players(), seconds: f ? (Number(f.duration_ms) || 0) / 1000 : 0, live: true};
+  }
+  if (ui.cleared) return NO_VIEW;
+  return spanHistory.view(spec.span) || NO_VIEW;
+}
+// Chart line colours: the theme's accent, good and bad, then fixed inks.
+const CHART_INKS = ["accent", "good", "bad", "#e0af68", "#bb9af7", "#7dcfff", "#ff9e64", "dim"];
+const chartInk = i => { const c = CHART_INKS[i % CHART_INKS.length]; return c[0] === "#" ? c : T(c); };
+// A chart's lines: per stat, the per-second values summed over "who", as a 5 s rolling average
+// (the Timeline's). series() is costly (about 4 ms for an hour): computed again only when a new
+// whole fight second arrives, the spec changes or the history starts over.
+function chartData(w, spec) {
+  const f = ui.live && ui.live.fight;
+  const key = JSON.stringify(spec) + "|" + (f ? Math.floor((Number(f.duration_ms) || 0) / 1000) : -1) + "|" + chartGen;
+  if (w.chartKey === key) return w.chart;
+  const keys = [...new Set(spec.stats.flatMap(s => baseOf(s.key)))];
+  const ser = spanHistory.series(keys, ps => axidpsCustom.filterWho(ps, spec.who));
+  const n = ser.values.length ? ser.values[0].length : 0;
+  const smooth = a => a.map((_, i) => {
+    let sum = 0;
+    const lo = Math.max(0, i - 4);
+    for (let j = lo; j <= i; j++) sum += a[j];
+    return sum / (i - lo + 1) * 1000 / ser.step;
+  });
+  // fight and session: the whole fight; last:N the last N seconds.
+  const m = /^last:(\d+)$/.exec(spec.span);
+  const from = m ? Math.max(0, n - Number(m[1])) : 0;
+  const lines = spec.stats.map(s => {
+    const a = new Array(n).fill(0);
+    for (const b of baseOf(s.key)) {
+      const v = ser.values[keys.indexOf(b)];
+      for (let i = 0; i < n; i++) a[i] += v[i];
+    }
+    return smooth(a).slice(from);
+  });
+  w.chartKey = key;
+  w.chart = {t0: ser.t0 + from * ser.step, step: ser.step, lines};
+  return w.chart;
+}
+// The chart look, drawn like the Timeline plugin: three grid lines with values, the start and end
+// times, one 1.5 px line per stat.
+function drawChart(w, spec) {
+  const data = ui.cleared ? null : chartData(w, spec);
+  const drawKey = `${w.chartKey}|${ui.cleared}|${theme.id}|${theme.s.font}`;
+  if (w.drawn === drawKey) return;
+  w.drawn = drawKey;
+  const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
+  const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 6, padR = 6;
+  g.clearRect(0, 0, W, H);
+  const lines = data ? data.lines : [];
+  const n = lines.length ? lines[0].length : 0;
+  let top = 1;
+  for (const a of lines) for (const v of a) if (v > top) top = v;
+  const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
+  const y = v => H - padB - v / top * (H - padB - padT);
+  g.strokeStyle = T("line"); g.lineWidth = 1;
+  g.font = "10px " + theme.s.font; g.fillStyle = T("faint");
+  for (const fr of [0, 0.5, 1]) {
+    const yy = Math.round(y(top * fr)) + 0.5;
+    g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
+    if (n > 1) g.fillText(fmt(top * fr), 2, yy + 3);
+  }
+  if (n > 1) {
+    g.fillText(axidpsKit.clock(data.t0), padL, H - 3);
+    const end = axidpsKit.clock(data.t0 + n * data.step);
+    g.fillText(end, W - padR - g.measureText(end).width, H - 3);
+  }
+  // The first stat on top.
+  for (let k = lines.length - 1; k >= 0; k--) {
+    const a = lines[k];
+    if (a.length < 2) continue;
+    g.strokeStyle = chartInk(k); g.lineWidth = 1.5; g.beginPath();
+    a.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
+    g.stroke();
+  }
+  if (n < 2) {
+    g.fillStyle = T("dim"); g.textAlign = "center";
+    g.fillText(emptyText(), W / 2, H / 2);
+    g.textAlign = "start";
+  }
+  const st = STATS[spec.stats[0].key];
+  w.body.querySelector(".peak").textContent = n > 1
+    ? `peak ${fmt(Math.max(...lines[0]))} ${st.label.toLowerCase()}${st.rate ? "" : "/s"}` : "";
+}
+
+// A custom window's body for its look (again whenever the spec or compact mode changes).
+function buildCustom(w) {
+  const spec = w.def.spec;
+  const k = saved.compact ? 0.8 : 1, px = n => Math.round(n * k);
+  w.layout = JSON.stringify(spec) + (saved.compact ? "/c" : "");
+  w.drawn = "";
+  const foot = `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
+  if (spec.look === "table") {
+    const cols = spec.stats.map(s => ({s, w: px(STATS[s.key].w + (s.as === "total" ? 0 : 8))}));
+    w.body.style.width = (Math.round(170 * (saved.compact ? 0.72 : 1)) + px(28) + cols.reduce((n, c) => n + c.w, 0)) + "px";
+    w.body.innerHTML = `<table><colgroup><col style="width:${px(28)}px"><col>` +
+      cols.map(c => `<col style="width:${c.w}px">`).join("") + `</colgroup><thead><tr><th>#</th>` +
+      `<th class="l" data-k="name">Name</th>` +
+      cols.map(c => `<th data-k="${c.s.key}" data-tip="${esc(statTip(c.s))}">${esc(statHead(c.s))}</th>`).join("") +
+      `</tr></thead><tbody></tbody></table><div class="empty"></div>` + foot;
+    w.body.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
+      const cur = w.def.spec.sort, key = th.dataset.k;
+      updateSpec(w.id, {sort: cur.key === key ? {key, asc: !cur.asc} : {key, asc: key === "name"}});
+    });
+  } else if (spec.look === "bars") {
+    w.body.style.width = px(250) + "px";
+    w.body.innerHTML = `<div class="cbars"></div><div class="empty"></div>` + foot;
+  } else if (spec.look === "number") {
+    w.body.style.width = px(180) + "px";
+    w.body.innerHTML = `<div class="big"><b></b><small></small></div>`;
+  } else {
+    w.body.style.width = "";
+    w.body.innerHTML = `<canvas class="chart" width="${px(420)}" height="${px(150)}"></canvas>` +
+      `<div class="foot"><span>${spec.stats.map((s, i) =>
+        `<b style="color:${esc(chartInk(i))}">${esc(STATS[s.key].label)}</b>`).join(" · ")} per second</span>` +
+      `<span class="peak"></span></div>`;
+  }
+}
+const SPAN_TEXT = {fight: "this fight", session: "this session"};
+const spanText = sp => SPAN_TEXT[sp] || `last ${sp.slice(5)} s`;
+
+function renderCustom(w) {
+  const spec = w.def.spec;
+  if (w.layout !== JSON.stringify(spec) + (saved.compact ? "/c" : "")) buildCustom(w);
+  fightState(w);
+  if (spec.look === "chart") return drawChart(w, spec);
+  const view = customView(spec);
+  if (spec.look === "number") {
+    const s = spec.stats[0];
+    const any = axidpsCustom.filterWho(view.players, spec.who).length > 0;
+    const {rows} = axidpsCustom.computeRows(Object.assign({}, spec, {rows: "total"}), view, fmt, 0);
+    w.body.querySelector(".big b").textContent = any ? customText(s, rows[0].values[0]) : "–";
+    w.body.querySelector(".big small").textContent = any ? `${statHead(s)} · ${spanText(spec.span)}` : emptyText();
+    return;
+  }
+  // limit: a fixed number of rows; else Settings' Rows shown, the rest by wheel.
+  const {rows, footer} = axidpsCustom.computeRows(spec, view, fmt, 0);
+  const page = spec.limit || maxRows();
+  w.offset = Math.max(0, Math.min(w.offset, rows.length - page));
+  const shown = rows.slice(w.offset, w.offset + page);
+  // The name bar follows the sorted stat (the first one when sorted by name).
+  const si = Math.max(0, spec.stats.findIndex(s => s.key === spec.sort.key));
+  const bi = spec.look === "bars" ? 0 : si;
+  let top = 1;
+  for (const r of rows) if ((r.values[bi] || 0) > top) top = r.values[bi];
+  const frac = r => (Math.max(0, r.values[bi] || 0) / top * 100).toFixed(1);
+  const part = (s, p) => STATS[s.key].heal && !p.heal_full;
+  if (spec.look === "bars") {
+    const s = spec.stats[0];
+    w.body.querySelector(".cbars").innerHTML = shown.map(r => {
+      const p = r.p, col = PROF[p.prof] || PROF[0];
+      return `<div class="bl${p.me ? " me" : ""}" data-tip="${esc(p.account)}" style="border-left-color:${col};` +
+        `background:${rowBar(col, frac(r))}"><span class="n">` +
+        `${p.spec ? `<img src="icons/${encodeURIComponent(p.spec)}.png" alt="">` : ""}${esc(p.name)}</span>` +
+        `<span class="v${part(s, p) ? " part" : ""}">${esc(customText(s, r.values[0]))}</span></div>`;
+    }).join("");
+  } else {
+    w.body.querySelector("tbody").innerHTML = shown.map((r, i) => {
+      const p = r.p;
+      return `<tr class="p${p.me ? " me" : ""}"><td>${w.offset + i + 1}</td>${nameCell(p, frac(r))}` +
+        spec.stats.map((s, j) => `<td${part(s, p) ? ' class="part"' : ""}>${esc(customText(s, r.values[j]))}</td>`).join("") +
+        `</tr>`;
+    }).join("");
+    w.body.querySelectorAll("th[data-k]").forEach(th => th.classList.toggle("sort", th.dataset.k === spec.sort.key));
+  }
+  const empty = w.body.querySelector(".empty");
+  empty.style.display = shown.length ? "none" : "block";
+  empty.textContent = emptyText();
+  w.body.querySelector(".sum").textContent = rows.length ? footer : "";
+  w.body.querySelector(".scroll").textContent = rows.length > page
+    ? `${w.offset + 1}-${Math.min(rows.length, w.offset + page)} of ${rows.length} (wheel)` : "";
+}
+
+// A custom window for a spec: w.def.spec is the spec it draws (syncCustom swaps it).
+function customWindow(spec) {
+  const n = wins.filter(x => x.def.custom).length;
+  return defineWindow({
+    id: spec.id, title: spec.name, blurb: [spec.name, "your window", "columns"], custom: true, spec,
+    open: true,
+    at: () => besideMeter(["support"], 140 + 26 * n),
+    mount: buildCustom,
+    render: renderCustom,
   });
 }
-// Make the windows match saved.tables (after a restore, an add or a removal).
-function syncTables() {
-  saved.tables = (saved.tables || []).filter(t => t && /^t\d$/.test(t.id)).slice(0, MAX_TABLES);
-  for (const t of saved.tables) {
-    const w = wins.find(x => x.id === t.id);
-    if (!w) customTable(t);
-    else if (w.def.title !== t.title) {
-      w.def.title = t.title; w.def.blurb[0] = t.title;
-      w.el.querySelector(".bar b").textContent = t.title;
+// Make the windows match saved.custom (after a restore, an add, an edit or a removal): new ones
+// are made, a renamed one's title changes in place, a changed spec rebuilds its body.
+function syncCustom() {
+  const list = saved.custom;
+  for (const spec of list) {
+    const w = wins.find(x => x.def.custom && x.id === spec.id);
+    if (!w) { customWindow(spec); continue; }
+    if (w.def.title !== spec.name) {
+      w.def.title = spec.name; w.def.blurb[0] = spec.name;
+      w.el.querySelector(".bar b").textContent = spec.name;
+      w.el.querySelector(".edit b").textContent = spec.name;
     }
+    w.def.spec = spec;
   }
-  for (const w of wins.filter(x => x.def.custom && !saved.tables.some(t => t.id === x.id))) removeWindow(w);
+  for (const w of wins.filter(x => x.def.custom && !list.some(s => s.id === x.id))) removeWindow(w);
 }
-function addTable() {
-  if (saved.tables.length >= MAX_TABLES) return;
-  const n = [1, 2, 3, 4].find(i => !saved.tables.some(t => t.id === "t" + i));
-  saved.tables.push({id: "t" + n, title: "Table " + n});
-  delete saved.pos["t" + n]; delete saved.cfg["t" + n]; saved.open["t" + n] = true;
-  syncTables(); save(); renderAll();
+// A new custom window: blank (from null), a copy of a built-in table, or a copy of a custom one.
+function addCustom(from) {
+  const list = saved.custom, C = axidpsCustom;
+  if (list.length >= C.MAX_CUSTOM) return;
+  let id = "";
+  for (let i = 1; i <= C.MAX_CUSTOM && !id; i++) if (!list.some(s => s.id === "c" + i)) id = "c" + i;
+  let spec;
+  if (from && from.def.custom) {
+    const src = JSON.parse(JSON.stringify(from.def.spec));
+    spec = C.normalizeSpec(Object.assign(src, {name: ("Copy of " + src.name).slice(0, C.NAME_MAX)}), id);
+  } else if (from && from.def.table) {
+    spec = C.specFromBuiltin({title: from.def.title, cols: from.def.cols, cfg: from.cfg}, id);
+  } else spec = C.blankSpec(id);
+  delete saved.pos[id]; delete saved.cfg[id]; saved.open[id] = true;
+  list.push(spec);
+  refit(); syncCustom(); save(); renderAll();
 }
-function removeTable(id) {
-  saved.tables = saved.tables.filter(t => t.id !== id);
+function removeCustom(id) {
+  saved.custom = saved.custom.filter(s => s.id !== id);
   delete saved.pos[id]; delete saved.cfg[id]; delete saved.open[id];
-  syncTables(); save(); renderAll();
+  refit(); syncCustom(); save(); renderAll();
+}
+// Change a custom window's spec: patch is merged, then checked like a saved one.
+function updateSpec(id, patch) {
+  const i = saved.custom.findIndex(s => s.id === id);
+  if (i < 0) return;
+  const next = axidpsCustom.normalizeSpec(Object.assign({}, saved.custom[i], patch), id);
+  if (!next) return;
+  saved.custom[i] = next;
+  syncCustom(); save(); renderAll();
+}
+// The history keeps chart series only for the stats an open chart window draws.
+function trackCharts() {
+  const keys = new Set();
+  for (const w of wins) {
+    if (!w.def.custom || w.def.spec.look !== "chart" || !isOpen(w)) continue;
+    for (const s of w.def.spec.stats) for (const b of baseOf(s.key)) keys.add(b);
+  }
+  spanHistory.track(keys);
 }
 
 // Fight, Timeline and Healing are bundled plugins (plugins/axidps.fight, axidps.timeline,
@@ -822,7 +1044,8 @@ const hub = defineWindow({
       `<button class="x" data-act="close" data-tip="close (Esc)">${icon("x", 12)}</button></header>` +
       // Windows
       `<section data-tab="windows"><div class="cards"></div><div class="acts"><button data-act="clear" data-tip="blank every window until the next fight">` +
-      `${icon("trash-2", 12, "text")}Clear fight</button></div><p class="note win-note"></p>` +
+      `${icon("trash-2", 12, "text")}Clear fight</button><button data-act="clearsession" ` +
+      `data-tip="start the session span of every custom window over">${icon("trash-2", 12, "text")}Clear session</button></div><p class="note win-note"></p>` +
       `<div class="plugs"><h3>Plugins</h3><div class="pcards"></div></div></section>` +
       // Tables
       `<section data-tab="tables"><div class="tbls"></div><div class="acts">` +
@@ -870,13 +1093,13 @@ const hub = defineWindow({
     q('[data-act="layout"]').onclick = () => { ui.session.hub = false; requestEdit(true); renderAll(); };
     q('[data-act="close"]').onclick = () => setOpen(w, false);
     q('[data-act="clear"]').onclick = clearFight;
-    q('[data-act="addtable"]').onclick = addTable;
+    q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
+    q('[data-act="addtable"]').onclick = () => addCustom(null);
     q(".tbls").onclick = e => {
       const b = e.target.closest("[data-tact]"), box = e.target.closest("[data-t]");
       const t = box && wins.find(x => x.id === box.dataset.t);
       if (!b || !t || b.disabled) return;
       const act = b.dataset.tact, k = b.closest("[data-k]") && b.closest("[data-k]").dataset.k;
-      if (act === "del") return removeTable(t.id);
       if (act === "grp") { const c = t.cfg; c.groupOnly = !c.groupOnly; t.offset = 0; save(); renderAll(); return; }
       const cols = colsOf(t).slice(), i = cols.indexOf(k);
       if (act === "reset") delete t.cfg.cols;
@@ -971,17 +1194,16 @@ const hub = defineWindow({
         return `<div class="tbl" data-t="${t.id}"><div class="tbl-h"><b>${esc(t.def.blurb[0])}</b>` +
           `<span class="grow"></span><button data-tact="grp" class="${t.cfg.groupOnly ? "on" : ""}" ` +
           `data-tip="show only your subgroup">My subgroup</button>` +
-          `${t.cfg.cols ? `<button data-tact="reset">Defaults</button>` : ""}` +
-          `${t.def.custom ? `<button data-tact="del">Remove</button>` : ""}</div><div class="chips">` +
-          cols.map((k, i) => `<span class="chip on" data-k="${k}" data-tip="${esc(COLS[k].tip)}">` +
-            `<button data-tact="left"${i ? "" : " disabled"}>&lsaquo;</button>${esc(COLS[k].label)}` +
+          `${t.cfg.cols ? `<button data-tact="reset">Defaults</button>` : ""}</div><div class="chips">` +
+          cols.map((k, i) => `<span class="chip on" data-k="${k}" data-tip="${esc(STATS[k].tip)}">` +
+            `<button data-tact="left"${i ? "" : " disabled"}>&lsaquo;</button>${esc(STATS[k].label)}` +
             `<button data-tact="right"${i < cols.length - 1 ? "" : " disabled"}>&rsaquo;</button>` +
             `<button data-tact="rm"${cols.length > 1 ? "" : " disabled"}>&times;</button></span>`).join("") +
-          Object.keys(COLS).filter(k => !cols.includes(k)).map(k =>
-            `<span class="chip" data-k="${k}" data-tip="${esc(COLS[k].tip)}"><button data-tact="add">+ ${esc(COLS[k].label)}</button></span>`)
+          Object.keys(STATS).filter(k => !cols.includes(k)).map(k =>
+            `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-tact="add">+ ${esc(STATS[k].label)}</button></span>`)
             .join("") + `</div></div>`;
       }).join("");
-      w.body.querySelector('[data-act="addtable"]').disabled = saved.tables.length >= MAX_TABLES;
+      w.body.querySelector('[data-act="addtable"]').disabled = saved.custom.length >= axidpsCustom.MAX_CUSTOM;
     }
     w.body.querySelectorAll(".wc").forEach(t => {
       const on = isOpen(wins.find(x => x.id === t.dataset.w));
@@ -1020,6 +1242,8 @@ applyTheme();
 
 window.axidps = {
   update(d) {
+    if (d && d.state === "fight" && !(ui.live && ui.live.state === "fight")) chartGen++;
+    spanHistory.push(d);
     if (ui.cleared && d && d.state === "fight" && !(ui.live && ui.live.state === "fight")) ui.cleared = false;
     ui.live = d;
     renderAll();
@@ -1034,12 +1258,15 @@ window.axidps = {
       const t = THEMES.find(x => x.id === s.theme) || THEMES[0];
       saved = {v: 1, pos: s.pos || {}, open: s.open || {}, cfg: s.cfg || {}, theme: t.id,
         opacity: s.opacity ?? t.look[0], blur: s.blur ?? t.look[1], core: s.core || {}, app: s.app || {},
-        tables: Array.isArray(s.tables) ? s.tables : [], hideZones: !!s.hideZones, compact: !!s.compact,
+        tables: Array.isArray(s.tables) ? s.tables : [], custom: s.custom, hideZones: !!s.hideZones, compact: !!s.compact,
         plugins: s.plugins && typeof s.plugins === "object" && !Array.isArray(s.plugins) ? s.plugins : {},
         dev: s.dev === true,
         rows: s.rows ?? Math.max(15, ...Object.values(s.cfg || {}).map(c => (c && c.maxRows) || 0))};
     }
-    syncTables();
+    // The old fixed tables become custom windows once (saved.custom absent).
+    if (saved.custom === undefined && axidpsCustom.migrateTables(saved)) migrated = true;
+    saved.custom = axidpsCustom.normalizeAll(saved.custom);
+    syncCustom();
     applyTheme();
     pluginHost.refresh();
     renderAll();
@@ -1104,6 +1331,29 @@ if (DEMO.includes("demo")) {
   if (tb) hub.tab = tb[1];
   for (const k of ["support", "defense", "axidps.fight/fight", "axidps.timeline/timeline", "axidps.healing/healing"]) {
     saved.open[k] = true;
+  }
+  // ?demo&custom: three custom windows (a table, bars and a chart); custom=many: eight of them, all
+  // open (the window cap's note); custom=xss: the first one named like markup (drawn as text).
+  if (DEMO.includes("custom")) {
+    const specs = [
+      {id: "c1", name: "Damage share", look: "table", span: "fight",
+        stats: [{key: "damage"}, {key: "damage", as: "share"}, {key: "dps"}, {key: "downs"}]},
+      {id: "c2", name: "Last 30 s", look: "bars", span: "last:30", stats: [{key: "damage", as: "per_s"}], limit: 8},
+      {id: "c3", name: "Session", look: "chart", span: "session", stats: [{key: "dps"}, {key: "hps"}, {key: "taken"}]},
+    ];
+    if (DEMO.includes("many")) {
+      specs.push({id: "c4", name: "My DPS", look: "number", span: "last:10", stats: [{key: "dps"}], who: {base: "me"}},
+        {id: "c5", name: "Group heals", look: "table", span: "session", who: {base: "group"},
+          stats: [{key: "healing"}, {key: "barrier"}, {key: "hps"}]},
+        {id: "c6", name: "Strips", look: "bars", span: "last:60", stats: [{key: "strips"}]},
+        {id: "c7", name: "Squad total", look: "number", span: "fight", stats: [{key: "damage"}]},
+        {id: "c8", name: "Firebrands", look: "table", span: "fight", who: {base: "squad", filters: ["spec:Firebrand"]},
+          stats: [{key: "cleanses", as: "per_s"}, {key: "taken", as: "share"}]});
+    }
+    if (DEMO.includes("xss")) specs[0].name = "<img src=x onerror=alert(1)>";
+    saved.custom = axidpsCustom.normalizeAll(specs);
+    for (const s of saved.custom) saved.open[s.id] = true;
+    syncCustom();
   }
   // The host's zones for 2560x1440 at normal interface size, compass at the bottom right.
   axidps.gameui([{id: "minimap", label: "Minimap", x: 2200, y: 1064, w: 360, h: 376},
