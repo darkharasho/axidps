@@ -598,6 +598,21 @@ function tableWindow(def) {
   }));
 }
 
+// A chart's per-second values: each bucket averaged with the two before and after it, so a peak
+// stays where it happened. Before the fight there was nothing (zeros); after the last bucket
+// nothing is known yet, so the live edge averages what there is. The Timeline and Details charts
+// share it, so the same damage peaks at the same height in both.
+const SMOOTH_HALF = 2;
+function smoothRate(series, bucketMs) {
+  const n = series.length;
+  return series.map((_, i) => {
+    const end = Math.min(n, i + SMOOTH_HALF + 1);
+    let sum = 0;
+    for (let j = Math.max(0, i - SMOOTH_HALF); j < end; j++) sum += Number(series[j]) || 0;
+    return sum / (end - (i - SMOOTH_HALF)) * 1000 / (bucketMs || 1000);
+  });
+}
+
 tableWindow({
   id: "meter", blurb: ["Meter", "damage and DPS", "chart"], title: "axidps", open: true, nameW: 198,
   cfg: {sortKey: "damage", sortAsc: false, groupOnly: false},
@@ -684,11 +699,7 @@ defineWindow({
     const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 6, padR = 6;
     g.clearRect(0, 0, W, H);
     const bucket = (tl && tl.bucket_ms) || 1000;
-    const smooth = a => a.map((_, i) => {
-      const s = a.slice(Math.max(0, i - 4), i + 1);
-      return s.reduce((x, y) => x + y, 0) / s.length * 1000 / bucket;
-    });
-    const out = smooth((tl && tl.out) || []), inc = smooth((tl && tl.in) || []);
+    const out = smoothRate((tl && tl.out) || [], bucket), inc = smoothRate((tl && tl.in) || [], bucket);
     const n = Math.max(out.length, inc.length);
     const top = Math.max(1, ...out, ...inc);
     const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
@@ -996,7 +1007,7 @@ defineWindow({
     if (v.series) drawDetail(w, d, v.series, v.col, view, v.perSecond !== false);
   },
 });
-// The chart: the view's amount per second (3 s rolling average), downs and deaths marked.
+// The chart: the view's amount per second (smoothRate, as the Timeline), downs and deaths marked.
 function drawDetail(w, d, series, col, view, perSecond) {
   const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${view}|${theme.id}|${theme.s.font}|${saved.compact}`;
   if (w.drawn === key) return;
@@ -1005,11 +1016,7 @@ function drawDetail(w, d, series, col, view, perSecond) {
   const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 8, padR = 8;
   g.clearRect(0, 0, W, H);
   const bucket = (d && d.bucket_ms) || 1000;
-  const a = series.map((_, i) => {
-    const s = series.slice(Math.max(0, i - 2), i + 1);
-    const avg = s.reduce((x, y) => x + y, 0) / s.length;
-    return perSecond ? avg * 1000 / bucket : avg;
-  });
+  const a = smoothRate(series, perSecond ? bucket : 1000);
   const n = a.length, top = Math.max(1, ...a);
   const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
   const y = v => H - padB - v / top * (H - padB - padT);
