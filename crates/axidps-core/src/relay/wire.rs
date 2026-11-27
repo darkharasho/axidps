@@ -2,7 +2,10 @@
 //!
 //! Messages are JSON text the server relays verbatim:
 //! hello `{"v":1,"hello":{"account":..,"client":..}}`, batch
-//! `{"v":1,"from":..,"heals":[[t_unix_ms, src, dst, skill, heal, barrier, flags], ..]}`.
+//! `{"v":1,"from":..,"heals":[[t_unix_ms, src, dst, skill, heal, barrier, flags], ..],
+//! "combat":[[t_unix_ms, in_combat 0|1], ..]}` (`combat` optional: the sender's own enter and
+//! exit combat, which peers need to count its heals the way the healing addon does; the server
+//! relays any message with `heals`, and older clients ignore `combat`).
 //! Flags: bit0 buff, bit1 downed. Endpoints: player `"acc"`, minion `["owner", species]`,
 //! other `[null, species]`.
 
@@ -107,18 +110,58 @@ impl WireHeal {
     }
 }
 
+/// The sender entered (`in_combat`) or left combat at `t_unix_ms`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireCombat {
+    pub t_unix_ms: u64,
+    pub in_combat: bool,
+}
+
+impl WireCombat {
+    fn to_json(self) -> Value {
+        json!([self.t_unix_ms, u8::from(self.in_combat)])
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        let a = v.as_array()?;
+        if a.len() != 2 {
+            return None;
+        }
+        Some(Self {
+            t_unix_ms: a[0].as_u64()?,
+            in_combat: match a[1].as_u64()? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            },
+        })
+    }
+}
+
+/// One peer message: who sent it, its heals and its own combat changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Batch {
+    pub from: String,
+    pub heals: Vec<WireHeal>,
+    pub combat: Vec<WireCombat>,
+}
+
 pub fn hello(account: &str, client: &str) -> String {
     json!({"v": VERSION, "hello": {"account": account, "client": client}}).to_string()
 }
 
-pub fn batch(from: &str, heals: &[WireHeal]) -> String {
+pub fn batch(from: &str, heals: &[WireHeal], combat: &[WireCombat]) -> String {
     let heals: Vec<Value> = heals.iter().map(WireHeal::to_json).collect();
-    json!({"v": VERSION, "from": from, "heals": heals}).to_string()
+    let mut v = json!({"v": VERSION, "from": from, "heals": heals});
+    if !combat.is_empty() {
+        v["combat"] = Value::Array(combat.iter().map(|c| c.to_json()).collect());
+    }
+    v.to_string()
 }
 
-/// A batch's sender and heals. `None` for another version, a hello, or malformed text;
-/// malformed single heals are skipped.
-pub fn parse(text: &str) -> Option<(String, Vec<WireHeal>)> {
+/// A batch's sender, heals and combat changes. `None` for another version, a hello, or
+/// malformed text; malformed single entries are skipped.
+pub fn parse(text: &str) -> Option<Batch> {
     let v: Value = serde_json::from_str(text).ok()?;
     if v.get("v")?.as_u64()? != VERSION {
         return None;
@@ -130,7 +173,16 @@ pub fn parse(text: &str) -> Option<(String, Vec<WireHeal>)> {
         .iter()
         .filter_map(WireHeal::from_json)
         .collect();
-    Some((from, heals))
+    let combat = v
+        .get("combat")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(WireCombat::from_json).collect())
+        .unwrap_or_default();
+    Some(Batch {
+        from,
+        heals,
+        combat,
+    })
 }
 
 fn is_player(reg: &Registry, id: u32) -> Option<&str> {
@@ -232,14 +284,49 @@ mod tests {
     #[test]
     fn batch_parse_round_trip() {
         let heals = sample();
-        let text = batch(":a.1", &heals);
-        assert_eq!(parse(&text), Some((":a.1".to_string(), heals)));
+        let text = batch(":a.1", &heals, &[]);
+        assert_eq!(
+            parse(&text),
+            Some(Batch {
+                from: ":a.1".to_string(),
+                heals,
+                combat: vec![]
+            })
+        );
         assert!(text.contains(r#"[null,5]"#) && text.contains(r#"[":a.1",77]"#));
+        assert!(!text.contains("combat"));
+    }
+
+    // Older clients read only `heals`; a batch carrying only combat changes still has it.
+    #[test]
+    fn combat_round_trip() {
+        let combat = vec![
+            WireCombat {
+                t_unix_ms: 10,
+                in_combat: true,
+            },
+            WireCombat {
+                t_unix_ms: 20,
+                in_combat: false,
+            },
+        ];
+        let text = batch(":a.1", &[], &combat);
+        assert!(text.contains(r#""heals":[]"#) && text.contains(r#""combat":[[10,1],[20,0]]"#));
+        let b = parse(&text).unwrap();
+        assert_eq!(b.combat, combat);
+        let bad = json!({"v": 1, "from": ":a.1", "heals": [], "combat": [[1, 2], "x", [3, 1]]});
+        assert_eq!(
+            parse(&bad.to_string()).unwrap().combat,
+            vec![WireCombat {
+                t_unix_ms: 3,
+                in_combat: true
+            }]
+        );
     }
 
     #[test]
     fn parse_rejects_other_versions() {
-        let text = batch(":a.1", &sample()).replace(r#""v":1"#, r#""v":2"#);
+        let text = batch(":a.1", &sample(), &[]).replace(r#""v":1"#, r#""v":2"#);
         assert_eq!(parse(&text), None);
         assert_eq!(parse(&hello(":a.1", "axidps")), None);
         assert_eq!(parse("not json"), None);
@@ -253,9 +340,9 @@ mod tests {
             [1, [1, 2], ":b", 1, 2, 3, 0]
         ]})
         .to_string();
-        let (from, heals) = parse(&text).unwrap();
-        assert_eq!(from, ":a.1");
-        assert_eq!(heals, vec![sample()[0].clone()]);
+        let b = parse(&text).unwrap();
+        assert_eq!(b.from, ":a.1");
+        assert_eq!(b.heals, vec![sample()[0].clone()]);
     }
 
     fn spawn(r: &mut Registry, id: u32, kind: AgentKind, species: u32, account: &str) {

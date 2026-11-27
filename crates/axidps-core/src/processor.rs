@@ -179,6 +179,7 @@ fn named_ids(ev: &Event) -> [Option<u32>; 2] {
         | Event::Reward { .. }
         | Event::WvwTeam { .. }
         | Event::GroupKey { .. }
+        | Event::RelayCombat { .. }
         | Event::WvwWorld { .. } => [None, None],
     }
 }
@@ -419,6 +420,7 @@ impl Processor {
             | Event::Heal { .. }
             | Event::RelayHeal { .. }
             | Event::GroupKey { .. }
+            | Event::RelayCombat { .. }
             | Event::LogControl { .. }
             | Event::Motion { .. }
             | Event::Barrier { .. }

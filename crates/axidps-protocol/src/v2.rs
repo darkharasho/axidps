@@ -560,6 +560,10 @@ pub enum Event {
         buff: bool,
         downed: bool,
     },
+    /// Kind 62. A peer entered (`in_combat`) or left combat, as that peer's own client saw it,
+    /// sent over the heal relay: `sender` is the peer's agent id. Its relayed heals count over
+    /// this combat, as the healing addon counts its peers'. Produced only by core.
+    RelayCombat { sender: u32, in_combat: bool },
     /// Kind 47. A player's guild changed: the 16-byte guild GUID as the game keeps it
     /// (client byte order; all zero = none). Sent on change, so a first read of zero sends
     /// nothing. Core writes it as arcdps's GUILD rows (sc 29) for the squad at log start.
@@ -877,6 +881,7 @@ impl Event {
             Event::Heal { .. } => 43,
             Event::GroupKey { .. } => 60,
             Event::RelayHeal { .. } => 61,
+            Event::RelayCombat { .. } => 62,
         }
     }
 
@@ -1359,6 +1364,9 @@ impl Event {
                     .u8(buff as u8)
                     .u8(downed as u8);
             }
+            Event::RelayCombat { sender, in_combat } => {
+                p.u32(sender).u8(in_combat as u8);
+            }
         }
         (self.kind(), p.buf)
     }
@@ -1676,6 +1684,14 @@ impl Event {
                     _ => return None,
                 },
                 downed: match t.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return None,
+                },
+            },
+            62 => Event::RelayCombat {
+                sender: t.u32()?,
+                in_combat: match t.u8()? {
                     0 => false,
                     1 => true,
                     _ => return None,
@@ -2296,6 +2312,14 @@ mod tests {
                 buff: true,
                 downed: true,
             },
+            Event::RelayCombat {
+                sender: u32::MAX,
+                in_combat: true,
+            },
+            Event::RelayCombat {
+                sender: 7,
+                in_combat: false,
+            },
         ]
     }
 
@@ -2340,7 +2364,7 @@ mod tests {
         }
         assert_eq!(
             kinds.into_iter().collect::<Vec<_>>(),
-            (1..=61).collect::<Vec<u16>>()
+            (1..=62).collect::<Vec<u16>>()
         );
     }
 

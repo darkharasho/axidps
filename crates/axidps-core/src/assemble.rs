@@ -1596,6 +1596,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
             | Event::AgentGuild { .. }
             | Event::AgentGuid { .. }
             | Event::GroupKey { .. }
+            | Event::RelayCombat { .. }
             | Event::CoreStats { .. }
             | Event::GearAttrs { .. }
             | Event::GearSkill { .. }
