@@ -55,6 +55,38 @@ const axidpsHub = (() => {
   const selected = (id, rows) =>
     rows.onScreen.concat(rows.hidden).some(r => r.id === id) ? id : "meter";
 
-  return {TABS, tabFor, hubSize, windowList, showBlock, moveItem, selected};
+  // One plugin list: the Store's cards (already filtered by the query) merged with the installed
+  // plugins. Store rows come first, in store order, taking toggle/reason/reload from the installed
+  // plugin with the same id; installed plugins with no store card follow, in `installed` order, as
+  // local (or bundled) rows, filtered here by name and author. counts ignore `filter`.
+  function pluginRows(storeCards, installed, filter, query) {
+    const q = String(query || "").trim().toLowerCase();
+    const have = new Map((installed || []).map(i => [i.id, i]));
+    const inStore = new Set((storeCards || []).map(c => c.id));
+    const base = {toggle: null, reason: "", reload: false};
+    const fromStore = (storeCards || []).map(c => {
+      const i = have.get(c.id), k = i ? i.card : null;
+      return Object.assign({id: c.id, title: c.title, author: c.author, local: false, description: c.description,
+        version: c.version, trust: c.trust, uses: c.uses, store: c.action,
+        remove: c.action === "update" || c.action === "installed" || c.action === "revoked",
+        note: c.note, bad: c.bad, busy: c.busy, unchecked: c.trust === "unverified"}, base,
+      k ? {toggle: k.action, reason: k.reason, reload: k.reload} : {});
+    });
+    const locals = (installed || []).filter(i => !inStore.has(i.id)).map(i => {
+      const k = i.card, author = i.bundled ? "axidps" : k.author;
+      return Object.assign({id: i.id, title: k.title, author, local: !i.bundled, description: "",
+        version: k.version, trust: "", uses: (k.lines || []).map(text => ({text, deep: false})), store: null,
+        remove: false, note: "", bad: false, busy: false, unchecked: false}, base,
+      {toggle: k.action, reason: k.reason, reload: k.reload});
+    }).filter(r => !q || [r.title, r.author].some(v => String(v || "").toLowerCase().includes(q)));
+    const all = fromStore.concat(locals);
+    const counts = {all: all.length, installed: all.filter(r => r.toggle).length,
+      updates: all.filter(r => r.store === "update").length};
+    const rows = filter === "installed" ? all.filter(r => r.toggle)
+      : filter === "updates" ? all.filter(r => r.store === "update") : all;
+    return {rows, counts};
+  }
+
+  return {TABS, tabFor, hubSize, windowList, showBlock, moveItem, selected, pluginRows};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsHub;

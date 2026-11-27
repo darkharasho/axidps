@@ -62,3 +62,60 @@ test("selected falls back to the meter", () => {
   assert.strictEqual(H.selected("fight", rows), "fight");
   assert.strictEqual(H.selected("gone", rows), "meter");
 });
+
+const sc = (id, action, extra) => Object.assign({id, title: id, author: "au", version: "1.0.0", description: "d",
+  trust: "verified", uses: [{text: "Reads fights.", deep: false}], action, note: "", bad: false, busy: false}, extra);
+const inst = (id, bundled, extra) => ({id, bundled: !!bundled, card: Object.assign({title: id, author: "", version: "0.1.0",
+  lines: ["Reads fights."], action: "disable", reason: "", label: "", reload: false}, extra)});
+
+test("pluginRows merges an installed store plugin into one row", () => {
+  const {rows} = H.pluginRows([sc("a.b", "installed")], [inst("a.b")], "all", "");
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].toggle, "disable");
+  assert.strictEqual(rows[0].store, "installed");
+  assert.strictEqual(rows[0].remove, true);
+  assert.strictEqual(rows[0].local, false);
+});
+
+test("a local plugin gets no Remove", () => {
+  const {rows} = H.pluginRows([], [inst("mine")], "all", "");
+  assert.strictEqual(rows[0].local, true);
+  assert.strictEqual(rows[0].remove, false);
+  assert.deepStrictEqual(rows[0].uses, [{text: "Reads fights.", deep: false}]);
+});
+
+test("a store plugin not installed has no toggle", () => {
+  const {rows} = H.pluginRows([sc("a.b", "install")], [], "all", "");
+  assert.strictEqual(rows[0].toggle, null);
+  assert.strictEqual(rows[0].store, "install");
+  assert.strictEqual(rows[0].remove, false);
+});
+
+test("counts match the rows under each filter", () => {
+  const cards = [sc("up", "update"), sc("in", "installed"), sc("new", "install")];
+  const list = [inst("up"), inst("in"), inst("mine")];
+  const r = H.pluginRows(cards, list, "all", "");
+  assert.deepStrictEqual(r.counts, {all: 4, installed: 3, updates: 1});
+  assert.deepStrictEqual(r.rows.map(x => x.id), ["up", "in", "new", "mine"]);
+  assert.strictEqual(H.pluginRows(cards, list, "installed", "").rows.length, 3);
+  assert.deepStrictEqual(H.pluginRows(cards, list, "updates", "").rows.map(x => x.id), ["up"]);
+  assert.deepStrictEqual(H.pluginRows(cards, list, "updates", "").counts, r.counts);
+});
+
+test("query filters local rows by name", () => {
+  const list = [inst("alpha", false, {title: "Alpha"}), inst("beta", false, {title: "Beta"})];
+  assert.deepStrictEqual(H.pluginRows([], list, "all", "alp").rows.map(x => x.id), ["alpha"]);
+});
+
+test("unverified store rows are unchecked", () => {
+  const {rows} = H.pluginRows([sc("x", "install", {trust: "unverified"}), sc("y", "install")], [], "all", "");
+  assert.strictEqual(rows[0].unchecked, true);
+  assert.strictEqual(rows[1].unchecked, false);
+});
+
+test("bundled plugins are not local and credit axidps", () => {
+  const {rows} = H.pluginRows([], [inst("core", true)], "all", "");
+  assert.strictEqual(rows[0].local, false);
+  assert.strictEqual(rows[0].author, "axidps");
+  assert.strictEqual(rows[0].remove, false);
+});
