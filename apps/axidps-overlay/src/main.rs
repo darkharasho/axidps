@@ -149,6 +149,12 @@ impl Shm {
     }
 }
 
+/// Servo's wheel delta, in pixels, for `notches` from the DLL (WM_MOUSEWHEEL / 120: positive is
+/// the wheel turned away from the player). Servo uses the same sign as Windows: positive scrolls up.
+fn wheel_delta_y(notches: f32) -> f64 {
+    f64::from(notches) * 76.0
+}
+
 /// The page's window report: `{"windows":[{name, ax, ay, w, h, sx, sy, drag:[x,y,w,h], flags,
 /// r (corner radius), blur (0-3)}],
 /// "edit_seq": n, "hide_zones": bool, "text_focus": bool}`.
@@ -850,7 +856,7 @@ impl App {
                 fmt::kind::WHEEL => InputEvent::Wheel(WheelEvent::new(
                     WheelDelta {
                         x: 0.0,
-                        y: -(i.wheel as f64) * 76.0,
+                        y: wheel_delta_y(i.wheel),
                         z: 0.0,
                         mode: WheelMode::DeltaPixel,
                     },
@@ -1274,6 +1280,14 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    // Windows reports a wheel turned away from the player (scroll up) as positive notches, and
+    // Servo's WheelDelta has the same sign (it negates it for both the DOM deltaY and scrolling).
+    #[test]
+    fn wheel_up_scrolls_up() {
+        assert_eq!(wheel_delta_y(1.0), 76.0);
+        assert_eq!(wheel_delta_y(-2.0), -152.0);
     }
 
     #[test]
