@@ -378,6 +378,8 @@ function setOpen(w, on) {
   }
   ui.capRefused = false;
   refit();
+  // The hub's plugin buttons (Update, Remove) need the store's view of each plugin.
+  if (on && w.id === "hub") pluginHost.storeOpen();
   if (w.def.session) ui.session[w.id] = on;
   else { saved.open[w.key] = on; save(); }
   renderAll();
@@ -2355,8 +2357,9 @@ function renderWindows(w) {
     const open = isOpen(x), it = items.find(v => v.id === x.id), why = blockOf(open);
     const p = it.kind === "plugin" ? pluginOf(x) : null;
     const canCopy = !!(x.def.table || x.def.custom);
+    const pr = p ? plugRow(p.id) : null;
     put(head, `<div><h2>${esc(it.name)}</h2><p class="sub">${esc(it.note)}</p></div>` +
-      (p ? `<button data-act="plugsettings" data-tip="this plugin's page in Plugins">Plugin settings</button>` : "") +
+      (pr ? `<span class="sa" data-p="${esc(pr.id)}">${plugActs(pr)}</span>` : "") +
       (canCopy ? `<button data-cact="copy"${full ? ` disabled data-tip="You can have ${C.MAX_CUSTOM} of your own windows. Remove one first."` : ""}>Make a copy</button>` : "") +
       (it.kind === "custom" ? `<button data-cact="del">Remove</button>` : "") +
       `<button data-act="toggle"${!open && why ? ` disabled data-tip="${esc(why)}"` : ""}>${open ? "Hide" : "Show"}</button>`);
@@ -2477,6 +2480,41 @@ const PLUGIN_BUTTON = {install: "Install", update: "Update", replace: "Replace y
 const PLUGIN_TRUST = {verified: "v", unverified: "u", revoked: "r"};
 const filterOf = f => PLUGIN_FILTERS.some(x => x[0] === f) ? f : "all";
 const UNCHECKED = "Not checked yet. Nobody has looked at what this plugin does.";
+// A plugin's buttons, as on its Plugins row: Update/Install, Turn on/off (or why it can't be on),
+// Remove, and Reload in developer mode. The Windows tab shows the same ones for a plugin's window.
+function plugActs(r) {
+  if (r.busy) return `<button disabled>Working…</button>`;
+  const btn = (attr, act, label, cls) => `<button data-${attr}="${act}"${cls ? ` class="${cls}"` : ""}>${esc(label)}</button>`;
+  const acts = [];
+  if (r.reload) acts.push(`<button data-pact="reload" data-tip="reload its windows">Reload</button>`);
+  if (PLUGIN_BUTTON[r.store]) acts.push(btn("sact", r.store, PLUGIN_BUTTON[r.store], "primary"));
+  if (r.reason) acts.push(`<span class="have off">${esc(r.reason)}</span>`);
+  else if (r.toggle) acts.push(btn("pact", r.toggle, r.toggle === "enable" ? "Turn on" : "Turn off", r.toggle === "enable" && !r.store ? "primary" : "quiet"));
+  if (r.remove) acts.push(btn("sact", "uninstall", "Remove", "quiet"));
+  return acts.join("");
+}
+// One installed plugin's row model (as the Plugins tab's), or null.
+function plugRow(id) {
+  const list = pluginHost.list.filter(p => p && typeof p === "object");
+  const installed = list.map(p => ({id: String(p.id), card: pluginHost.cardModel(p, saved), bundled: p.bundled === true}));
+  const sm = pluginHost.storeModel(pluginHost.store, "", list, "all");
+  return axidpsHub.pluginRows(sm.cards, installed, "all", "", sm.state === "ok").rows.find(r => r.id === String(id)) || null;
+}
+// A click on a plugin button (data-pact / data-sact) inside an element carrying data-p. True if handled.
+function plugActClick(e) {
+  const pb = e.target.closest("[data-pact]"), sb = e.target.closest("[data-sact]");
+  const b = pb || sb, holder = b && b.closest("[data-p]");
+  if (!holder) return false;
+  if (b.disabled) return true;
+  const id = holder.dataset.p;
+  if (pb) {
+    if (pb.dataset.pact === "enable") pluginHost.enable(id);
+    else if (pb.dataset.pact === "disable") pluginHost.disable(id);
+    else if (pb.dataset.pact === "reload") pluginHost.reload(id);
+  } else pluginHost.storeAct(id, sb.dataset.sact);
+  return true;
+}
+
 // The Plugins tab: one list of everything, from the store and from this computer. A filter column on
 // the left (with counts), the search box and Refresh above the rows, and one row per plugin with a
 // trust bar at its left edge. Returns the number of updates over everything, for the tab's pill.
@@ -2511,24 +2549,14 @@ function renderPlugins(w) {
   const text = !pm.rows.length ? empty : sm.state !== "ok" && sm.cards.length ? sm.message : "";
   msg.textContent = text;
   msg.style.display = text ? "" : "none";
-  const btn = (attr, act, label, cls) => `<button data-${attr}="${act}"${cls ? ` class="${cls}"` : ""}>${esc(label)}</button>`;
   w.body.querySelector(".srows").innerHTML = pm.rows.map(r => {
-    const acts = [];
-    if (r.busy) acts.push(`<button disabled>Working…</button>`);
-    else {
-      if (r.reload) acts.push(`<button data-pact="reload" data-tip="reload its windows">Reload</button>`);
-      if (PLUGIN_BUTTON[r.store]) acts.push(btn("sact", r.store, PLUGIN_BUTTON[r.store], "primary"));
-      if (r.reason) acts.push(`<span class="have off">${esc(r.reason)}</span>`);
-      else if (r.toggle) acts.push(btn("pact", r.toggle, r.toggle === "enable" ? "Turn on" : "Turn off", r.toggle === "enable" && !r.store ? "primary" : "quiet"));
-      if (r.remove) acts.push(btn("sact", "uninstall", "Remove", "quiet"));
-    }
     const uses = r.uses.map(u => u.deep ? `<em>${esc(u.text)}</em>` : esc(u.text)).join(" ");
     const who = r.local ? "Installed from your computer" : r.author;
     return `<div class="srow ${PLUGIN_TRUST[r.trust] || "u"}" data-s="${esc(r.id)}" data-p="${esc(r.id)}"><div class="rtop">` +
       `<span class="nm"><b>${esc(r.title)}</b>${r.trust ? `<span class="trust">${esc(r.trust)}</span>` : ""}` +
       `${who ? `<span class="au">${esc(who)}</span>` : ""}</span>` +
       `<span class="ver${r.store === "update" ? " up" : ""}">${r.version ? esc(r.version) : ""}${r.installed ? ` <span class="have">Installed</span>` : ""}</span>` +
-      `<span class="sa">${acts.join("")}</span></div>` +
+      `<span class="sa">${plugActs(r)}</span></div>` +
       `${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}` +
       `${uses ? `<div class="uses">${uses}</div>` : ""}` +
       `${r.unchecked ? `<div class="snote bad">${esc(UNCHECKED)}</div>` : ""}` +
@@ -2693,7 +2721,7 @@ const hub = defineWindow({
       const t = e.target.closest("[data-tab]");
       if (!t) return;
       w.tab = t.dataset.tab;
-      if (w.tab === "plugins") pluginHost.storeOpen();
+      if (w.tab === "plugins" || w.tab === "windows") pluginHost.storeOpen();
       w.def.render(w); paintIcons(w.el); scheduleReport();
     };
     q(".ask").onclick = e => {
@@ -2709,19 +2737,9 @@ const hub = defineWindow({
       const f = e.target.closest("[data-sfilter]");
       if (f) { w.storeFilter = f.dataset.sfilter; renderAll(); return; }
       if (e.target.closest("[data-storeauto]")) { saved.storeAutoUpdate = saved.storeAutoUpdate === false; save(); renderAll(); return; }
-      const pb = e.target.closest("[data-pact]");
-      if (pb && !pb.disabled) {
-        const id = pb.closest("[data-p]").dataset.p;
-        if (pb.dataset.pact === "enable") pluginHost.enable(id);
-        else if (pb.dataset.pact === "disable") pluginHost.disable(id);
-        else if (pb.dataset.pact === "reload") pluginHost.reload(id);
-        return;
-      }
+      if (plugActClick(e)) return;
       const b = e.target.closest("[data-sact]");
-      if (!b || b.disabled) return;
-      if (b.dataset.sact === "refresh") { pluginHost.storeRefresh(); return; }
-      const c = b.closest("[data-s]");
-      if (c) pluginHost.storeAct(c.dataset.s, b.dataset.sact);
+      if (b && !b.disabled && b.dataset.sact === "refresh") pluginHost.storeRefresh();
     };
     q('[data-act="layout"]').onclick = () => { ui.session.hub = false; ui.fromHub = true; refit(); requestEdit(true); renderAll(); };
     q('[data-act="close"]').onclick = () => setOpen(w, false);
@@ -2767,6 +2785,7 @@ const hub = defineWindow({
     });
     q('section[data-tab="windows"]').onclick = e => {
       if (plugSettingClick(e)) return;
+      if (plugActClick(e)) return;
       const t = e.target;
       const sh = t.closest("[data-show]");
       if (sh) { const x = winById(sh.dataset.show); if (x && !sh.disabled) setOpen(x, true); return; }
@@ -2777,11 +2796,7 @@ const hub = defineWindow({
       const x = winById(w.sel);
       if (!x) return;
       const act = t.closest("[data-act]"), tog = t.closest('[data-tog="show"]');
-      if (act && act.dataset.act === "plugsettings" && !act.disabled) {
-        const p = pluginOf(x);
-        w.tab = "plugins"; w.storeQuery = p ? String(p.name || p.id) : "";
-        pluginHost.storeOpen(); renderAll();
-      } else if (act && act.dataset.act === "toggle" && !act.disabled) setOpen(x, !isOpen(x));
+      if (act && act.dataset.act === "toggle" && !act.disabled) setOpen(x, !isOpen(x));
       else if (tog && !(!isOpen(x) && axidpsHub.showBlock({open: false,
         openCount: wins.filter(v => capped(v) && isOpen(v)).length, cap: CAP, atlasFull: wins.some(v => v.overAtlas)}))) setOpen(x, !isOpen(x));
     };
