@@ -1,6 +1,7 @@
 //! Finding plugins: the bundled and player folders, validated, never panicking.
 
 use crate::manifest::{MAX_MANIFEST_BYTES, Manifest, problems};
+use crate::trust::{Ctx, Decision, Trust, decide};
 use crate::{MANIFEST_FILE, SUPPORTED_API};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -16,6 +17,10 @@ pub struct Plugin {
     /// The folder's name under the plugins dir.
     pub folder: String,
     pub error: Option<String>,
+    /// How far it's trusted (set by `scan_trusted`; Unverified with nothing granted otherwise).
+    pub trust: Decision,
+    /// Installed by the store.
+    pub store: bool,
 }
 
 pub fn scan(bundled: &Path, player: &Path) -> Vec<Plugin> {
@@ -23,6 +28,32 @@ pub fn scan(bundled: &Path, player: &Path) -> Vec<Plugin> {
 }
 
 pub fn scan_logged(bundled: &Path, player: &Path) -> (Vec<Plugin>, Vec<String>) {
+    scan_trusted(bundled, player, &Ctx::none())
+}
+
+/// The scan with each plugin's trust decided under `ctx`. A player plugin with a valid manifest
+/// is tree-hashed from the folder the scan found; if that fails it can't be verified.
+pub fn scan_trusted(bundled: &Path, player: &Path, ctx: &Ctx) -> (Vec<Plugin>, Vec<String>) {
+    let (mut plugins, mut log) = scan_untrusted(bundled, player);
+    for p in &mut plugins {
+        let tree = match &p.manifest {
+            Some(_) if !p.bundled => match crate::tree::hash_dir(&p.dir) {
+                Ok(h) => Some(crate::tree::hex(&h)),
+                Err(e) => {
+                    log.push(format!("plugin folder {}: can't hash its files: {e}", p.folder));
+                    None
+                }
+            },
+            _ => None,
+        };
+        p.store = !p.bundled
+            && p.manifest.as_ref().is_some_and(|m| ctx.store_ids.contains(&m.id));
+        p.trust = decide(p, tree.as_deref(), ctx);
+    }
+    (plugins, log)
+}
+
+fn scan_untrusted(bundled: &Path, player: &Path) -> (Vec<Plugin>, Vec<String>) {
     let mut log = Vec::new();
     let mut all: Vec<Plugin> = Vec::new();
     for (dir, is_bundled) in [(bundled, true), (player, false)] {
@@ -119,6 +150,8 @@ fn scan_dir(dir: &Path, bundled: bool, log: &mut Vec<String>) -> Vec<Plugin> {
             manifest,
             folder,
             error,
+            trust: Decision::default(),
+            store: false,
         });
     }
     out
@@ -137,12 +170,16 @@ pub fn read_manifest(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Valid, a supported `api`, and no deeper permission: the host serves only these.
+/// Valid, a supported `api`, not revoked, and every deeper permission granted by its trust:
+/// the host serves only these.
 pub fn loadable(p: &Plugin) -> bool {
     p.error.is_none()
-        && p.manifest
-            .as_ref()
-            .is_some_and(|m| m.api == SUPPORTED_API && m.deeper().is_empty())
+        && p.trust.level != Trust::Revoked
+        && p.manifest.as_ref().is_some_and(|m| m.api == SUPPORTED_API && deeper_granted(p, m))
+}
+
+fn deeper_granted(p: &Plugin, m: &Manifest) -> bool {
+    m.deeper().iter().all(|d| p.trust.granted.contains(d))
 }
 
 /// What the player grants a plugin by enabling it: its permissions and one `net:<host>` per
@@ -200,10 +237,18 @@ fn one(p: &Plugin) -> Value {
             "permissions": [], "network": [], "windows": [], "bundled": p.bundled,
         }),
     };
+    v["trust"] = p.trust.level.as_str().into();
+    v["granted"] = json!(p.trust.granted);
+    v["reason"] = json!(p.trust.reason);
+    v["store"] = p.store.into();
     let error = match (&p.error, &p.manifest) {
-        (Some(e), _) => Some(e.as_str()),
-        (None, Some(m)) if m.api != SUPPORTED_API => Some("needs a newer axidps"),
-        (None, Some(m)) if !m.deeper().is_empty() => Some("needs verification"),
+        (Some(e), _) => Some(e.clone()),
+        _ if p.trust.level == Trust::Revoked => Some(format!(
+            "Revoked: {}",
+            p.trust.reason.as_deref().unwrap_or("no reason given")
+        )),
+        (None, Some(m)) if m.api != SUPPORTED_API => Some("needs a newer axidps".into()),
+        (None, Some(m)) if !deeper_granted(p, m) => Some("needs verification".into()),
         _ => None,
     };
     if let Some(e) = error {
@@ -323,6 +368,105 @@ mod tests {
             manifest: Some(m),
             folder: id.into(),
             error: None,
+            trust: Decision::default(),
+            store: false,
+        }
+    }
+
+    #[test]
+    fn page_json_carries_trust() {
+        let mut p = plugin("x.y", false, &["fight", "world"], &[]);
+        let j = to_page_json(std::slice::from_ref(&p));
+        assert_eq!(j[0]["trust"], "unverified");
+        assert_eq!(j[0]["granted"], json!([]));
+        assert_eq!(j[0]["reason"], Value::Null);
+        assert_eq!(j[0]["store"], false);
+        assert_eq!(j[0]["error"], "needs verification");
+
+        p.trust = Decision { level: Trust::Verified, granted: vec!["world".into()], reason: None };
+        p.store = true;
+        let j = to_page_json(std::slice::from_ref(&p));
+        assert_eq!(j[0]["trust"], "verified");
+        assert_eq!(j[0]["granted"], json!(["world"]));
+        assert_eq!(j[0]["store"], true);
+        assert!(j[0].get("error").is_none(), "{j}");
+
+        p.trust = Decision { level: Trust::Dev, granted: vec![], reason: None };
+        assert_eq!(to_page_json(std::slice::from_ref(&p))[0]["trust"], "dev");
+
+        p.trust = Decision { level: Trust::Revoked, granted: vec![], reason: Some("malware".into()) };
+        let j = to_page_json(std::slice::from_ref(&p));
+        assert_eq!(j[0]["trust"], "revoked");
+        assert_eq!(j[0]["reason"], "malware");
+        assert_eq!(j[0]["error"], "Revoked: malware");
+
+        let b = tempfile::tempdir().unwrap();
+        make(b.path(), "axidps.b", "axidps.b");
+        let (r, _) = scan_logged(b.path(), &b.path().join("none"));
+        let j = to_page_json(&r);
+        assert_eq!(j[0]["trust"], "bundled");
+        assert_eq!(j[0]["store"], false);
+    }
+
+    #[test]
+    fn deeper_loads_only_when_granted() {
+        use crate::keys::Keys;
+        use crate::trust::Signed;
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD;
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let player = tempfile::tempdir().unwrap();
+        let d = player.path().join("deep");
+        fs::create_dir(&d).unwrap();
+        let m = r#"{"id":"example.deep","name":"n","version":"1.0.0","api":1,"permissions":["fight","world"],"windows":[{"id":"w","title":"t","entry":"a.html"}]}"#;
+        fs::write(d.join(MANIFEST_FILE), m).unwrap();
+        fs::write(d.join("a.html"), "hi").unwrap();
+        let tree = crate::tree::hex(&crate::tree::hash_dir(&d).unwrap());
+        let none = player.path().join("none");
+
+        let (r, _) = scan_logged(&none, player.path());
+        assert_eq!(r[0].trust.level, Trust::Unverified);
+        assert!(!loadable(&r[0]));
+
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let pk = key.verifying_key().to_bytes();
+        let mut a = json!({"id": "example.deep", "version": "1.0.0", "tree": tree,
+                           "verified": true, "grant": ["world"],
+                           "approver": crate::sign::key_id(&pk)});
+        let msg = format!("axidps-approval-v1\n{}", crate::sign::canonical(&a).unwrap());
+        a["sig"] = json!(STANDARD.encode(key.sign(msg.as_bytes()).to_bytes()));
+        let keys = Keys { approvers: vec![pk], index: vec![] };
+        let (signed, log) = Signed::from_index(&json!({"approvals": [a]}), &keys, 0);
+        assert!(log.is_empty(), "{log:?}");
+        let mut ctx = Ctx { signed, today: "2026-11-26".into(), ..Ctx::none() };
+        ctx.store_ids.insert("example.deep".into());
+
+        let (r, log) = scan_trusted(&none, player.path(), &ctx);
+        assert!(log.is_empty(), "{log:?}");
+        assert_eq!(r[0].trust.level, Trust::Verified);
+        assert!(r[0].store);
+        assert!(loadable(&r[0]));
+        let saved = json!({"example.deep": {"enabled": true, "granted": ["fight", "world"]}});
+        assert!(enabled(&r[0], &saved));
+
+        // One edited byte and the approval no longer matches.
+        fs::write(d.join("a.html"), "hI").unwrap();
+        let (r, _) = scan_trusted(&none, player.path(), &ctx);
+        assert_eq!(r[0].trust.level, Trust::Unverified);
+        assert!(!loadable(&r[0]));
+        assert!(!enabled(&r[0], &saved));
+
+        // A symlink inside: can't be hashed, so can't be verified, and the log says so.
+        #[cfg(unix)]
+        {
+            fs::write(d.join("a.html"), "hi").unwrap();
+            std::os::unix::fs::symlink(d.join("a.html"), d.join("link")).unwrap();
+            let (r, log) = scan_trusted(&none, player.path(), &ctx);
+            assert_eq!(r[0].trust.level, Trust::Unverified);
+            assert!(r[0].trust.reason.is_some());
+            assert!(!loadable(&r[0]));
+            assert!(log.iter().any(|l| l.contains("can't hash")), "{log:?}");
         }
     }
 

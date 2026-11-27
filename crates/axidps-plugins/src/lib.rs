@@ -8,6 +8,7 @@ pub mod scan;
 pub mod serve;
 pub mod sign;
 pub mod tree;
+pub mod trust;
 pub mod watch;
 
 /// The manifest's file name inside a plugin folder.

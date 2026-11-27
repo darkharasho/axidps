@@ -399,6 +399,8 @@ mod tests {
             folder: m.id.clone(),
             manifest: Some(m),
             error: None,
+            trust: Default::default(),
+            store: false,
         }
     }
 
