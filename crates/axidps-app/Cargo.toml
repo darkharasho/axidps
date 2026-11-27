@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 ctrlc = { version = "3.5.3", features = ["termination"] }
 axidps-protocol = { path = "../axidps-protocol" }
+base64 = "0.22"
 axidps-plugins = { path = "../axidps-plugins" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

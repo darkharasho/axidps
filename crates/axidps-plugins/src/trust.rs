@@ -356,6 +356,56 @@ fn id_matches(pattern: &str, id: &str) -> bool {
     }
 }
 
+/// The developer key's file name inside the config folder.
+pub const DEV_KEY_FILE: &str = "dev-key";
+
+fn seed_public(seed: &[u8; 32]) -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(seed)
+        .verifying_key()
+        .to_bytes()
+}
+
+/// The public half of `<config>/dev-key` (64 hex chars: the Ed25519 seed). `None` if the file is
+/// missing or isn't exactly 64 hex chars (a trailing newline is fine).
+pub fn load_dev_key(config: &std::path::Path) -> Option<[u8; 32]> {
+    let text = std::fs::read_to_string(config.join(DEV_KEY_FILE)).ok()?;
+    let hex = text.strip_suffix('\n').unwrap_or(&text);
+    let hex = hex.strip_suffix('\r').unwrap_or(hex);
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut seed = [0u8; 32];
+    for (i, b) in seed.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(seed_public(&seed))
+}
+
+/// Makes `<config>/dev-key` from a random seed (mode 0600 on Unix, set at creation) and returns
+/// its public key. Refuses if the file already exists.
+pub fn make_dev_key(config: &std::path::Path) -> Result<[u8; 32], String> {
+    use std::io::Write;
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|e| format!("no random numbers: {e}"))?;
+    let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::create_dir_all(config).map_err(|e| format!("cannot create {}: {e}", config.display()))?;
+    let path = config.join(DEV_KEY_FILE);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    let mut file = opts.open(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            format!("{} already exists", path.display())
+        } else {
+            format!("cannot write {}: {e}", path.display())
+        }
+    })?;
+    file.write_all(hex.as_bytes())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(seed_public(&seed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,5 +727,30 @@ mod tests {
         assert_eq!(p.trust.level, Trust::Bundled);
         assert_eq!(p.trust.granted, ["fight", "world"]);
         assert!(loadable(&p));
+    }
+
+    #[test]
+    fn dev_key_round_trip() {
+        let t = tempfile::tempdir().unwrap();
+        assert_eq!(load_dev_key(t.path()), None);
+        let pk = make_dev_key(t.path()).unwrap();
+        assert_eq!(load_dev_key(t.path()), Some(pk));
+        assert!(make_dev_key(t.path()).is_err());
+        let hex = std::fs::read_to_string(t.path().join(DEV_KEY_FILE)).unwrap();
+        assert_eq!(hex.len(), 64);
+        std::fs::write(t.path().join(DEV_KEY_FILE), format!("{hex}\n")).unwrap();
+        assert_eq!(load_dev_key(t.path()), Some(pk));
+        std::fs::write(t.path().join(DEV_KEY_FILE), &hex[..63]).unwrap();
+        assert_eq!(load_dev_key(t.path()), None);
+        std::fs::write(t.path().join(DEV_KEY_FILE), "z".repeat(64)).unwrap();
+        assert_eq!(load_dev_key(t.path()), None);
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(t.path().join(DEV_KEY_FILE)).unwrap();
+            make_dev_key(t.path()).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(t.path().join(DEV_KEY_FILE)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 }
