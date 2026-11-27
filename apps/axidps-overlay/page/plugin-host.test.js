@@ -506,7 +506,7 @@ test("storeModel cards: badge, lines, action and note", () => {
   assert.strictEqual(c["i.have"].action, "installed");
   assert.strictEqual(c["i.old"].action, "update");
   assert.strictEqual(c["h.mine"].action, "replace");
-  assert.match(c["h.mine"].note, /^You added a plugin with this id yourself/);
+  assert.match(c["h.mine"].note, /^You added a plugin with this name yourself/);
   assert.strictEqual(c["e.bad"].note, "download failed: offline");
   assert.strictEqual(c["e.bad"].bad, true);
   assert.strictEqual(c["b.busy"].busy, true);
@@ -562,24 +562,62 @@ test("store actions: install and update go straight out, busy cards and unknown 
   assert.deepStrictEqual(sent.slice(2), ['{"store":"open"}', '{"store":"refresh"}']);
 });
 
-test("uninstall asks, then forgets the plugin's enable and settings", () => {
+test("uninstall asks first; nothing is sent or forgotten without a yes", () => {
   const s = storePayload([listing("i.have", { installed: "1.0.0" })]);
-  const fresh = () => ({ plugins: { "i.have": { enabled: true, granted: ["fight"] }, "o.p": { enabled: true, granted: [] } },
-    pos: {}, open: {}, cfg: { "i.have/w": { n: 1 }, "i.haveX/w": { n: 2 }, "o.p/w": { n: 3 } } });
-  const keep = fresh();
+  const keep = uninstallSaved();
   const no = storeHost(s, keep, false);
   no.h.storeAct("i.have", "uninstall");
   assert.strictEqual(no.asked.length, 1);
   assert.deepStrictEqual(no.sent, []);
-  assert.deepStrictEqual(keep, fresh());
+  assert.deepStrictEqual(keep, uninstallSaved());
+});
 
-  const saved = fresh();
-  const yes = storeHost(s, saved, true);
+const uninstallSaved = () => ({ plugins: { "i.have": { enabled: true, granted: ["fight"] }, "o.p": { enabled: true, granted: [] } },
+  pos: {}, open: {}, cfg: { "i.have/w": { n: 1 }, "i.haveX/w": { n: 2 }, "o.p/w": { n: 3 } } });
+
+test("a confirmed uninstall forgets the plugin's enable and settings once the store says it's gone", () => {
+  const saved = uninstallSaved();
+  const yes = storeHost(storePayload([listing("i.have", { installed: "1.0.0" })]), saved, true);
   yes.h.storeAct("i.have", "uninstall");
-  assert.deepStrictEqual(JSON.parse(yes.sent[0]), { store: { uninstall: "i.have" } });
+  assert.deepStrictEqual(yes.sent.map(t => JSON.parse(t)), [{ store: { uninstall: "i.have" } }]);
+  assert.deepStrictEqual(saved, uninstallSaved(), "kept while the host works on it");
+  yes.h.setStore(storePayload([listing("i.have", { installed: "1.0.0", busy: true })]));
+  assert.deepStrictEqual(saved, uninstallSaved());
+  // Uninstalled: the card is offered again, not installed.
+  yes.h.setStore(storePayload([listing("i.have")]));
   assert.deepStrictEqual(Object.keys(saved.plugins), ["o.p"]);
-  assert.deepStrictEqual(Object.keys(saved.cfg), ["i.haveX/w", "o.p/w"]);
+  assert.deepStrictEqual(Object.keys(saved.cfg), ["i.haveX/w", "o.p/w"], "only i.have's own windows");
   assert.deepStrictEqual(JSON.parse(yes.sent[1]).save.plugins, { "o.p": { enabled: true, granted: [] } }, "then saved");
+  // Once only: a later reinstall's settings aren't wiped by an old uninstall.
+  saved.plugins["i.have"] = { enabled: true, granted: ["fight"] };
+  yes.h.setStore(storePayload([listing("i.have")]));
+  assert.ok(saved.plugins["i.have"]);
+  assert.strictEqual(yes.sent.length, 2);
+  // A plugin pulled from the store and uninstalled drops off the list: gone too.
+  const saved2 = uninstallSaved();
+  const y2 = storeHost(storePayload([listing("i.have", { installed: "1.0.0" })]), saved2, true);
+  y2.h.storeAct("i.have", "uninstall");
+  y2.h.setStore(storePayload([]));
+  assert.deepStrictEqual(Object.keys(saved2.plugins), ["o.p"]);
+});
+
+test("a refused uninstall keeps the plugin's enable and settings", () => {
+  for (const refused of [
+    listing("i.have", { installed: "1.0.0", error: "couldn't remove it" }),
+    // The player changed its files meanwhile: theirs now, and the host leaves it alone.
+    listing("i.have", { handInstalled: true, error: "a plugin you added yourself is in the way" }),
+  ]) {
+    const saved = uninstallSaved();
+    const h = storeHost(storePayload([listing("i.have", { installed: "1.0.0" })]), saved, true);
+    h.h.storeAct("i.have", "uninstall");
+    h.h.setStore(storePayload([listing("i.have", { installed: "1.0.0", busy: true })]));
+    h.h.setStore(storePayload([refused]));
+    assert.deepStrictEqual(saved, uninstallSaved());
+    // The refusal ended it: a later payload without the plugin installed doesn't clear them.
+    h.h.setStore(storePayload([listing("i.have")]));
+    assert.deepStrictEqual(saved, uninstallSaved());
+    assert.strictEqual(h.sent.length, 1, "nothing saved");
+  }
 });
 
 test("cardModel label per trust level, the revoked reason shown", () => {

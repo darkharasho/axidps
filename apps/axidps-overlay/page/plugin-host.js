@@ -111,7 +111,7 @@
     offline: "Can't reach the plugin store right now. This is the list from last time.",
     error: "The plugin store sent a list that didn't check out. This is the last good one.",
   };
-  const HAND_NOTE = "You added a plugin with this id yourself. Replace it with this one to get updates; " +
+  const HAND_NOTE = "You added a plugin with this name yourself. Replace it with this one to get updates; " +
     "your copy is kept.";
 
   // The Store tab from the host's `axidps.store` payload, filtered by `query` (name, author or
@@ -398,6 +398,30 @@
     },
     // The Store tab (ui.js shows `this.store`, the host's last `axidps.store` payload).
     store: null,
+    // Ids the player confirmed an uninstall for: their saved enable and settings go once the host
+    // says they're gone, and stay if it refuses.
+    uninstalling: null,
+    // The host's `axidps.store` payload. Each pending uninstall is settled by its card: busy (still
+    // working) or unchanged without an error waits; gone (no card, or neither installed nor the
+    // player's) forgets the plugin; an error while it's still there was a refusal, so it's kept.
+    setStore(payload) {
+      this.store = payload && typeof payload === "object" ? payload : null;
+      const env = this.env, pending = this.uninstalling;
+      if (!env || !pending || !pending.size || !this.store || !Array.isArray(this.store.plugins)) return;
+      let forgot = false;
+      for (const id of [...pending]) {
+        const c = this.store.plugins.find(x => x && x.id === id);
+        if (c && c.busy === true) continue;
+        if (!c || (!c.installed && !c.handInstalled)) {
+          pending.delete(id);
+          const saved = env.saved();
+          if (saved.plugins && own(saved.plugins, id)) delete saved.plugins[id];
+          for (const k of Object.keys(saved.cfg || {})) if (k.startsWith(id + "/")) delete saved.cfg[k];
+          forgot = true;
+        } else if (c.error) pending.delete(id);
+      }
+      if (forgot) env.saveNow();
+    },
     storeOpen() { if (this.env) this.env.toHost(JSON.stringify({store: "open"})); },
     storeRefresh() { if (this.env) this.env.toHost(JSON.stringify({store: "refresh"})); },
     // A Store card's button. Replace and Uninstall ask first (env.confirm(text, ok label, onYes));
@@ -414,11 +438,9 @@
           "Your copy is kept in the store's replaced folder.", "Replace", () => go("replace"));
       } else if (act === "uninstall" && (m.action === "installed" || m.action === "update")) {
         env.confirm(`Uninstall ${m.title}? Its windows and settings go with it.`, "Uninstall", () => {
+          if (!this.uninstalling) this.uninstalling = new Set();
+          this.uninstalling.add(id);
           go("uninstall");
-          const saved = env.saved();
-          if (saved.plugins && own(saved.plugins, id)) delete saved.plugins[id];
-          for (const k of Object.keys(saved.cfg || {})) if (k.startsWith(id + "/")) delete saved.cfg[k];
-          env.saveNow();
         });
       }
     },

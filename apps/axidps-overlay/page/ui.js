@@ -1956,12 +1956,12 @@ function renderStore(w) {
       : c.action === "replace" ? btn("replace", false)
       : c.action === "update" ? btn("uninstall", false) + btn("update", true)
       : c.action === "installed" ? `<span class="have">Installed</span>` + btn("uninstall", false) : "";
-    return `<div class="pc" data-s="${esc(c.id)}"><div class="pc-h"><b>${esc(c.title)}</b>${badge(c.badge)}` +
-      `<span class="grow"></span>${acts}</div>` +
+    return `<div class="pc" data-s="${esc(c.id)}"><div class="pc-h"><b>${esc(c.title)}</b>${badge(c.badge)}</div>` +
       `<small>${esc([c.version && "v" + c.version, c.author && "by " + c.author].filter(Boolean).join(" · "))}</small>` +
       `${c.description ? `<span class="pd">${esc(c.description)}</span>` : ""}` +
       `${c.lines.map(l => `<span class="pl">${esc(l)}</span>`).join("")}` +
-      `${c.note ? `<span class="pl${c.bad ? " bad" : " hint"}">${esc(c.note)}</span>` : ""}</div>`;
+      `${c.note ? `<span class="pl${c.bad ? " bad" : " hint"}">${esc(c.note)}</span>` : ""}` +
+      `${acts ? `<div class="pc-a">${acts}</div>` : ""}</div>`;
   }).join("");
 }
 
@@ -2235,7 +2235,7 @@ window.axidps = {
   },
   // The Store tab's list and state (host: on start, after each fetch, install or uninstall).
   store(payload) {
-    pluginHost.store = payload && typeof payload === "object" ? payload : null;
+    pluginHost.setStore(payload);
     renderAll();
   },
   // A player plugin's files changed (host, developer mode): reload its frames.
