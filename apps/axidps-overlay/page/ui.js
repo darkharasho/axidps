@@ -173,7 +173,7 @@ function plugPanel(sections) {
     const full = `data-full="${esc(sec.fullId)}"`;
     return (sections.length > 1 ? `<h4>${esc(sec.title)}</h4>` : "") +
       opt(`data-pwin="bar" ${full}`, "Show title bar", "Hides the window's title. Move it in Arrange.", sec.opts.bar) +
-      opt(`data-pwin="clear" ${full}`, "Transparent background", "No background or border behind the plugin.", sec.opts.clear) +
+      opt(`data-pwin="clear" ${full}`, "See-through background", "No background or border behind the plugin.", sec.opts.clear) +
       sec.fields.map(f => {
         const at = `${full} data-k="${esc(f.key)}"`;
         if (f.type === "toggle") return opt(`data-ptog ${at}`, f.label, "", f.value === true);
@@ -222,11 +222,11 @@ const ui = {
   editing: false,      // the DLL's edit mode, as reported by the host
   editSeq: 0,          // our edit requests: odd = on, even = off
   session: {},         // open state of windows that always start closed (the hub, Details)
-  plugOpen: new Set(), // plugin ids whose settings panel is open in the hub (this session only)
   detailFrom: "",      // the window whose player click opened Details (it sits beside it)
   update: null,        // the launcher's self-update status (host, from update-status.json)
   zones: [],           // the game's own UI (host, from MumbleLink): [{id, label, x, y, w, h}]
   notice: "",          // the hub's Windows tab note (a window that could not open)
+  capRefused: false,   // a Show was turned down at the cap (the note stays until there is room)
   text: null,          // the hub's focused name field: {id, value, caret, orig}; keys come from the DLL
 };
 // Persisted by the host in ~/.config/axidps/ui.json.
@@ -292,7 +292,7 @@ function defineWindow(def) {
   el.innerHTML = (def.bare ? "" : `<div class="bar"><b>${esc(def.title)}</b><span class="state"></span>` +
     `<div class="tools">${tools}</div></div>`) + `<div class="body"></div><div class="tip"></div>` +
     `<div class="edit"><b>${esc(def.blurb ? def.blurb[0] : def.title)}</b><small>drag to move</small></div>`;
-  document.getElementById("atlas").appendChild(el);
+  toAtlas(el);
   const w = {def, el, id: def.id, key: def.key || def.id, bar: el.querySelector(".bar"), tools: el.querySelector(".tools"),
     state: el.querySelector(".state"), body: el.querySelector(".body"), tip: el.querySelector(".tip"),
     offset: 0};
@@ -306,10 +306,17 @@ function defineWindow(def) {
   wins.push(w);
   return w;
 }
+// Into the atlas, before the hub: the hub packs last, so opening it never pushes a window out of
+// the atlas (it shrinks to the room left instead, `hubFitH`).
+function toAtlas(el) {
+  const atlas = document.getElementById("atlas");
+  atlas.insertBefore(el, [...atlas.children].find(c => c !== el && c.classList.contains("modal")) || null);
+}
 function removeWindow(w) {
   w.el.remove();
   const i = wins.indexOf(w);
   if (i >= 0) wins.splice(i, 1);
+  if (!w.def.group) refit(); // the room it took is free: windows left out of the atlas get another try
 }
 
 // Open by the player's choice or the window's default, before the window cap.
@@ -324,14 +331,16 @@ function isOpen(w) { return wantsOpen(w) && !w.overCap && !w.overAtlas; }
 // are never refused, so the player can always reach the hub); every other window shares the rest.
 const MAX_OPEN = 16;
 const CAP = MAX_OPEN - 2;
-const CAP_NOTE = `${MAX_OPEN} windows are open; close one first`;
 const capped = w => !w.def.session && !w.def.editOnly && !w.inGroup;
 // Windows open without a setOpen (defaults, a restored layout, plugin windows) past the cap count
-// as closed, the later ones first, and the hub says so.
+// as closed, the later ones first, and the hub says so. The line is worked out again on every
+// render, so it goes once nothing is held back (a window removed, a plugin off, a rescan).
 function applyCap() {
   const over = pluginHost.overCap(wins.filter(capped), w => wantsOpen(w) && !w.overAtlas, CAP);
   for (const w of wins) w.overCap = over.includes(w);
-  if (over.length) ui.notice = CAP_NOTE;
+  if (ui.capRefused && wins.filter(x => capped(x) && isOpen(x)).length < CAP) ui.capRefused = false;
+  ui.notice = axidpsHub.notice({overCap: over.length, overAtlas: wins.some(w => w.overAtlas && wantsOpen(w)),
+    refused: !!ui.capRefused, cap: CAP});
 }
 // The atlas (2048x2048, the shared frame's size) holds every open window side by side; a window
 // that doesn't fit there can't be shown. Like the cap: the first window that falls outside counts
@@ -339,24 +348,35 @@ function applyCap() {
 // layout (`report`), and again from scratch when the player opens or closes a window or the plugin
 // list changes.
 const ATLAS = 2048;
-const ATLAS_NOTE = "No room for more windows; close one first";
 function refit() {
   for (const w of wins) w.overAtlas = false;
 }
+const outside = w => {
+  const r = w.el.getBoundingClientRect();
+  return Math.floor(r.left) + Math.ceil(r.width) > ATLAS || Math.floor(r.top) + Math.ceil(r.height) > ATLAS;
+};
 function overflowing() {
-  return wins.find(w => {
-    if (!isOpen(w) || !capped(w)) return false;
-    const r = w.el.getBoundingClientRect();
-    return Math.floor(r.left) + Math.ceil(r.width) > ATLAS || Math.floor(r.top) + Math.ceil(r.height) > ATLAS;
-  });
+  const shown = wins.filter(w => isOpen(w) && capped(w));
+  const out = shown.find(outside);
+  if (out || !isOpen(hub) || !outside(hub)) return out;
+  // The hub is at its smallest and still doesn't fit below the rest: the last window gives way.
+  const at = w => { const r = w.el.getBoundingClientRect(); return [r.top, r.left]; };
+  return shown.sort((a, b) => at(b)[0] - at(a)[0] || at(b)[1] - at(a)[1])[0];
 }
+// The height the hub's page can take where it lands in the atlas (its border aside).
+let hubFitH = 0;
+function hubRoom() {
+  const page = hub.el.querySelector(".hub");
+  return ATLAS - Math.floor(hub.el.getBoundingClientRect().top) - (hub.el.offsetHeight - page.offsetHeight);
+}
+const hubSizeNow = sc => { const [w, h] = axidpsHub.hubSize(sc); return [w, hubFitH ? Math.min(h, hubFitH) : h]; };
 function setOpen(w, on) {
   if (on && capped(w) && !isOpen(w) && wins.filter(x => capped(x) && isOpen(x)).length >= CAP) {
-    ui.notice = CAP_NOTE;
+    ui.capRefused = true;
     renderAll();
     return;
   }
-  ui.notice = "";
+  ui.capRefused = false;
   refit();
   if (w.def.session) ui.session[w.id] = on;
   else { saved.open[w.key] = on; save(); }
@@ -471,10 +491,13 @@ function scheduleReport() {
 // Tell the host which windows exist, where they are in the atlas and on screen.
 function report() {
   reportTimer = 0;
+  if (isOpen(hub)) {
+    const fit = axidpsHub.hubFit(axidpsHub.hubSize(ui.screen), hubRoom())[1];
+    if (fit !== hubFitH) { hubFitH = fit; renderAll(); return; }
+  }
   const over = overflowing();
   if (over) {
     over.overAtlas = true;
-    ui.notice = ATLAS_NOTE;
     renderAll(); // lays out again and reports (or finds the next one that doesn't fit)
     return;
   }
@@ -571,6 +594,8 @@ function layGroup(g, cells) {
       el.style.width = x.w + "px"; el.style.height = x.h + "px";
       const n = (dr, dc) => cells.some(y => !y.ghost && y.r === x.r + dr && y.c === x.c + dc);
       el.className = "ghost" + (n(0, -1) ? " e-l" : "") + (n(0, 1) ? " e-r" : "") + (n(-1, 0) ? " e-t" : "") + (n(1, 0) ? " e-b" : "");
+      const hint = mdrag && mdrag.gid === g.gid && mdrag.title ? "Let go to join " + esc(mdrag.title) : "";
+      if (el.dataset.hint !== hint) { el.dataset.hint = hint; el.innerHTML = hint ? `<span class="joinhint">${hint}</span>` : ""; }
     } else {
       const m = memberWin(x.k);
       if (!m) continue;
@@ -593,7 +618,7 @@ function release(el) {
   el.style.gridArea = "";
   const s = el.querySelector(".edit small");
   if (s) s.textContent = "drag to move";
-  document.getElementById("atlas").appendChild(el);
+  toAtlas(el);
   if (m) m.inGroup = 0;
 }
 // A member's screen position: its group's, plus where it sits in the group.
@@ -692,9 +717,11 @@ function animateGroup(g, before, side, hero, boxBefore) {
 }
 
 // Undo the preview: the ghost goes; a group made only for it gives its one window back.
+const clearJoinMark = () => document.querySelectorAll(".jointarget").forEach(e => e.classList.remove("jointarget"));
 function endPreview() {
   const d = mdrag;
   mdrag = null;
+  clearJoinMark();
   const dragged = d && wins.find(w => w.id === d.name);
   if (dragged) dragged.el.classList.remove("docking");
   const g = d && d.gid && groups.get(d.gid);
@@ -768,7 +795,12 @@ function onDragging(name, x, y, gx, gy) {
   const r0 = Math.min(...ghosts.map(c => c.r)), c0 = Math.min(...ghosts.map(c => c.c));
   const cells = plan.filter(c => !c.ghost).concat([{k: "ghost", ghost: true, r: r0, c: c0, w: bw.width, h: bw.height,
     rs: Math.max(...ghosts.map(c => c.r)) - r0 + 1, cs: Math.max(...ghosts.map(c => c.c)) - c0 + 1}]);
-  mdrag = {name, key, d, gid: g.gid, temp, plan, block};
+  // The hint names the group's head as the hub's list does (its name, not its title bar's text).
+  const hc = axidpsHub.groupHead(real), head = hc && memberWin(hc.k);
+  const title = head ? String((head.def.blurb && head.def.blurb[0]) || head.def.title || "") : "";
+  mdrag = {name, key, d, gid: g.gid, temp, plan, block, title};
+  clearJoinMark();
+  g.el.classList.add("jointarget");
   const before = rectsIn(g.el), box = g.el.getBoundingClientRect();
   layGroup(g, cells);
   const gh = g.grid.querySelector(".ghost");
@@ -794,6 +826,7 @@ function onDropped(w) {
   if (!mdrag || !w || mdrag.name !== w.id) { if (mdrag) endPreview(); return false; }
   const d = mdrag, g = groups.get(d.gid);
   mdrag = null;
+  clearJoinMark();
   w.el.classList.remove("docking");
   if (!g) return false;
   // Where the dropped tables were on screen, to fly in from.
@@ -1988,19 +2021,21 @@ function trackCharts() {
 
 // Shown only in edit mode; interactive there (the DLL drags every other window by any point).
 defineWindow({
-  id: "layout", title: "Arrange windows", editOnly: true, ed: true,
-  at: ([sw, sh]) => [Math.round(sw / 2 - 160), Math.round(sh * 0.16)],
+  id: "layout", title: "Moving windows", editOnly: true, ed: true, fixed: true, bare: true,
+  at: ([sw]) => [Math.round(sw / 2 - 260), 16],
   mount(w) {
-    w.body.innerHTML = `<div class="lay" style="width:320px"><p>Drag any window to move it; it snaps to ` +
-      `the screen edges, other windows and the game's own UI (the orange areas). Windows stay locked ` +
-      `in place outside this mode.</p><div class="list"></div>` +
+    w.body.innerHTML = `<div class="lay banner" style="width:520px"><div class="bn"><b class="bt">Moving windows</b>` +
+      `<span class="bh"></span><span class="grow"></span>` +
+      `<button data-act="more" data-tip="show the other controls">More</button>` +
+      `<button class="primary" data-act="done">Done</button></div>` +
+      `<div class="more"><div class="list"></div>` +
       `<label data-act="zones" class="zl"><span class="tog"><i></i></span>Show the game's UI<small></small></label>` +
       `<div class="row"><button data-act="unblock" data-tip="move windows off the minimap, skill bar, chat and the rest">` +
       `Move off game UI</button><span class="grow"></span>` +
-      `<button data-act="reset" data-tip="put every window back in its default place">Reset</button>` +
-      `<button class="primary" data-act="done">Done</button></div></div>`;
+      `<button data-act="reset" data-tip="put every window back in its default place">Reset</button></div></div></div>`;
     const q = sel => w.body.querySelector(sel);
     q('[data-act="done"]').onclick = () => requestEdit(false);
+    q('[data-act="more"]').onclick = () => { w.more = !w.more; renderAll(); };
     q('[data-act="reset"]').onclick = () => { saved.pos = {}; save(); renderAll(); };
     q('[data-act="zones"]').onclick = () => { saved.hideZones = !saved.hideZones; save(); renderAll(); };
     q('[data-act="unblock"]').onclick = () => {
@@ -2015,7 +2050,9 @@ defineWindow({
     };
   },
   render(w) {
-    w.state.textContent = `${ui.screen[0]} x ${ui.screen[1]}`;
+    w.body.querySelector(".bh").innerHTML = "<b>Drag</b> a window to move it" + (saved.merge ? " · <b>Drop</b> a table on another to join them" : "");
+    w.body.querySelector(".more").style.display = w.more ? "" : "none";
+    w.body.querySelector('[data-act="more"]').classList.toggle("on", !!w.more);
     w.body.querySelector(".list").innerHTML = wins.filter(x => x.def.blurb).map(x => {
       const c = covers(x);
       const note = !isOpen(x) ? "hidden" : c.length ? "covers " + c.map(z => z.label.replace(/ \(.*/, "")).join(", ")
@@ -2121,15 +2158,7 @@ const launcher = defineWindow({
 });
 
 const BUILD = window.AXIDPS_BUILD || "dev";
-const TABS = [
-  ["windows", "Windows", "grid", "Show and hide the axidps windows."],
-  ["tables", "Custom windows", "columns", "Build your own windows from what axidps counts."],
-  ["appearance", "Appearance", "layers", "Themes, opacity and blur for every window."],
-  ["settings", "Settings", "sliders", "What axidps counts, and how."],
-  ["store", "Store", "plus", "Find plugins and install them."],
-  ["plugins", "Plugins", "plug", "Add windows and tools made by others."],
-  ["updates", "Updates", "download", "Versions of the axidps parts on this machine."],
-];
+const TABS = axidpsHub.TABS;
 // Core settings (saved.core, read by axidps core from ui.json): [key, label, detail, default].
 const CORE_OPTS = [
   ["wvw_gadgets", "WvW: count siege, gates and walls", "Damage to gadgets in WvW and Armistice Bastion shows in the meter.", true],
@@ -2167,10 +2196,11 @@ const PROF_NAMES = ["", "Guardian", "Warrior", "Engineer", "Ranger", "Thief", "E
 const FILTER_MAX = 9;
 const filterLabel = f => f.startsWith("prof:") ? (PROF_NAMES[Number(f.slice(5))] || f) : f.slice(5);
 const SEG_TEXT = {
-  rows: [["players", "players"], ["total", "total"], ["boons", "boons"]],
-  who: [["squad", "squad"], ["group", "my subgroup"], ["me", "me"]],
-  span: [["fight", "fight"], ["last:10", "10s"], ["last:30", "30s"], ["last:60", "60s"], ["session", "session"]],
-  look: [["table", "table"], ["bars", "bars"], ["number", "number"], ["chart", "chart"]],
+  rows: [["players", "A player"], ["total", "One total"], ["boons", "A boon"]],
+  who: [["squad", "Squad"], ["group", "My subgroup"], ["me", "Just me"]],
+  span: [["fight", "This fight"], ["last:10", "Last 10s"], ["last:30", "Last 30s"], ["last:60", "Last 60s"], ["session", "Whole session"]],
+  look: [["table", "Table"], ["bars", "Bars"], ["number", "One number"], ["chart", "Chart"]],
+  dir: [["desc", "Highest first"], ["asc", "Lowest first"]],
 };
 const AS_TEXT = {total: "total", per_s: "/s", share: "%"};
 // The as toggle's next value: total, /s, % (no % for a number: it would always read 100%).
@@ -2189,53 +2219,46 @@ function filterChoices(spec) {
 const seg = (f, cur, only) => `<div class="seg" data-f="${f}">` + SEG_TEXT[f].filter(([v]) => !only || only.includes(v)).map(([v, t]) =>
   `<button data-cact="set" data-v="${v}"${v === cur ? ' class="on"' : ""}>${t}</button>`).join("") + `</div>`;
 const crow = (label, body) => `<div class="crow"><span>${label}</span><div>${body}</div></div>`;
+const HEAL_KEY = k => /^heal/.test(k) || k === "hps" || k === "barrier";
 
 // Column or subgroup choices a built-in table kept from before custom windows (they can no longer
 // be made, only reset).
 const builtinChanged = t => { const c = t.cfg; return Array.isArray(c.cols) || !!c.groupOnly; };
-// A built-in table's card: its name, Copy and, while it has old choices, Defaults (they are not
-// editable).
-function builtinCard(t, full) {
-  return `<div class="tbl" data-c="${t.id}"><div class="tbl-h"><b>${esc(t.def.blurb[0])}</b><span class="tag">built in</span>` +
-    `<span class="grow"></span>${builtinChanged(t) ? `<button data-cact="defaults" data-tip="its default columns, for the whole squad">Defaults</button>` : ""}` +
-    `<button data-cact="copy"${full ? " disabled" : ""} data-tip="a custom window with its columns">Copy</button></div></div>`;
-}
-// A custom window's card: every part of its spec.
-function customCard(spec, full, filterOpen, boonOpen, note) {
+// A custom window's settings, in two columns: the left says what it counts, the right what it shows.
+function customSettings(spec, full, filterOpen, boonOpen, note, addOpen) {
   const C = axidpsCustom, n = spec.stats.length, chart = spec.look === "chart", boons = spec.rows === "boons";
-  const chips = spec.stats.map((s, i) => {
+  const rows = spec.stats.map((s, i) => {
     const as = STATS[s.key].rate || STATS[s.key].noAs || chart ? "" :
       `<button data-cact="as" class="as" data-tip="total, per second or % of everyone shown">${AS_TEXT[s.as]}</button>`;
-    return `<span class="chip on" data-k="${s.key}" data-i="${i}" data-tip="${esc(statTip(s))}">` +
-      `<button data-cact="left"${i ? "" : " disabled"}>&lsaquo;</button>${esc(STATS[s.key].label)}` +
-      `<button data-cact="right"${i < n - 1 ? "" : " disabled"}>&rsaquo;</button>${as}` +
-      `<button data-cact="rm"${n > 1 ? "" : " disabled"}>&times;</button></span>`;
+    return `<div class="crw" data-k="${esc(s.key)}" data-i="${i}" data-tip="${esc(statTip(s))}">` +
+      `<button class="grip" data-cact="grip" aria-label="Move" data-tip="drag to reorder">&#8942;&#8942;</button>` +
+      `<span class="nm">${esc(STATS[s.key].label)}</span>${as}` +
+      `<button data-cact="rm" aria-label="Remove"${n > 1 ? "" : " disabled"}>&times;</button></div>`;
   }).join("");
-  const addChip = k => `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"` +
-    `${n >= C.MAX_STATS ? " disabled" : ""}>+ ${esc(STATS[k].label.replace(/ \(.*\)$/, ""))}</button></span>`;
+  const addItem = (k, text) => `<div class="pick" data-k="${esc(k)}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"` +
+    `${n >= C.MAX_STATS ? " disabled" : ""}>+ ${esc(text)}</button></div>`;
   const free = k => !spec.stats.some(s => s.key === k);
-  const group = (name, body) => `<span class="grp">${name}</span>${body ? `<div class="chips">${body}</div>` : ""}`;
-  let picker;
-  if (boons) {
-    // A boons window picks measures only: its rows are the boons.
-    picker = Object.keys(STATS).filter(k => STATS[k].kind === "boons" && free(k)).map(addChip).join("");
-  } else {
-    picker = group("Fight", Object.keys(STATS).filter(k => !STATS[k].kind && free(k)).map(addChip).join(""));
-    // Boon stats are not for charts (summing uptime over players over time means nothing).
-    if (!chart) {
-      const names = C.SQUAD_BOONS.map(b => {
-        const k = `boon:${b}:up`;
-        return `<span class="chip${boonOpen === b ? " on" : ""}"><button data-cact="boonopen" data-v="${b}">` +
-          `${esc(STATS[k].label)}${boonOpen === b ? " &times;" : ""}</button></span>`;
-      }).join("");
-      const measures = boonOpen ? ["up", "self", "group", "squad"].map(m => `boon:${boonOpen}:${m}`).filter(free).map(k =>
-        `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"` +
-        `${n >= C.MAX_STATS ? " disabled" : ""}>+ ${esc(({up: "Uptime", self: "Self", group: "Group", squad: "Squad"})[STATS[k].measure])}` +
-        `</button></span>`).join("") : "";
-      picker += group("Boons", names) + (boonOpen ? group(`${esc(STATS[`boon:${boonOpen}:up`].label)}: pick a measure`, measures || "") : "");
+  const group = (name, body) => `<span class="grp">${name}</span>` + (body ? `<div class="plist">${body}</div>` : "");
+  let picker = "";
+  if (addOpen) {
+    if (boons) {
+      // A boons window picks measures only: its rows are the boons.
+      picker = Object.keys(STATS).filter(k => STATS[k].kind === "boons" && free(k)).map(k => addItem(k, STATS[k].label.replace(/ \(.*\)$/, ""))).join("");
+    } else {
+      picker = group("Fight", Object.keys(STATS).filter(k => !STATS[k].kind && free(k)).map(k => addItem(k, STATS[k].label.replace(/ \(.*\)$/, ""))).join(""));
+      // Boon stats are not for charts (summing uptime over players over time means nothing).
+      if (!chart) {
+        const names = C.SQUAD_BOONS.map(b => {
+          const k = `boon:${b}:up`;
+          return `<div class="pick${boonOpen === b ? " on" : ""}"><button data-cact="boonopen" data-v="${b}">` +
+            `${esc(STATS[k].label)}${boonOpen === b ? " &times;" : ""}</button></div>`;
+        }).join("");
+        const measures = boonOpen ? ["up", "self", "group", "squad"].map(m => `boon:${boonOpen}:${m}`).filter(free).map(k =>
+          addItem(k, ({up: "Uptime", self: "Self", group: "Group", squad: "Squad"})[STATS[k].measure])).join("") : "";
+        picker += group("Boons", names) + (boonOpen ? group(`${esc(STATS[`boon:${boonOpen}:up`].label)}: pick a measure`, measures || "") : "");
+      }
     }
   }
-  const chipsHtml = `<div class="chips">${chips}</div>` + picker;
   const fl = spec.who.filters;
   const filters = (filterOpen ? filterChoices(spec) : fl).map(f => {
     const on = fl.includes(f);
@@ -2243,46 +2266,118 @@ function customCard(spec, full, filterOpen, boonOpen, note) {
       `${!on && fl.length >= FILTER_MAX ? " disabled" : ""}>${on ? "" : "+ "}${esc(filterLabel(f))}` +
       `${on ? " &times;" : ""}</button></span>`;
   }).join("") + `<span class="chip"><button data-cact="filters"${filterOpen ? ' class="on"' : ""}>` +
-    `${filterOpen ? "done" : "+ spec&hellip;"}</button></span>`;
-  const sortName = spec.sort.key === "name" ? "Name" : spec.sort.key ? STATS[spec.sort.key].label : "Default";
-  return `<div class="tbl cw" data-c="${spec.id}"><div class="tbl-h"><b>${esc(spec.name)}</b><span class="grow"></span>` +
-    `<button data-cact="copy"${full ? " disabled" : ""}>Copy</button><button data-cact="del">Remove</button></div>` +
-    crow("Name", nameField(spec)) +
-    crow("Rows", seg("rows", spec.rows)) +
-    crow("Who", seg("who", spec.who.base) + `<div class="chips">${filters}</div>`) +
-    crow("Span", seg("span", spec.span)) +
+    `${filterOpen ? "Done" : "Only these classes"}</button></span>`;
+  const sortKeys = ["name", ...new Set(spec.stats.map(s => s.key))];
+  const sortBtns = sortKeys.map(k => `<button data-cact="sortkey" data-v="${esc(k)}"${spec.sort.key === k ? ' class="on"' : ""}>` +
+    `${k === "name" ? "Name" : esc(STATS[k].label)}</button>`).join("");
+  const dir = `<div class="seg" data-f="dir">` + SEG_TEXT.dir.map(([v, t]) =>
+    `<button data-cact="sortdir" data-v="${v}"${(v === "asc") === !!spec.sort.asc ? ' class="on"' : ""}>${t}</button>`).join("") + `</div>`;
+  const heal = spec.stats.some(s => HEAL_KEY(s.key));
+  const left = crow("Name", nameField(spec)) +
+    crow("Each row is", seg("rows", spec.rows)) +
+    crow("Who to count", seg("who", spec.who.base) + `<div class="chips">${filters}</div>`) +
+    crow("Count over", seg("span", spec.span)) +
     // A boons window is a table.
-    crow("Look", seg("look", spec.look, boons ? ["table"] : null)) +
-    crow("Stats", chipsHtml) +
+    crow("Show it as", seg("look", spec.look, boons ? ["table"] : null));
+  const right = crow("Columns", `<div class="clist">${rows}</div>` +
+      `<button class="addcol${addOpen ? " on" : ""}" data-cact="addopen">${addOpen ? "Done" : "+ Add a column"}</button>` + picker +
+      (heal ? `<p class="note">The game reports healing only for you and squadmates who share it, so other rows may read low.</p>` : "")) +
     (note ? `<div class="cnote">${esc(note)}</div>` : "") +
-    crow("Sort", `<button data-cact="sortkey" data-tip="sort by the name or one of its stats">${esc(sortName)}</button>` +
-      `<button data-cact="sortdir" data-tip="${spec.sort.asc ? "lowest" : "highest"} first">${spec.sort.asc ? "&uarr;" : "&darr;"}</button>` +
-      `<span class="lbl">Rows</span><div class="step"><button data-cact="limit-">&minus;</button>` +
-      `<b>${spec.limit || "auto"}</b><button data-cact="limit+">+</button></div>`) +
-    `</div>`;
+    crow("Sort by", `<div class="chips sortk">${sortBtns}</div>` + dir) +
+    crow("How many rows", `<div class="step"><button data-cact="limit-" aria-label="Fewer">&minus;</button>` +
+      `<b>${spec.limit || "Auto"}</b><button data-cact="limit+" aria-label="More">+</button></div>`);
+  return `<div class="tbl cw" data-c="${spec.id}">` +
+    `<div class="cols2"><div class="cl">${left}</div><div class="cr">${right}</div></div></div>`;
 }
-// The tab: a card per built-in table and per custom window, and the Add a window menu. Drawn
-// again only when something on it changes.
-function renderBuilder(w) {
+// ---- the Windows tab: every window in a list, the selected one's settings beside it -------------
+
+// What windowList sorts: one item per window that has a blurb.
+function pluginOf(x) {
+  return pluginHost.list.find(p => p && typeof p === "object" && String(x.key).startsWith(String(p.id) + "/"));
+}
+function windowItems() {
+  return wins.filter(x => x.def.blurb).map(x => {
+    const kind = x.def.custom ? "custom" : x.def.plugin ? "plugin" : "builtin";
+    const b1 = String(x.def.blurb[1] || "");
+    const p = kind === "plugin" ? pluginOf(x) : null;
+    const note = kind === "custom" ? "Your window"
+      : kind === "plugin" ? "Plugin · " + String(p ? p.name || p.id : x.def.blurb[0])
+      : b1.charAt(0).toUpperCase() + b1.slice(1);
+    return {id: x.id, key: x.key, name: x.def.blurb[0], note, kind, open: isOpen(x)};
+  });
+}
+const winById = id => wins.find(x => x.id === id);
+// A toggle row; with `tip` (why it can't be switched on) it is drawn disabled and the tip says why.
+const toggleHtml = (attrs, label, note, on, tip) =>
+  `<div class="opt${tip ? " dis" : ""}" ${attrs}${tip ? ` data-tip="${esc(tip)}"` : ""}><div>${esc(label)}${note ? `<small>${esc(note)}</small>` : ""}</div>` +
+  `<span class="tog${on ? " on" : ""}"><i></i></span></div>`;
+const winIcon = open => `<span class="ic">${open ? '<i style="width:90%"></i><i style="width:62%"></i><i style="width:42%"></i>' : ""}</span>`;
+const ADD_TIP = "a blank window, or a copy of one you have";
+// A pass over the page: the list, the selected window's settings and the bottom bar. Each part is
+// drawn again only when its markup changes (the feed redraws the hub many times a second).
+function renderWindows(w) {
   const C = axidpsCustom, full = saved.custom.length >= C.MAX_CUSTOM;
-  const tables = wins.filter(x => x.def.table);
   if (full) w.addMenu = false;
-  const feedSpecs = w.filterOpen ? players().map(p => p.spec).join() : "";
-  const key = JSON.stringify([saved.custom, tables.map(t => t.id + t.def.blurb[0] + builtinChanged(t)), w.filterOpen || "", !!w.addMenu, feedSpecs,
-    ui.text, w.boonOpen || "", w.cardNote || ""]);
-  if (w.builderKey === key) return;
-  w.builderKey = key;
-  w.body.querySelector(".tbls").innerHTML = tables.map(t => builtinCard(t, full)).join("") +
-    saved.custom.map(s => customCard(s, full, w.filterOpen === s.id,
-      w.boonOpen && w.boonOpen.id === s.id ? w.boonOpen.boon : 0, w.cardNote && w.cardNote.id === s.id ? w.cardNote.text : "")).join("");
-  const add = w.body.querySelector('[data-act="addtable"]');
+  const items = windowItems();
+  const rows = axidpsHub.windowList(items, saved.merge ? saved.groups : []);
+  w.sel = axidpsHub.selected(w.sel, rows);
+  const x = winById(w.sel);
+  const openCount = wins.filter(v => capped(v) && isOpen(v)).length;
+  const atlasFull = wins.some(v => v.overAtlas);
+  const blockOf = open => axidpsHub.showBlock({open, openCount, cap: CAP, atlasFull});
+  const put = (el, html) => { if (el._html !== html) { el._html = html; el.innerHTML = html; } };
+  const q = sel => w.body.querySelector(sel);
+
+  // The list.
+  const row = r => {
+    const hid = !r.open, why = hid ? blockOf(false) : "";
+    return `<div class="w${r.id === w.sel ? " on" : ""}${hid ? " hid" : ""}${r.depth ? " joined" : ""}" data-w="${esc(r.id)}">` +
+      `${winIcon(!hid)}<span class="nm"><b>${esc(r.name)}</b><small>${esc(r.note)}</small></span>` +
+      `${hid ? `<button class="show" data-show="${esc(r.id)}"${why ? ` disabled data-tip="${esc(why)}"` : ""}>Show</button>` : ""}</div>`;
+  };
+  put(q(".wl .lst"), `<h3>On screen</h3>${rows.onScreen.map(row).join("")}` +
+    `<h3 class="gap">Hidden</h3>${rows.hidden.map(row).join("")}` +
+    `<p class="note win-note"${ui.notice ? "" : ' style="display:none"'}>${esc(ui.notice)}</p>`);
+  const add = q('[data-act="addtable"]');
   add.disabled = full;
+  add.dataset.tip = full ? `You can have ${C.MAX_CUSTOM} of your own windows. Remove one first.` : ADD_TIP;
   add.classList.toggle("on", !!w.addMenu);
-  const menu = w.body.querySelector(".addmenu");
-  menu.style.display = w.addMenu ? "" : "none";
-  menu.innerHTML = w.addMenu ? `<button data-cact="addblank">Blank</button>` +
-    tables.map(t => `<button data-cact="addfrom" data-v="${t.id}">Copy of ${esc(t.def.blurb[0])}</button>`).join("") +
-    saved.custom.map(s => `<button data-cact="addfrom" data-v="${s.id}">Copy of ${esc(s.name)}</button>`).join("") : "";
+  const tables = wins.filter(v => v.def.table);
+  put(q(".addmenu"), w.addMenu ? `<button data-cact="addblank">Blank</button>` +
+    tables.map(t => `<button data-cact="addfrom" data-v="${esc(t.id)}">Copy of ${esc(t.def.blurb[0])}</button>`).join("") +
+    saved.custom.map(sp => `<button data-cact="addfrom" data-v="${esc(sp.id)}">Copy of ${esc(sp.name)}</button>`).join("") : "");
+
+  // The selected window.
+  const ws = q(".ws"), head = q(".ws .head"), grid = q(".ws .grid");
+  if (!x) { ws.dataset.c = ""; put(head, ""); put(grid, ""); }
+  else {
+    ws.dataset.c = x.id;
+    const open = isOpen(x), it = items.find(v => v.id === x.id), why = blockOf(open);
+    const p = it.kind === "plugin" ? pluginOf(x) : null;
+    const canCopy = !!(x.def.table || x.def.custom);
+    put(head, `<div><h2>${esc(it.name)}</h2><p class="sub">${esc(it.note)}</p></div>` +
+      (p ? `<button data-act="plugsettings" data-tip="this plugin's page in Plugins">Plugin settings</button>` : "") +
+      (canCopy ? `<button data-cact="copy"${full ? ` disabled data-tip="You can have ${C.MAX_CUSTOM} of your own windows. Remove one first."` : ""}>Make a copy</button>` : "") +
+      (it.kind === "custom" ? `<button data-cact="del">Remove</button>` : "") +
+      `<button data-act="toggle"${!open && why ? ` disabled data-tip="${esc(why)}"` : ""}>${open ? "Hide" : "Show"}</button>`);
+    const show = toggleHtml('data-tog="show"', "Show on screen", "", open, !open && why ? why : "");
+    let body;
+    if (x.def.custom) {
+      body = show + customSettings(x.def.spec, full, w.filterOpen === x.id,
+        w.boonOpen && w.boonOpen.id === x.id ? w.boonOpen.boon : 0, w.cardNote && w.cardNote.id === x.id ? w.cardNote.text : "",
+        w.addCol === x.id);
+    } else if (x.def.plugin) {
+      const sec = p ? pluginHost.panelModel(p, saved).filter(sc => sc.fullId === x.key) : [];
+      body = show + (sec.length ? plugPanel(sec) : "");
+    } else if (x.def.table) {
+      body = show + `<h3>Columns</h3>` + x.def.cols.filter(k => STATS[k]).map(k =>
+        `<div class="col"><span>${esc(STATS[k].label)}</span></div>`).join("") +
+        `<p class="note">Built-in windows can't be changed. Make a copy to change it.</p>` +
+        (builtinChanged(x) ? `<div class="acts"><button data-cact="defaults" data-tip="its default columns, for the whole squad">Use the defaults</button></div>` : "");
+    } else body = show;
+    put(grid, body);
+  }
+  put(q(".wr .bottom small"), esc(BUILD + " · " + (updateText(ui.update) || "up to date")));
 }
 // A click on a card's control (data-cact) or the Add a window menu.
 function builderAct(hw, b) {
@@ -2315,6 +2410,7 @@ function builderAct(hw, b) {
     case "del":
       if (hw.filterOpen === id) hw.filterOpen = "";
       if (hw.boonOpen && hw.boonOpen.id === id) hw.boonOpen = null;
+      if (hw.addCol === id) hw.addCol = "";
       return removeCustom(id);
     case "set": {
       const f = b.closest("[data-f]").dataset.f;
@@ -2328,6 +2424,14 @@ function builderAct(hw, b) {
       else if (next && lost && f === "rows" && spec.rows === "boons") note("Those measures are for boons windows only, so they were dropped.");
       else if (next && lost && f === "look" && v === "chart") note("Charts do not show boon stats (uptime summed over players means nothing), so they were dropped.");
       return;
+    }
+    case "addopen":
+      hw.addCol = hw.addCol === id ? "" : id;
+      return hw.def.render(hw);
+    case "move": {
+      const from = Number(b.dataset.from), to = Number(b.dataset.to);
+      if (!(from >= 0 && to >= 0) || from === to) return;
+      return updateSpec(id, {stats: axidpsHub.moveItem(stats, from, to)});
     }
     case "boonopen":
       hw.boonOpen = hw.boonOpen && hw.boonOpen.id === id && hw.boonOpen.boon === Number(v) ? null : {id, boon: Number(v)};
@@ -2349,22 +2453,16 @@ function builderAct(hw, b) {
       if (stats.length < 2 || i < 0) return;
       stats.splice(i, 1);
       return updateSpec(id, {stats});
-    case "left": case "right": {
-      const j = act === "left" ? i - 1 : i + 1;
-      if (i < 0 || j < 0 || j >= stats.length) return;
-      [stats[i], stats[j]] = [stats[j], stats[i]];
-      return updateSpec(id, {stats});
-    }
     case "as":
       if (i < 0) return;
       stats[i].as = nextAs(stats[i].as, spec.look);
       return updateSpec(id, {stats});
     case "sortkey": {
-      const keys = ["name", ...new Set(spec.stats.map(s => s.key))];
-      const key = keys[(keys.indexOf(spec.sort.key) + 1) % keys.length];
+      const key = v === "name" || spec.stats.some(s => s.key === v) ? v : spec.sort.key;
+      if (key === spec.sort.key) return;
       return updateSpec(id, {sort: {key, asc: key === "name"}});
     }
-    case "sortdir": return updateSpec(id, {sort: {key: spec.sort.key, asc: !spec.sort.asc}});
+    case "sortdir": return updateSpec(id, {sort: {key: spec.sort.key, asc: v === "asc"}});
     // From auto, the steps start at Settings' Rows shown; below 1 is auto again.
     case "limit+": return updateSpec(id, {limit: Math.min(MAX_ROWS, (spec.limit || maxRows()) + 1)});
     case "limit-": {
@@ -2374,129 +2472,216 @@ function builderAct(hw, b) {
   }
 }
 
-// A trust badge: Verified, Unverified, DEV or Revoked.
-function badge(label) {
-  const cls = {Verified: "v", Unverified: "u", DEV: "dev", Revoked: "r"}[label] || "u";
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
-}
-const STORE_BUTTON = {install: "Install", update: "Update", replace: "Replace yours", uninstall: "Uninstall"};
-const STORE_FILTER_LABEL = [["all", "All"], ["installed", "Installed"], ["updates", "Updates"]];
-// The Store tab, laid out like the meters: filter tabs with counts, the search box, a dim column
-// header and one row per plugin with a trust bar at its left edge.
-function renderStore(w) {
+const PLUGIN_FILTERS = [["all", "Everything"], ["installed", "Installed"], ["updates", "Has an update"]];
+const PLUGIN_BUTTON = {install: "Install", update: "Update", replace: "Replace yours"};
+const PLUGIN_TRUST = {verified: "v", unverified: "u", revoked: "r"};
+const filterOf = f => PLUGIN_FILTERS.some(x => x[0] === f) ? f : "all";
+const UNCHECKED = "Not checked yet. Nobody has looked at what this plugin does.";
+// The Plugins tab: one list of everything, from the store and from this computer. A filter column on
+// the left (with counts), the search box and Refresh above the rows, and one row per plugin with a
+// trust bar at its left edge. Returns the number of updates over everything, for the tab's pill.
+function renderPlugins(w) {
   const t = ui.text && ui.text.id === STORE_SEARCH ? ui.text : null;
   const query = t ? t.value : (w.storeQuery || "");
-  const m = pluginHost.storeModel(pluginHost.store, query, pluginHost.list, w.storeFilter);
+  const list = pluginHost.list.filter(p => p && typeof p === "object");
+  const sm = pluginHost.storeModel(pluginHost.store, query, list, "all");
+  const installed = list.map(p => ({id: String(p.id), card: pluginHost.cardModel(p, saved), bundled: p.bundled === true}));
+  const ready = sm.state === "ok";
+  const pm = axidpsHub.pluginRows(sm.cards, installed, w.storeFilter, query, ready);
+  // The pill counts over everything: no search, no filter.
+  const nUpdates = axidpsHub.pluginRows(pluginHost.storeModel(pluginHost.store, "", list, "all").cards,
+    installed, "all", "", ready).counts.updates;
+  // With no rows, say why for this filter and search (storeModel's own words).
+  const empty = pm.rows.length ? "" : pluginHost.storeModel(pluginHost.store, query, list, filterOf(w.storeFilter)).message
+    || (query.trim() ? `No plugins match “${query.trim()}”.`
+      : filterOf(w.storeFilter) === "installed" ? "Nothing installed yet."
+      : filterOf(w.storeFilter) === "updates" ? "Everything is up to date." : "No plugins here yet.");
+  const filter = filterOf(w.storeFilter);
   w.body.querySelector("[data-storeauto] .tog").classList.toggle("on", saved.storeAutoUpdate !== false);
-  const key = JSON.stringify([m, t]);
-  if (w.storeKey === key) return;
+  const key = JSON.stringify([pm, filter, empty, sm.message, sm.state, t, nUpdates]);
+  if (w.storeKey === key) return nUpdates;
   w.storeKey = key;
-  w.body.querySelector(".stabs").innerHTML = STORE_FILTER_LABEL.map(([f, label]) =>
-    `<span data-sfilter="${f}"${m.filter === f ? ' class="on"' : ""}>${label} <i>${m.counts[f]}</i></span>`).join("");
+  w.body.querySelector(".pfilters").innerHTML = PLUGIN_FILTERS.map(([f, label]) =>
+    `<div class="pf${filter === f ? " on" : ""}" data-sfilter="${f}">${esc(label)} <i>${pm.counts[f]}</i></div>`).join("");
   w.body.querySelector(".sfield").innerHTML = t
     ? `<span class="field focus search" data-search>${esc(t.value.slice(0, t.caret))}<i class="caret"></i>` +
       `${esc(t.value.slice(t.caret))}</span>`
     : `<span class="field search${query ? "" : " empty"}" data-search>${esc(query || "Search plugins")}</span>`;
   const msg = w.body.querySelector(".store-msg");
-  msg.textContent = m.message;
-  msg.style.display = m.message ? "" : "none";
-  w.body.querySelector(".shead").style.display = m.cards.length ? "" : "none";
-  const btn = (act, cls) => `<button data-sact="${act}"${cls ? ` class="${cls}"` : ""}>${STORE_BUTTON[act]}</button>`;
-  const TRUST = {verified: "v", unverified: "u", revoked: "r"};
-  w.body.querySelector(".srows").innerHTML = m.cards.map(c => {
-    const acts = c.busy ? `<button disabled>Working…</button>`
-      : c.action === "install" ? btn("install", "primary")
-      : c.action === "replace" ? btn("replace")
-      : c.action === "update" ? btn("uninstall", "quiet") + btn("update", "primary")
-      : c.action === "installed" ? `<span class="have">Installed</span>` + btn("uninstall", "quiet")
-      : c.action === "revoked" ? `<span class="have off">Turned off</span>` + btn("uninstall", "quiet") : "";
-    const uses = c.uses.map(u => u.deep ? `<em>${esc(u.text)}</em>` : esc(u.text)).join(" ");
-    return `<div class="srow ${TRUST[c.trust] || "u"}" data-s="${esc(c.id)}"><div class="top">` +
-      `<span class="nm"><b>${esc(c.title)}</b><span class="trust">${esc(c.trust)}</span></span>` +
-      `<span class="au">${esc(c.author)}</span><span class="ver${c.isUpdate ? " up" : ""}">${esc(c.version)}</span>` +
-      `<span class="sa">${acts}</span></div>` +
-      `${c.description ? `<div class="desc">${esc(c.description)}</div>` : ""}` +
+  const text = !pm.rows.length ? empty : sm.state !== "ok" && sm.cards.length ? sm.message : "";
+  msg.textContent = text;
+  msg.style.display = text ? "" : "none";
+  const btn = (attr, act, label, cls) => `<button data-${attr}="${act}"${cls ? ` class="${cls}"` : ""}>${esc(label)}</button>`;
+  w.body.querySelector(".srows").innerHTML = pm.rows.map(r => {
+    const acts = [];
+    if (r.busy) acts.push(`<button disabled>Working…</button>`);
+    else {
+      if (r.reload) acts.push(`<button data-pact="reload" data-tip="reload its windows">Reload</button>`);
+      if (PLUGIN_BUTTON[r.store]) acts.push(btn("sact", r.store, PLUGIN_BUTTON[r.store], "primary"));
+      if (r.reason) acts.push(`<span class="have off">${esc(r.reason)}</span>`);
+      else if (r.toggle) acts.push(btn("pact", r.toggle, r.toggle === "enable" ? "Turn on" : "Turn off", r.toggle === "enable" && !r.store ? "primary" : "quiet"));
+      if (r.remove) acts.push(btn("sact", "uninstall", "Remove", "quiet"));
+    }
+    const uses = r.uses.map(u => u.deep ? `<em>${esc(u.text)}</em>` : esc(u.text)).join(" ");
+    const who = r.local ? "Installed from your computer" : r.author;
+    return `<div class="srow ${PLUGIN_TRUST[r.trust] || "u"}" data-s="${esc(r.id)}" data-p="${esc(r.id)}"><div class="rtop">` +
+      `<span class="nm"><b>${esc(r.title)}</b>${r.trust ? `<span class="trust">${esc(r.trust)}</span>` : ""}` +
+      `${who ? `<span class="au">${esc(who)}</span>` : ""}</span>` +
+      `<span class="ver${r.store === "update" ? " up" : ""}">${r.version ? esc(r.version) : ""}${r.installed ? ` <span class="have">Installed</span>` : ""}</span>` +
+      `<span class="sa">${acts.join("")}</span></div>` +
+      `${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}` +
       `${uses ? `<div class="uses">${uses}</div>` : ""}` +
-      `${c.note ? `<div class="snote${c.bad ? " bad" : ""}">${esc(c.note)}</div>` : ""}</div>`;
+      `${r.unchecked ? `<div class="snote bad">${esc(UNCHECKED)}</div>` : ""}` +
+      `${r.note && r.note !== r.reason ? `<div class="snote${r.bad ? " bad" : ""}">${esc(r.note)}</div>` : ""}</div>`;
   }).join("");
+  return nUpdates;
+}
+
+// ---- the hub's scroll bars, drawn here: the overlay's engine (Servo) paints none --------------
+//
+// Each scrolling area gets a bar beside it (in its parent, so a list inside a scrolling pane scrolls
+// and clips with it): a 12px track, shown whenever the content is taller than the area, and a thumb
+// of at least 40px (axidpsHub.scrollThumb). Drag the thumb to scroll; press the track to move a
+// page. The wheel scrolls the area as before; the bar follows its scroll events.
+const SCROLLERS = ".wl .lst, .ws .grid, .cw .plist, .pfilters, .pmain, .hub section[data-tab=\"options\"]";
+const SB_W = 12;
+function placeBar(sc) {
+  const bar = sc._sb;
+  if (!bar) return;
+  // The bar is 3px inside the area's edges; the thumb runs inside its 1px border.
+  const h = Math.max(0, sc.clientHeight - 6);
+  const t = sc.offsetParent && axidpsHub.scrollThumb({view: sc.clientHeight, content: sc.scrollHeight, top: sc.scrollTop,
+    track: Math.max(0, h - 2)});
+  const key = t ? [sc.offsetLeft + sc.offsetWidth - SB_W - 3, sc.offsetTop + 3, h, t.size, t.pos].join() : "";
+  if (bar._key === key) return;
+  bar._key = key;
+  bar.style.display = t ? "" : "none";
+  if (!t) return;
+  const [x, y] = key.split(",").map(Number);
+  bar.style.left = x + "px"; bar.style.top = y + "px"; bar.style.height = h + "px";
+  const th = bar.firstChild;
+  th.style.top = t.pos + "px"; th.style.height = t.size + "px";
+}
+function scrollBars(root) {
+  for (const sc of root.querySelectorAll(SCROLLERS)) {
+    const parent = sc.parentNode;
+    if (!sc._sb || sc._sb.parentNode !== parent) {
+      const bar = document.createElement("div");
+      bar.className = "sb";
+      bar.innerHTML = "<i></i>";
+      bar._sc = sc;
+      sc._sb = bar;
+      sc.classList.add("sbs");
+      parent.classList.add("sbp");
+      parent.appendChild(bar);
+    }
+    placeBar(sc);
+  }
+}
+function scrollBarEvents(root) {
+  root.addEventListener("scroll", e => { if (e.target && e.target._sb) placeBar(e.target); }, true);
+  // The engine scrolls after the wheel event; catch up in case its scroll event comes late.
+  root.addEventListener("wheel", () => setTimeout(() => scrollBars(root), 30), {passive: true});
+  root.addEventListener("pointerdown", e => {
+    const bar = e.target.closest && e.target.closest(".sb");
+    if (!bar || e.button || !bar._sc) return;
+    e.preventDefault();
+    const sc = bar._sc, H = axidpsHub;
+    const dims = () => ({view: sc.clientHeight, content: sc.scrollHeight, track: bar.clientHeight});
+    const t = H.scrollThumb(Object.assign(dims(), {top: sc.scrollTop}));
+    if (!t) return;
+    const top0 = bar.getBoundingClientRect().top + bar.clientTop, at = e.clientY - top0;
+    if (e.target !== bar.firstChild) {
+      sc.scrollTop = H.pageScroll(Object.assign(dims(), {top: sc.scrollTop, at, thumb: t}));
+      placeBar(sc);
+      return;
+    }
+    const grab = at - t.pos;
+    bar.classList.add("drag");
+    const move = ev => {
+      sc.scrollTop = H.scrollForThumb(Object.assign(dims(), {size: t.size, pos: ev.clientY - top0 - grab}));
+      placeBar(sc);
+    };
+    const end = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", end);
+      document.removeEventListener("pointercancel", end);
+      bar.classList.remove("drag");
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", end);
+    document.addEventListener("pointercancel", end);
+  });
 }
 
 // Everything in one place: a full window over the dimmed game, centred, closed by a click
 // outside it or Esc.
 const hub = defineWindow({
   id: "hub", title: "axidps", session: true, bare: true, modal: true, fixed: true,
-  at: ([sw, sh]) => [Math.max(0, Math.round((sw - 760) / 2)), Math.max(0, Math.round((sh - 500) / 2))],
+  at: sc => {
+    const [hw, hh] = hubSizeNow(sc);
+    return [Math.max(0, Math.round((sc[0] - hw) / 2)), Math.max(0, Math.round((sc[1] - hh) / 2))];
+  },
   mount(w) {
     w.tab = "windows";
-    w.body.innerHTML = `<div class="hub"><nav>` +
-      `<div class="brand">${icon("chart", 18, "accent")}<div><b>axidps</b><small>build ${esc(BUILD)}</small></div></div>` +
-      TABS.map(([id, label, gl]) => `<div class="nav" data-tab="${id}">${icon(gl, 14)}${label}` +
-        `${id === "plugins" ? '<span class="n"></span>' : ""}</div>`).join("") +
-      `<div class="grow"></div>` +
-      `<button data-act="layout" data-tip="move windows (Esc or Done to finish)">${icon("maximize-2", 12, "text")}Arrange windows</button>` +
-      `<div class="kbd">Alt+Shift+M hides axidps</div></nav>` +
-      `<main><header><div><h2></h2><p></p></div>` +
-      `<button class="x" data-act="close" data-tip="close (Esc)">${icon("x", 12)}</button></header>` +
-      // Windows
-      `<section data-tab="windows"><div class="cards"></div><div class="acts"><button data-act="clear" data-tip="blank every window until the next fight">` +
-      `${icon("trash-2", 12, "text")}Clear fight</button><button data-act="clearsession" ` +
-      `data-tip="start the session span of every custom window over">${icon("trash-2", 12, "text")}Clear session</button></div><p class="note win-note"></p>` +
-      `<div class="plugs"><h3>Plugins</h3><div class="pcards"></div></div></section>` +
-      // Tables
-      `<section data-tab="tables"><div class="tbls"></div><div class="acts">` +
-      `<button data-act="addtable" data-tip="a blank window, or a copy of one you have">${icon("plus", 12, "text")}Add a window</button>` +
-      `</div><div class="addmenu"></div>` +
-      `<p class="note">Heal columns are complete only for you: the game reports no one else's heals, so ` +
-      `for others they show what passed between them and you (dimmed).</p></section>` +
-      // Appearance
-      `<section data-tab="appearance"><h3>Theme</h3><div class="themes">${THEMES.map(themeCard).join("")}</div>` +
-      `<h3>Look</h3><div class="look"><span>Opacity</span><div class="seg" data-look="opacity">` +
-      OPACITY.map(o => `<button data-v="${o}">${Math.round(o * 100)}%</button>`).join("") + `</div>` +
-      `<span>Blur</span><div class="seg" data-look="blur">` +
-      BLUR.map((b, i) => `<button data-v="${i}">${b}</button>`).join("") + `</div></div>` +
-      `<p class="note">Blur softens the game behind see-through windows. Picking a theme brings its own look.</p></section>` +
-      // Settings
-      `<section data-tab="settings"><h3>Windows</h3>` +
-      `<div class="opt"><div>Rows shown<small>Every party or squad member up to this many; scroll for the rest.</small></div>` +
+    w.body.innerHTML = `<div class="hub"><div class="top">` +
+      `<div class="brand">${icon("chart", 18, "accent")}<b>axidps</b></div>` +
+      `<nav>${TABS.map(([id, label]) => `<div class="tabb" data-tab="${id}">${esc(label)}` +
+        `${id === "plugins" ? '<span class="n"></span>' : ""}</div>`).join("")}</nav>` +
+      `<span class="grow"></span><span class="kbd">Alt+Shift+M opens and closes this</span>` +
+      `<button class="x" data-act="close" data-tip="close (Esc)">${icon("x", 12)}</button></div>` +
+      `<main>` +
+      // Windows: the list on the left, the selected window's settings and the bottom bar on the right
+      `<section data-tab="windows" class="wsec"><div class="wl"><div class="lst"></div><div class="foot">` +
+      `<button data-act="layout" class="move" data-tip="move windows (Esc or Done to finish)">${icon("maximize-2", 12, "text")}Move windows on screen</button>` +
+      `<button data-act="addtable" class="primary" data-tip="${ADD_TIP}">+ New window</button>` +
+      `<div class="addmenu"></div></div></div>` +
+      `<div class="wr"><div class="ws"><div class="head"></div><div class="grid"></div></div>` +
+      `<div class="bottom"><button data-act="clear" class="quiet" data-tip="blank every window until the next fight">Clear this fight</button>` +
+      `<button data-act="clearsession" class="quiet" data-tip="start the session span of every custom window over">Clear session</button>` +
+      `<span class="grow"></span><small></small></div></div></section>` +
+      // Plugins: a filter column (left), and the search, Refresh and one list of plugins (right)
+      `<section data-tab="plugins" class="psec"><div class="pfcol"><div class="pfilters"></div><div class="pffoot">` +
+      `<div class="opt" data-storeauto><div>Update plugins by themselves<small>Store plugins update when the new ` +
+      `version asks for nothing new. Anything else waits for you to press Update.</small></div>` +
+      `<span class="tog"><i></i></span></div></div></div>` +
+      `<div class="pmain"><div class="store-top"><span class="sfield"></span><span class="grow"></span>` +
+      `<button data-sact="refresh" data-tip="check the store for new plugins and versions">Refresh</button></div>` +
+      `<p class="note store-msg"></p><div class="srows"></div></div></section>` +
+      // Options
+      `<section data-tab="options"><div class="optpage"><h3>Look</h3><div class="themes">${THEMES.map(themeCard).join("")}</div>` +
+      `<div class="opt"><div>How see-through<small>Lower is more see-through. Picking a theme brings its own look.</small></div>` +
+      `<div class="slide" data-slide="opacity">${OPACITY.map((o, i) => `<i data-v="${o}" style="left:${i * 20}%"></i>`).join("")}` +
+      `<u></u><em></em></div><b class="slide-n"></b></div>` +
+      `<div class="opt"><div>Blur<small>Softens the game behind see-through windows.</small></div>` +
+      `<div class="seg" data-look="blur">${BLUR.map((b, i) => `<button data-v="${i}">${b}</button>`).join("")}</div></div>` +
+      `<div class="opt" data-compact><div>Smaller text and rows<small>Smaller rows, text and columns, so each window takes less room.</small></div>` +
+      `<span class="tog"><i></i></span></div>` +
+      `<h3>Windows</h3>` +
+      `<div class="opt"><div>How many players to show<small>Every party or squad member up to this many; scroll for the rest.</small></div>` +
       `<div class="step">${[-5, -1].map(d => `<button data-rows="${d}">${d}</button>`).join("")}` +
       `<b class="rows-n"></b>${[1, 5].map(d => `<button data-rows="${d}">+${d}</button>`).join("")}</div></div>` +
-      `<div class="opt" data-compact><div>Compact<small>Smaller rows, text and columns, so each window takes less room.</small></div>` +
-      `<span class="tog"><i></i></span></div>` +
-      `<div class="opt" data-merge><div>Merge windows that snap together<small>In Arrange, drop a table window ` +
+      `<div class="opt" data-merge><div>Join windows that touch<small>In Arrange, drop a table window ` +
       `against another to join them into one window; pull a table's header to take it out again.</small></div>` +
       `<span class="tog"><i></i></span></div>` +
-      `<h3>Combat</h3>` +
+      `<h3>What gets counted</h3>` +
       CORE_OPTS.map(([k, label, detail]) => `<div class="opt" data-opt="${k}"><div>${esc(label)}<small>${esc(detail)}</small></div>` +
         `<span class="tog"><i></i></span></div>`).join("") +
-      `<h3>Plugins</h3><div class="opt" data-dev><div>Developer mode<small>Reload plugins when their files ` +
-      `change, count their errors and add Reload to their cards. The overlay restarts to switch developer ` +
-      `mode.</small></div><span class="tog"><i></i></span></div>` +
-      `<p class="note dev-note">Developer tools: open about:debugging in Firefox, add 127.0.0.1:6080</p></section>` +
-      // Store: the registry's plugins, a search box, and whether store plugins update by themselves
-      `<section data-tab="store"><div class="store-top"><div class="stabs"></div><span class="grow"></span>` +
-      `<span class="sfield"></span>` +
-      `<button data-sact="refresh" data-tip="check the store for new plugins and versions">Refresh</button></div>` +
-      `<p class="note store-msg"></p>` +
-      `<div class="shead"><span>Plugin</span><span>Author</span><span class="ver">Version</span><span></span></div>` +
-      `<div class="srows"></div>` +
-      `<div class="opt" data-storeauto><div>Update automatically<small>Store plugins update by themselves ` +
-      `when the new version asks for nothing new. Anything else waits for you to press Update.</small></div>` +
-      `<span class="tog"><i></i></span></div></section>` +
-      // Plugins: the same cards as the Windows tab
-      `<section data-tab="plugins"><div class="blank pblank"><b>No plugins installed</b>` +
-      `Plugins will add their own windows and tools here, next to the built-in ones.</div>` +
-      `<div class="pcards"></div></section>` +
-      // Updates
-      `<section data-tab="updates"><div class="kv"><span>AxiDPS</span><b>${esc(BUILD)}</b>` +
+      `<h3>Updates</h3><div class="kv"><span>AxiDPS</span><b>${esc(BUILD)}</b>` +
       `<span class="upd-label">Update</span><b class="upd-text"></b>` +
       `<span>Core</span><b class="core-state"></b></div>` +
       `<div class="opt" data-autoupdate><div>Install updates automatically` +
       `<small>New versions install when you close the game.</small></div>` +
-      `<span class="tog"><i></i></span></div></section>` +
+      `<span class="tog"><i></i></span></div>` +
+      `<div class="opt" data-dev><div>Developer mode<small>Reload plugins when their files ` +
+      `change, count their errors and add Reload to their cards. The overlay restarts to switch developer ` +
+      `mode.</small></div><span class="tog"><i></i></span></div>` +
+      `<p class="note dev-note">Developer tools: open about:debugging in Firefox, add 127.0.0.1:6080</p></div></section>` +
       `<div class="ask"><div><p></p><div class="acts"><button data-ask="no">Cancel</button>` +
       `<button data-ask="yes" class="primary"></button></div></div></div>` +
       `</main></div>`;
     const q = sel => w.body.querySelector(sel);
+    scrollBarEvents(w.body);
     // A click anywhere in the hub but the focused name field ends the typing (keeps it) first.
     w.body.addEventListener("click", e => {
       const f = ui.text && e.target.closest && e.target.closest('[data-cact="name"]');
@@ -2508,7 +2693,7 @@ const hub = defineWindow({
       const t = e.target.closest("[data-tab]");
       if (!t) return;
       w.tab = t.dataset.tab;
-      if (w.tab === "store") pluginHost.storeOpen();
+      if (w.tab === "plugins") pluginHost.storeOpen();
       w.def.render(w); paintIcons(w.el); scheduleReport();
     };
     q(".ask").onclick = e => {
@@ -2519,43 +2704,87 @@ const hub = defineWindow({
       renderAll();
       if (a && b && b.dataset.ask === "yes") a.yes();
     };
-    q('section[data-tab="store"]').onclick = e => {
+    q('section[data-tab="plugins"]').onclick = e => {
       if (e.target.closest("[data-search]")) { startText(STORE_SEARCH); return; }
       const f = e.target.closest("[data-sfilter]");
       if (f) { w.storeFilter = f.dataset.sfilter; renderAll(); return; }
       if (e.target.closest("[data-storeauto]")) { saved.storeAutoUpdate = saved.storeAutoUpdate === false; save(); renderAll(); return; }
+      const pb = e.target.closest("[data-pact]");
+      if (pb && !pb.disabled) {
+        const id = pb.closest("[data-p]").dataset.p;
+        if (pb.dataset.pact === "enable") pluginHost.enable(id);
+        else if (pb.dataset.pact === "disable") pluginHost.disable(id);
+        else if (pb.dataset.pact === "reload") pluginHost.reload(id);
+        return;
+      }
       const b = e.target.closest("[data-sact]");
       if (!b || b.disabled) return;
       if (b.dataset.sact === "refresh") { pluginHost.storeRefresh(); return; }
       const c = b.closest("[data-s]");
       if (c) pluginHost.storeAct(c.dataset.s, b.dataset.sact);
     };
-    q('[data-act="layout"]').onclick = () => { ui.session.hub = false; requestEdit(true); renderAll(); };
+    q('[data-act="layout"]').onclick = () => { ui.session.hub = false; ui.fromHub = true; refit(); requestEdit(true); renderAll(); };
     q('[data-act="close"]').onclick = () => setOpen(w, false);
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
     q('[data-act="addtable"]').onclick = () => { w.addMenu = !w.addMenu; w.def.render(w); };
-    q('section[data-tab="tables"]').onclick = e => {
-      const b = e.target.closest("[data-cact]");
-      if (b && !b.disabled) builderAct(w, b);
-    };
-    q(".cards").onclick = e => {
-      const t = e.target.closest("[data-w]");
-      const x = t && wins.find(v => v.id === t.dataset.w);
-      if (x) setOpen(x, !isOpen(x));
-    };
-    w.body.querySelectorAll(".pcards").forEach(pc => pc.onclick = e => {
-      if (plugSettingClick(e)) return;
-      const b = e.target.closest("[data-pact]"), c = e.target.closest("[data-p]");
-      if (!b || !c) return;
-      if (b.dataset.pact === "settings") {
-        const id = c.dataset.p;
-        if (!ui.plugOpen.delete(id)) ui.plugOpen.add(id);
-        renderAll();
-      } else if (b.dataset.pact === "enable") pluginHost.enable(c.dataset.p);
-      else if (b.dataset.pact === "disable") pluginHost.disable(c.dataset.p);
-      else if (b.dataset.pact === "reload") pluginHost.reload(c.dataset.p);
+    // Reordering a custom window's columns: press a grip, move over another row, let go.
+    q('section[data-tab="windows"]').addEventListener("pointerdown", e => {
+      const grip = e.target.closest && e.target.closest(".grip");
+      const row = grip && grip.closest(".crw");
+      if (!row || e.button) return;
+      const list = row.parentNode, from = Number(row.dataset.i);
+      let to = from;
+      row.classList.add("drag"); list.classList.add("dragging");
+      const rowAt = ev => {
+        const el = document.elementFromPoint(ev.clientX, ev.clientY);
+        const r = el && el.closest && el.closest(".crw");
+        return r && r.parentNode === list ? r : null;
+      };
+      // Off the list, nothing is marked and a release there moves nothing.
+      const move = ev => {
+        const r = rowAt(ev);
+        to = r ? Number(r.dataset.i) : from;
+        for (const c of list.children) c.classList.toggle("over", c === r && to !== from);
+      };
+      const end = ev => {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", end);
+        document.removeEventListener("pointercancel", end);
+        row.classList.remove("drag"); list.classList.remove("dragging");
+        for (const c of list.children) c.classList.remove("over");
+        const r = ev.type === "pointerup" ? rowAt(ev) : null;
+        to = r ? Number(r.dataset.i) : from;
+        if (to !== from) {
+          builderAct(w, {dataset: {cact: "move", from: String(from), to: String(to)}, closest: sel => grip.closest(sel)});
+        }
+      };
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", end);
+      document.addEventListener("pointercancel", end);
+      grip.focus();
+      e.preventDefault();
     });
+    q('section[data-tab="windows"]').onclick = e => {
+      if (plugSettingClick(e)) return;
+      const t = e.target;
+      const sh = t.closest("[data-show]");
+      if (sh) { const x = winById(sh.dataset.show); if (x && !sh.disabled) setOpen(x, true); return; }
+      const row = t.closest(".w[data-w]");
+      if (row) { w.sel = row.dataset.w; renderAll(); return; }
+      const b = t.closest("[data-cact]");
+      if (b) { if (!b.disabled) builderAct(w, b); return; }
+      const x = winById(w.sel);
+      if (!x) return;
+      const act = t.closest("[data-act]"), tog = t.closest('[data-tog="show"]');
+      if (act && act.dataset.act === "plugsettings" && !act.disabled) {
+        const p = pluginOf(x);
+        w.tab = "plugins"; w.storeQuery = p ? String(p.name || p.id) : "";
+        pluginHost.storeOpen(); renderAll();
+      } else if (act && act.dataset.act === "toggle" && !act.disabled) setOpen(x, !isOpen(x));
+      else if (tog && !(!isOpen(x) && axidpsHub.showBlock({open: false,
+        openCount: wins.filter(v => capped(v) && isOpen(v)).length, cap: CAP, atlasFull: wins.some(v => v.overAtlas)}))) setOpen(x, !isOpen(x));
+    };
     q(".themes").onclick = e => { const t = e.target.closest("[data-theme]"); if (t) pickTheme(t.dataset.theme); };
     w.body.querySelectorAll(".seg").forEach(sg => sg.onclick = e => {
       const b = e.target.closest("[data-v]");
@@ -2563,12 +2792,27 @@ const hub = defineWindow({
       saved[sg.dataset.look] = Number(b.dataset.v);
       applyTheme(); save(); renderAll();
     });
-    q('section[data-tab="updates"]').onclick = e => {
-      if (!e.target.closest("[data-autoupdate]")) return;
-      saved.app = Object.assign({}, saved.app, {autoUpdate: !autoUpdate()});
-      save(); renderAll();
+    // The opacity slider: a click or a drag lands on the nearest step.
+    const slide = q(".slide");
+    const slideAt = e => {
+      const r = slide.getBoundingClientRect();
+      const i = Math.max(0, Math.min(OPACITY.length - 1, Math.round((e.clientX - r.left) / r.width * (OPACITY.length - 1))));
+      if (saved.opacity === OPACITY[i]) return;
+      saved.opacity = OPACITY[i];
+      applyTheme(); save(); renderAll();
     };
-    q('section[data-tab="settings"]').onclick = e => {
+    slide.onmousedown = e => {
+      slideAt(e);
+      const mv = ev => slideAt(ev);
+      const up = () => { document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up); };
+      document.addEventListener("mousemove", mv);
+      document.addEventListener("mouseup", up);
+    };
+    q('section[data-tab="options"]').onclick = e => {
+      if (e.target.closest("[data-autoupdate]")) {
+        saved.app = Object.assign({}, saved.app, {autoUpdate: !autoUpdate()});
+        save(); renderAll(); return;
+      }
       const st = e.target.closest("[data-rows]");
       if (st) { saved.rows = Math.max(1, Math.min(MAX_ROWS, maxRows() + Number(st.dataset.rows))); save(); renderAll(); return; }
       if (e.target.closest("[data-compact]")) { saved.compact = !saved.compact; save(); renderAll(); return; }
@@ -2581,74 +2825,32 @@ const hub = defineWindow({
     };
   },
   render(w) {
-    const tab = TABS.find(t => t[0] === w.tab);
-    w.body.querySelectorAll(".nav").forEach(n => {
-      const on = n.dataset.tab === w.tab;
-      n.classList.toggle("on", on);
-      n.querySelector("canvas").dataset.ink = on ? "accent" : "dim";
-    });
+    const [hw, hh] = hubSizeNow(ui.screen);
+    const hubEl = w.body.querySelector(".hub");
+    hubEl.style.width = hw + "px";
+    hubEl.style.height = hh + "px";
+    w.body.querySelectorAll(".tabb").forEach(n => n.classList.toggle("on", n.dataset.tab === w.tab));
     w.body.querySelectorAll("section").forEach(sc => sc.classList.toggle("on", sc.dataset.tab === w.tab));
-    w.body.querySelector("h2").textContent = tab[1];
-    w.body.querySelector("header p").textContent = tab[3];
-    const cardKey = wins.filter(x => x.def.blurb).map(x => x.id + x.def.blurb[0]).join();
-    if (w.cardKey !== cardKey) {
-      w.cardKey = cardKey;
-      w.body.querySelector(".cards").innerHTML = wins.filter(x => x.def.blurb).map(x =>
-        `<div class="wc" data-w="${x.id}">${icon(x.def.blurb[2], 20)}<span class="tog"><i></i></span>` +
-        `<b>${esc(x.def.blurb[0])}</b><small>${esc(x.def.blurb[1])}</small></div>`).join("");
-    }
-    // Plugin cards (the host's list), in the Windows and Plugins tabs: name, label, author, version,
-    // what it asks for, and why it can't be enabled or its Enable/Disable (and developer mode's
-    // Reload) buttons.
-    const plist = pluginHost.list.filter(p => p && typeof p === "object");
-    const models = plist.map(p => {
-      const m = pluginHost.cardModel(p, saved), id = String(p.id);
-      // The settings panel, for enabled plugins whose cog is open.
-      const panel = m.action === "disable" && ui.plugOpen.has(id) ? pluginHost.panelModel(p, saved) : null;
-      return [id, m, panel];
-    });
-    const plugKey = JSON.stringify(models);
-    if (w.plugKey !== plugKey) {
-      w.plugKey = plugKey;
-      w.body.querySelector(".plugs").style.display = models.length ? "" : "none";
-      w.body.querySelector(".pblank").style.display = models.length ? "none" : "";
-      w.body.querySelector('.nav[data-tab="plugins"] .n').textContent = models.length;
-      const cards = models.map(([id, m, panel]) =>
-        `<div class="pc" data-p="${esc(id)}"><div class="pc-h"><b>${esc(m.title)}</b>` +
-        `${m.label ? badge(m.label) : ""}<span class="grow"></span>` +
-        `${m.reload ? `<button data-pact="reload" data-tip="reload its windows">Reload</button>` : ""}` +
-        `${m.action === "disable" ? `<button data-pact="settings" class="cog${panel ? " on" : ""}" aria-label="Settings" ` +
-          `data-tip="settings">${icon("sliders", 14, panel ? "accent" : "dim")}</button>` : ""}` +
-        `${m.action ? `<button data-pact="${m.action}"${m.action === "enable" ? ' class="primary"' : ""}>` +
-          `${m.action === "enable" ? "Enable" : "Disable"}</button>` : ""}</div>` +
-        `<small>${esc([m.version && "v" + m.version, m.author && "by " + m.author].filter(Boolean).join(" · "))}</small>` +
-        `${m.lines.map(l => `<span class="pl">${esc(l)}</span>`).join("")}` +
-        `${m.reason ? `<span class="pl bad">${esc(m.reason)}</span>` : ""}${panel ? plugPanel(panel) : ""}</div>`).join("");
-      w.body.querySelectorAll(".pcards").forEach(pc => pc.innerHTML = cards);
-    }
-    if (w.tab === "tables") renderBuilder(w);
-    renderStore(w);
+    if (w.tab === "windows") renderWindows(w);
+    const nUpd = renderPlugins(w);
+    const pill = w.body.querySelector('.tabb[data-tab="plugins"] .n');
+    pill.textContent = nUpd === 1 ? "1 update" : nUpd + " updates";
+    pill.style.display = nUpd ? "" : "none";
     const ask = w.body.querySelector(".ask");
     ask.classList.toggle("on", !!w.ask);
     if (w.ask) {
       ask.querySelector("p").textContent = w.ask.text;
       ask.querySelector('[data-ask="yes"]').textContent = w.ask.ok;
     }
-    w.body.querySelectorAll(".wc").forEach(t => {
-      const on = isOpen(wins.find(x => x.id === t.dataset.w));
-      t.classList.toggle("on", on);
-      t.querySelector(".tog").classList.toggle("on", on);
-      t.querySelector("canvas").dataset.ink = on ? "accent" : "faint";
-    });
-    const note = w.body.querySelector(".win-note");
-    note.textContent = ui.notice;
-    note.style.display = ui.notice ? "" : "none";
     w.body.querySelectorAll(".th").forEach(t => t.classList.toggle("on", t.dataset.theme === theme.id));
     // A theme's own opacity may sit between the buttons (Midnight's 94%): light the nearest.
     const op = Number(saved.opacity) || 1;
     const near = OPACITY.reduce((x, y) => Math.abs(y - op) < Math.abs(x - op) ? y : x);
-    w.body.querySelectorAll('.seg[data-look="opacity"] button').forEach(b =>
-      b.classList.toggle("on", Number(b.dataset.v) === near));
+    const oi = OPACITY.indexOf(near);
+    const sl = w.body.querySelector(".slide");
+    sl.querySelector("em").style.width = oi * 20 + "%";
+    sl.querySelector("u").style.left = oi * 20 + "%";
+    w.body.querySelector(".slide-n").textContent = Math.round(near * 100) + "%";
     w.body.querySelectorAll('.seg[data-look="blur"] button').forEach(b =>
       b.classList.toggle("on", Number(b.dataset.v) === (saved.blur | 0)));
     w.body.querySelectorAll("[data-opt]").forEach(o =>
@@ -2663,6 +2865,7 @@ const hub = defineWindow({
     w.body.querySelector(".upd-text").textContent = ut;
     w.body.querySelector(".upd-label").style.display = w.body.querySelector(".upd-text").style.display = ut ? "" : "none";
     w.body.querySelector(".core-state").textContent = ui.live ? "running" : "not connected";
+    scrollBars(w.body);
   },
 });
 
@@ -2744,7 +2947,13 @@ window.axidps = {
   },
   edit(on) {
     ui.editing = !!on;
-    if (!on) { if (mdrag) endPreview(); onPullEnd(); }
+    if (!on) {
+      if (mdrag) endPreview();
+      onPullEnd();
+      // Entered from the hub's button: the hub comes back on the Windows tab (once).
+      if (ui.fromHub) { ui.session.hub = true; hub.tab = "windows"; }
+    }
+    if (!on || !ui.editing) ui.fromHub = false;
     if ((ui.editSeq & 1) !== (on ? 1 : 0)) ui.editSeq++; // follow the DLL (Esc, hotkey)
     renderAll();
   },
@@ -2792,7 +3001,7 @@ if (DEMO.includes("demo")) {
   if (dt) pickTheme(dt[1]);
   if (DEMO.includes("hub")) ui.session.hub = true;
   const tb = /tab=(\w+)/.exec(DEMO);
-  if (tb) hub.tab = tb[1];
+  if (tb) hub.tab = axidpsHub.tabFor(tb[1]);
   // ?demo&...&tab=store: the Store tab with a canned list (pluginHost.sampleStore).
   if (DEMO.includes("store")) { axidps.plugins(pluginHost.sampleStoreList()); axidps.store(pluginHost.sampleStore()); }
   for (const k of ["support", "defense", "fight", "timeline", "healing"]) {

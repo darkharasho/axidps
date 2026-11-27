@@ -690,6 +690,9 @@ test("sampleStore covers every kind of row", () => {
   assert.deepStrictEqual([...new Set(m.cards.map(c => c.trust))].sort(), ["revoked", "unverified", "verified"]);
   assert.ok(m.cards.some(c => c.uses.some(u => u.deep)));
   assert.ok(m.counts.updates >= 1 && m.counts.installed >= 2);
+  // Every listing the store marks installed has its plugin entry (the demo's Installed filter).
+  const have = new Set(ph.sampleStoreList().map(p => p.id));
+  assert.deepStrictEqual(ph.sampleStore().plugins.filter(p => p.installed && !have.has(p.id)).map(p => p.id), []);
 });
 
 test("a revoked install: action revoked, counted as installed, and it can still be uninstalled", () => {
