@@ -22,6 +22,8 @@ pub const MAX_FILES: usize = 500;
 pub const RECORD_FILE: &str = "installed.json";
 /// Why an install refuses to touch a folder the player made.
 pub const IN_THE_WAY: &str = "a plugin you added yourself is in the way";
+/// The folder inside the store folder where `install_replacing` keeps the player's copies.
+pub const REPLACED_DIR: &str = "replaced";
 
 /// What the store installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,16 +118,8 @@ pub fn install(
     if in_the_way(&record) {
         return Err(IN_THE_WAY.into());
     }
-    fs::create_dir_all(plugins_dir).map_err(|e| format!("{}: {e}", plugins_dir.display()))?;
-
     let pid = std::process::id();
-    let scratch = plugins_dir.join(format!(".{id}.new-{pid}"));
-    remove(&scratch);
-    fs::create_dir(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
-    if let Err(e) = unpack(zip, &scratch).and_then(|()| check(&scratch, id, v)) {
-        remove(&scratch);
-        return Err(e);
-    }
+    let scratch = unpack_checked(plugins_dir, id, v, zip)?;
 
     // Read the record again just before the swap: the folder may have appeared meanwhile.
     record = Record::load(store_dir);
@@ -150,6 +144,80 @@ pub fn install(
     remove(&old);
     record.plugins.insert(id.into(), Installed { version: v.version.clone(), tree: v.tree.clone() });
     record.save(store_dir)
+}
+
+/// Like `install`, but when a folder the player added is at `<plugins_dir>/<id>`, moves it to
+/// `<store_dir>/replaced/<id>-<unix ms>` (kept, never deleted) and puts the store's version in
+/// its place. The new package passes every check first; any failure before the move leaves the
+/// player's folder as it was, and a move that can't be a plain rename (another drive, say) is
+/// refused. Returns where the player's copy went. Refused when nothing of the player's is there.
+pub fn install_replacing(
+    plugins_dir: &Path,
+    store_dir: &Path,
+    id: &str,
+    v: &Version,
+    zip: &[u8],
+) -> Result<PathBuf, String> {
+    if !valid_id(id) || id.starts_with("axidps.") {
+        return Err(format!("\"{id}\" is not a store plugin id"));
+    }
+    if sha256_hex(zip) != v.sha256 {
+        return Err("the download doesn't match the index (SHA-256 differs)".into());
+    }
+    let target = plugins_dir.join(id);
+    let theirs = |r: &Record| target.symlink_metadata().is_ok() && !r.owns(id, &target);
+    if !theirs(&Record::load(store_dir)) {
+        return Err("there's no plugin you added yourself to replace".into());
+    }
+    let scratch = unpack_checked(plugins_dir, id, v, zip)?;
+    let fail = |e: String| {
+        remove(&scratch);
+        Err(e)
+    };
+
+    // Checked again just before the move: the folder may have changed meanwhile.
+    let mut record = Record::load(store_dir);
+    if !theirs(&record) {
+        return fail("there's no plugin you added yourself to replace".into());
+    }
+    let kept = store_dir.join(REPLACED_DIR);
+    if let Err(e) = fs::create_dir_all(&kept) {
+        return fail(format!("{}: {e}", kept.display()));
+    }
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    // A fresh name: a rename onto an existing empty folder would succeed and hide it.
+    let Some(backup) = (0..1000)
+        .map(|i| kept.join(format!("{id}-{}", ms + i)))
+        .find(|p| p.symlink_metadata().is_err())
+    else {
+        return fail(format!("{}: no free name to keep your copy under", kept.display()));
+    };
+    if let Err(e) = fs::rename(&target, &backup) {
+        return fail(format!("couldn't move your copy to {}: {e}", backup.display()));
+    }
+    if let Err(e) = fs::rename(&scratch, &target) {
+        let _ = fs::rename(&backup, &target);
+        return fail(format!("{}: {e}", target.display()));
+    }
+    record.plugins.insert(id.into(), Installed { version: v.version.clone(), tree: v.tree.clone() });
+    record.save(store_dir)?;
+    Ok(backup)
+}
+
+/// Unpacks `zip` into a fresh `.<id>.new-<pid>` scratch folder in `plugins_dir` and checks it
+/// against the index; the scratch folder, or the failure with nothing left behind.
+fn unpack_checked(plugins_dir: &Path, id: &str, v: &Version, zip: &[u8]) -> Result<PathBuf, String> {
+    fs::create_dir_all(plugins_dir).map_err(|e| format!("{}: {e}", plugins_dir.display()))?;
+    let scratch = plugins_dir.join(format!(".{id}.new-{}", std::process::id()));
+    remove(&scratch);
+    fs::create_dir(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+    if let Err(e) = unpack(zip, &scratch).and_then(|()| check(&scratch, id, v)) {
+        remove(&scratch);
+        return Err(e);
+    }
+    Ok(scratch)
 }
 
 /// Removes store install `id`. A folder the store didn't install is never touched.
@@ -643,6 +711,90 @@ mod tests {
         fs::write(d.plugins.join("someone.card"), "file").unwrap();
         assert_eq!(install(&d.plugins, &d.store, "someone.card", &v, &zip).unwrap_err(), IN_THE_WAY);
         assert!(Record::load(&d.store).plugins.is_empty());
+    }
+
+    /// Every file under `dir` with its bytes, by relative path.
+    fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let rel = p.strip_prefix(dir).unwrap().to_string_lossy().into_owned();
+                    out.push((rel, fs::read(&p).unwrap()));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn replacing_keeps_the_players_copy() {
+        let d = dirs();
+        let files = good_files("1.0.0");
+        let zip = zip_of(&files);
+        let v = version_of("1.0.0", &zip, &files);
+        let dir = d.plugins.join("someone.card");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("own.txt"), "own").unwrap();
+        fs::write(dir.join("sub/b.bin"), [0u8, 1, 2, 255]).unwrap();
+        let before = snapshot(&dir);
+
+        let backup = install_replacing(&d.plugins, &d.store, "someone.card", &v, &zip).unwrap();
+        assert_eq!(backup.parent().unwrap(), d.store.join(REPLACED_DIR));
+        let name = backup.file_name().unwrap().to_str().unwrap();
+        let ms = name.strip_prefix("someone.card-").unwrap();
+        assert!(!ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit()), "{name}");
+        assert_eq!(snapshot(&backup), before, "the player's copy, byte for byte");
+        assert_eq!(tree::hex(&tree::hash_dir(&dir).unwrap()), v.tree);
+        assert_eq!(listing(&d.plugins), ["mine", "someone.card"]);
+        let r = Record::load(&d.store);
+        assert!(r.owns("someone.card", &dir));
+
+        // Nothing of the player's left in the way: there's nothing to replace.
+        assert!(install_replacing(&d.plugins, &d.store, "someone.card", &v, &zip).is_err());
+        assert_eq!(listing(&d.store.join(REPLACED_DIR)), [name]);
+    }
+
+    #[test]
+    fn replacing_with_a_bad_package_moves_nothing() {
+        let d = dirs();
+        let files = good_files("1.0.0");
+        let zip = zip_of(&files);
+        let v = version_of("1.0.0", &zip, &files);
+        let dir = d.plugins.join("someone.card");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("own.txt"), "own").unwrap();
+        let before = snapshot(&dir);
+
+        let mut wrong_sha = v.clone();
+        wrong_sha.sha256 = "00".repeat(32);
+        let mut wrong_tree = v.clone();
+        wrong_tree.tree = "00".repeat(32);
+        let mut wrong_version = v.clone();
+        wrong_version.version = "2.0.0".into();
+        let hostile = hostile(&[("../x", b"x")]);
+        let hostile_v = Version { sha256: sha256_hex(&hostile), ..v.clone() };
+        for (zip, v) in [
+            (&zip, &wrong_sha),
+            (&zip, &wrong_tree),
+            (&zip, &wrong_version),
+            (&hostile, &hostile_v),
+        ] {
+            assert!(install_replacing(&d.plugins, &d.store, "someone.card", v, zip).is_err());
+            assert_eq!(snapshot(&dir), before);
+            assert_eq!(listing(&d.plugins), ["mine", "someone.card"]);
+            assert!(!d.store.join(REPLACED_DIR).exists());
+            assert!(Record::load(&d.store).plugins.is_empty());
+        }
+        // Reserved and escaping ids are refused too.
+        assert!(install_replacing(&d.plugins, &d.store, "mine", &v, &zip).is_err());
+        assert!(install_replacing(&d.plugins, &d.store, "..", &v, &zip).is_err());
+        assert!(d.plugins.join("mine/a.txt").exists());
     }
 
     #[test]

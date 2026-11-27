@@ -74,6 +74,8 @@ enum Job {
     Fetch,
     Show,
     Install(String),
+    /// Install over a folder the player added, keeping theirs in `<store>/replaced/`.
+    Replace(String),
     Uninstall(String),
 }
 
@@ -175,7 +177,8 @@ impl Store {
         make_ctx(&self.signed, dev, &self.config, self.store_ids.clone())
     }
 
-    /// A page message's `store` value: `"open"`, `"refresh"`, or `{"install"|"update"|"uninstall": id}`.
+    /// A page message's `store` value: `"open"`, `"refresh"`, or
+    /// `{"install"|"update"|"replace"|"uninstall": id}` (the page asks the player before `replace`).
     pub fn request(&self, msg: &Value) {
         match msg {
             Value::String(s) if s == "open" => {
@@ -191,10 +194,14 @@ impl Store {
             Value::String(s) if s == "refresh" => self.queue_fetch(Instant::now()),
             Value::Object(o) => {
                 let job = |k: &str| o.get(k).and_then(Value::as_str).map(str::to_owned);
-                let (id, job) = match (job("install").or_else(|| job("update")), job("uninstall")) {
-                    (Some(id), _) => (id.clone(), Job::Install(id)),
-                    (None, Some(id)) => (id.clone(), Job::Uninstall(id)),
-                    _ => return,
+                let (id, job) = if let Some(id) = job("install").or_else(|| job("update")) {
+                    (id.clone(), Job::Install(id))
+                } else if let Some(id) = job("replace") {
+                    (id.clone(), Job::Replace(id))
+                } else if let Some(id) = job("uninstall") {
+                    (id.clone(), Job::Uninstall(id))
+                } else {
+                    return;
                 };
                 if crate::log_id(&id) == "?" || !self.busy.borrow_mut().insert(id) {
                     return;
@@ -219,7 +226,7 @@ impl Store {
             self.pending.set(self.pending.get().saturating_sub(1));
             match &r.job {
                 Job::Fetch => self.fetching.set(false),
-                Job::Install(id) | Job::Uninstall(id) => {
+                Job::Install(id) | Job::Replace(id) | Job::Uninstall(id) => {
                     self.busy.borrow_mut().remove(id);
                 }
                 Job::Show => {}
@@ -333,6 +340,10 @@ impl Core {
             Job::Install(id) => {
                 let r = self.install(id);
                 self.done(id, "install", r)
+            }
+            Job::Replace(id) => {
+                let r = self.replace(id);
+                self.done(id, "replace", r)
             }
             Job::Uninstall(id) => {
                 let r = install::uninstall(&self.plugins_dir, &self.store_dir, id);
@@ -470,11 +481,25 @@ impl Core {
     }
 
     fn download_install(&self, id: &str, v: &Version) -> Result<(), String> {
+        let zip = self.download(v)?;
+        install::install(&self.plugins_dir, &self.store_dir, id, v, &zip)
+    }
+
+    /// Installs the offered version over the player's own folder, keeping theirs.
+    fn replace(&self, id: &str) -> Result<(), String> {
+        let (_, v) = self.offered(id)?;
+        let zip = self.download(&v)?;
+        let kept = install::install_replacing(&self.plugins_dir, &self.store_dir, id, &v, &zip)?;
+        let name = kept.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        println!("store: kept the player's {id} as store/replaced/{}", clean(&name));
+        Ok(())
+    }
+
+    fn download(&self, v: &Version) -> Result<Vec<u8>, String> {
         if !registry_url(&v.url) {
             return Err("its download isn't on the plugin store".into());
         }
-        let zip = self.fetch.get(&v.url, ZIP_CAP).map_err(|e| format!("download failed: {e}"))?;
-        install::install(&self.plugins_dir, &self.store_dir, id, v, &zip)
+        self.fetch.get(&v.url, ZIP_CAP).map_err(|e| format!("download failed: {e}"))
     }
 
     /// Updates store installs whose newer version asks for nothing new and keeps the same trust
@@ -1007,6 +1032,46 @@ mod tests {
         assert_eq!(card(&p)["error"], install::IN_THE_WAY);
         assert_eq!(std::fs::read_to_string(mine.join("mine.txt")).unwrap(), "mine");
         assert!(!mine.join(axidps_plugins::MANIFEST_FILE).exists());
+    }
+
+    #[test]
+    fn replace_keeps_the_players_copy() {
+        let t = t();
+        let mine = t.plugins.join(ID);
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::write(mine.join("mine.txt"), "mine").unwrap();
+        let mut s = t.store();
+        // Not in the store's index (nothing fetched yet): refused, nothing moved.
+        let p = page(&ask(&mut s, json!({"replace": ID})));
+        assert_eq!(p["plugins"], json!([]));
+        assert_eq!(std::fs::read_to_string(mine.join("mine.txt")).unwrap(), "mine");
+
+        let v = t.publish("1.0.0", &[]);
+        t.serve(vec![v], json!({}));
+        ask(&mut s, json!("refresh"));
+        s.request(&json!({"replace": ID}));
+        let busy = page(&s.out.borrow_mut().drain(..).collect::<Vec<_>>());
+        assert_eq!(card(&busy)["busy"], true);
+        let ev = settle(&mut s);
+        assert_eq!(rescans(&ev), 1);
+        let c = card(&page(&ev)).clone();
+        assert_eq!(c["installed"], "1.0.0", "{c}");
+        assert_eq!(c["handInstalled"], false);
+        assert_eq!(c["busy"], false);
+        assert!(c.get("error").is_none(), "{c}");
+        assert!(mine.join(axidps_plugins::MANIFEST_FILE).exists());
+        assert!(s.ctx(false).store_ids.contains(ID));
+        let kept: Vec<_> = std::fs::read_dir(t.config.join("store/replaced"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read_to_string(kept[0].join("mine.txt")).unwrap(), "mine");
+
+        // Now the store's own: nothing of the player's to replace.
+        let p = page(&ask(&mut s, json!({"replace": ID})));
+        assert!(card(&p)["error"].is_string(), "{p}");
+        assert_eq!(std::fs::read_dir(t.config.join("store/replaced")).unwrap().count(), 1);
     }
 
     #[test]
