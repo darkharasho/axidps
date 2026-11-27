@@ -619,3 +619,21 @@ test("refresh applies window options restored after the window was added", () =>
   assert.deepStrictEqual(toggles, [["nobar", true], ["clear", true]]);
   assert.strictEqual(ent.w.clear, true);
 });
+
+test("a stalled or erroring window is marked trouble so a hidden title bar comes back", () => {
+  const saved = { cfg: {}, pwin: { "x.y/a": { bar: false } } };
+  const { h, ent, toggles } = settingsHost(saved);
+  const trouble = () => toggles.filter(t => t[0] === "trouble").at(-1);
+  ent.stalled = true;
+  h.showStatus(ent);
+  assert.deepStrictEqual(trouble(), ["trouble", true]);
+  ent.stalled = false;
+  h.showStatus(ent);
+  assert.deepStrictEqual(trouble(), ["trouble", false]);
+  ent.badge = { count: 2, last: ["boom"] };
+  h.showBadge(ent);
+  assert.deepStrictEqual(trouble(), ["trouble", false], "errors only count in developer mode");
+  saved.dev = true;
+  h.showBadge(ent);
+  assert.deepStrictEqual(trouble(), ["trouble", true]);
+});

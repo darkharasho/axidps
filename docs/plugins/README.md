@@ -243,7 +243,8 @@ windows:
 
 - two options every plugin window gets, kept by axidps and never sent to your page:
   - *Show title bar* (on by default). Off hides the title bar; the player still moves the window
-    in Arrange.
+    in Arrange. The bar comes back while the window is not responding, or, in developer mode,
+    while it has errors, so those warnings still show.
   - *Transparent background* (off by default). On removes the window's background, border and
     blurred backdrop, so only what your page draws shows.
 - the settings your manifest declares for that window, in order:

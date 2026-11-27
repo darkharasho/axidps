@@ -534,7 +534,14 @@
       } catch (e) { /* frame gone */ }
     },
     hasFight(ent) { return Array.isArray(ent.plugin.permissions) && ent.plugin.permissions.includes("fight"); },
+    // A window in trouble (not responding, or developer mode's error count) shows its title bar
+    // even when the player hid it, so the warning isn't lost.
+    showTrouble(ent) {
+      const cl = ent.w && ent.w.el && ent.w.el.classList;
+      if (cl) cl.toggle("trouble", ent.stalled || (this.env.saved().dev === true && ent.badge.count > 0));
+    },
     showStatus(ent) {
+      this.showTrouble(ent);
       const st = ent.w && ent.w.state;
       if (!st) return;
       const live = !ent.stalled && ent.status.live;
@@ -544,6 +551,7 @@
     },
     // Developer mode's error count in the title bar, in --bad, the last messages in its tooltip.
     showBadge(ent) {
+      this.showTrouble(ent);
       const bar = ent.w && ent.w.bar;
       if (bar && typeof bar.querySelector === "function") {
         let el = bar.querySelector(".errs");
