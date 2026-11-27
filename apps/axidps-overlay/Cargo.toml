@@ -21,6 +21,8 @@ euclid = "0.22"
 getrandom = "0.3"
 http = "1"
 memmap2 = "0.9"
+semver = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
 servo = { git = "https://github.com/servo/servo", rev = "75d20deef", default-features = false, features = ["bundled", "js_jit", "devtools"] }
 url = "2"
@@ -30,4 +32,7 @@ winit = "0.30.13"
 debug = false
 
 [dev-dependencies]
+base64 = "0.22"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 tempfile = "3"
+zip = { version = "4", default-features = false, features = ["deflate"] }

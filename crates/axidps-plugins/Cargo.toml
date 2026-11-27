@@ -8,6 +8,11 @@ description = "axidps plugin manifests, folder scan, path resolution, CSP and ch
 [dependencies]
 serde_json = "1"
 semver = "1"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+base64 = "0.22"
+getrandom = "0.3"
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"

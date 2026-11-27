@@ -79,6 +79,16 @@ sandbox, the Content-Security-Policy and the permissions stay the same. With it 
   (this machine only). In Firefox, open `about:debugging`, add `127.0.0.1:6080` as a network
   location and connect. You can then inspect your frames, use the console and set breakpoints.
 
+### Developer passes
+
+A developer pass lets your own unverified plugin use deeper permissions while you build it.
+It works in developer mode only, never for store installs, and only until it expires.
+
+To ask for one, run `axidps plugin dev-key`. It makes a key on this machine the first time and
+prints `public key: ...`. Send that key and your GitHub login to the axidps owner (`darkharasho`).
+
+`axidps plugin dev-key --new` makes a new key. A new key cancels any pass you already have.
+
 ### The log
 
 `console.warn`, `console.error`, uncaught errors and unhandled promise rejections in your frame

@@ -1,0 +1,73 @@
+{
+ "approvals": [
+  {
+   "approver": "313a14d428e5061d",
+   "grant": [
+    "world"
+   ],
+   "id": "example.hello",
+   "sig": "jMnmX5v4n0whOHj+D8pKmvp8wxh2M6mGEXuKEfBv5ezkkBp9N4WNodc4QAsKyYvEstRBQU0XQSXUxG4urgHJCQ==",
+   "signed": "2026-11-26",
+   "tree": "0b17e89677416e23b0d2e4fab4a379f1b00c5ba5223568de0ef46897cbc450dc",
+   "verified": true,
+   "version": "1.0.0"
+  }
+ ],
+ "generated": "2026-11-26T12:00:00Z",
+ "passes": [
+  {
+   "approver": "313a14d428e5061d",
+   "expires": "2027-02-24",
+   "grant": [
+    "world"
+   ],
+   "ids": [
+    "example.*"
+   ],
+   "key": "56MX44mz4koQa0E7pgt8Fo4XyXNWGH+ni9G88uS65IE=",
+   "login": "someone",
+   "sig": "vWv2zgx2vN8G8yNA15SHdXk10gOzbY+hwKlbAYadhWho10rnv0UkU2q+5zJZ7doAeLzrBS05TrFe1Hw32dcIDA=="
+  }
+ ],
+ "plugins": [
+  {
+   "author": "someone",
+   "description": "Says hi.",
+   "icon": "chart",
+   "id": "example.hello",
+   "name": "Hello",
+   "repo": "someone/hello",
+   "versions": [
+    {
+     "api": 1,
+     "network": [
+      "api.example.com"
+     ],
+     "permissions": [
+      "fight",
+      "world"
+     ],
+     "sha256": "31f8879c045c1b8978cac85a37d2d93ff5f462989992d5c6fc6c90ab17272c70",
+     "tree": "0b17e89677416e23b0d2e4fab4a379f1b00c5ba5223568de0ef46897cbc450dc",
+     "url": "https://github.com/darkharasho/axidps-plugins/releases/download/example.hello@1.0.0/example.hello-1.0.0.zip",
+     "version": "1.0.0"
+    }
+   ]
+  }
+ ],
+ "revoked": {
+  "approver": "313a14d428e5061d",
+  "ids": [],
+  "passes": [],
+  "seq": 1,
+  "sig": "przzLsVZ6Txfzpz27wgGhtvUW6DCS964H5Oh2OVw4zpKQWF1RQh4EmUd7La5Y5WwuJs7NAscDAiXvoKvPgOxDg==",
+  "verifications": [
+   {
+    "id": "example.other",
+    "reason": "test",
+    "version": "0.1.0"
+   }
+  ],
+  "versions": []
+ }
+}

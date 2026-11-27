@@ -33,6 +33,12 @@ pub enum Action {
         #[arg(long)]
         plugins: Option<PathBuf>,
     },
+    /// Show your developer key's public half (made on first run), to request a developer pass.
+    DevKey {
+        /// Replace the key with a new one. This cancels any developer pass you already have.
+        #[arg(long)]
+        new: bool,
+    },
 }
 
 pub fn run(action: Action) -> ExitCode {
@@ -49,6 +55,13 @@ pub fn run(action: Action) -> ExitCode {
             sdk,
             plugins,
         } => preview(folder, port, no_open, page, sdk, plugins),
+        Action::DevKey { new } => {
+            let Some(config) = axidps_protocol::paths::config_dir() else {
+                eprintln!("axidps: cannot find the config folder");
+                return ExitCode::FAILURE;
+            };
+            ExitCode::from(dev_key(&config, new, &mut std::io::stdout()))
+        }
     }
 }
 
@@ -113,6 +126,48 @@ fn missing_entries(bytes: &[u8], folder: &Path) -> Vec<String> {
                 .then(|| format!("windows[{i}].entry: {} not found", serde_json::json!(entry)))
         })
         .collect()
+}
+
+/// Prints `public key: <base64>` and how to ask for a pass, making the key if there is none.
+/// With `new`, removes the old key first (after saying it cancels any pass). Returns the exit code.
+pub fn dev_key(config: &Path, new: bool, out: &mut impl Write) -> u8 {
+    use axidps_plugins::trust::{DEV_KEY_FILE, load_dev_key, make_dev_key};
+    use base64::Engine;
+    let path = config.join(DEV_KEY_FILE);
+    if new && path.exists() {
+        let _ = writeln!(out, "a new key cancels any developer pass you already have");
+        if let Err(e) = std::fs::remove_file(&path) {
+            eprintln!("axidps: cannot remove {}: {e}", path.display());
+            return 1;
+        }
+    }
+    let key = match load_dev_key(config) {
+        Some(k) => k,
+        None => {
+            // A file that is there but unreadable as a key is replaced only with --new.
+            if path.exists() {
+                eprintln!(
+                    "axidps: {} is not a valid key (use --new to replace it)",
+                    path.display()
+                );
+                return 1;
+            }
+            match make_dev_key(config) {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("axidps: {e}");
+                    return 1;
+                }
+            }
+        }
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(key);
+    let _ = writeln!(out, "public key: {b64}");
+    let _ = writeln!(
+        out,
+        "send this and your GitHub login to the axidps owner to request a developer pass"
+    );
+    0
 }
 
 fn preview(
@@ -200,6 +255,26 @@ mod tests {
         let mut out = Vec::new();
         let code = check(dir, &mut out);
         (code, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn dev_key_is_made_once_and_stable() {
+        let t = tempfile::tempdir().unwrap();
+        let run = |new| {
+            let mut out = Vec::new();
+            assert_eq!(dev_key(t.path(), new, &mut out), 0);
+            String::from_utf8(out).unwrap()
+        };
+        let first = run(false);
+        assert!(first.starts_with("public key: "));
+        assert!(first.contains("GitHub login"));
+        assert_eq!(run(false), first);
+        let hex = std::fs::read_to_string(t.path().join("dev-key")).unwrap();
+        assert_eq!(hex.len(), 64);
+        assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        let renewed = run(true);
+        assert!(renewed.contains("cancels any developer pass"));
+        assert_ne!(renewed.lines().nth(1), first.lines().next());
     }
 
     #[test]

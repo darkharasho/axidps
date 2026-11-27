@@ -12,6 +12,7 @@
 //! While the DLL heartbeat is stale (no game) nothing is painted.
 
 mod scheme;
+mod store;
 mod textures;
 
 use std::cell::{Cell, RefCell};
@@ -253,6 +254,10 @@ struct PluginHost {
     /// The player's plugin folder; none without a config folder (never the working directory).
     user: Option<PathBuf>,
     state: Arc<scheme::PluginState>,
+    /// Developer mode as read at start (switching it restarts the host).
+    dev: bool,
+    /// The plugin store; none without a config folder or player plugin folder.
+    store: Option<store::Store>,
 }
 
 impl PluginHost {
@@ -261,7 +266,11 @@ impl PluginHost {
     fn scan(&self) -> String {
         // No player folder: an empty path, which lists nothing (as `axidps plugin preview` does).
         let user = self.user.as_deref().unwrap_or(std::path::Path::new(""));
-        let (plugins, log) = axidps_plugins::scan::scan_logged(&self.bundled, user);
+        let ctx = self.store.as_ref().map_or_else(
+            axidps_plugins::trust::Ctx::none,
+            |s| s.ctx(self.dev),
+        );
+        let (plugins, log) = axidps_plugins::scan::scan_trusted(&self.bundled, user, &ctx);
         for line in log {
             println!("{line}");
         }
@@ -406,6 +415,8 @@ struct Delegate {
     dev: Cell<Option<bool>>,
     /// The merged texture styling rules of plugins granted `textures` (`{"textures": [...]}`).
     textures: RefCell<Option<Vec<axidps_overlay_shm::texstyle::Rule>>>,
+    /// Store requests (`{"store": ...}`), for the store.
+    store: RefCell<Vec<serde_json::Value>>,
 }
 
 impl WebViewDelegate for Delegate {
@@ -478,6 +489,9 @@ impl WebViewDelegate for Delegate {
         }
         if let Some(d) = v.get("dev").and_then(|x| x.as_bool()) {
             self.dev.set(Some(d));
+        }
+        if let Some(m) = v.get("store") {
+            self.store.borrow_mut().push(m.clone());
         }
         if let Some(t) = v.get("textures") {
             *self.textures.borrow_mut() = Some(textures::rules(t));
@@ -799,6 +813,9 @@ impl App {
         if let Some(t) = &mut self.textures {
             t.heartbeat();
         }
+        if let Some(s) = &mut self.plugins.store {
+            s.tick(Instant::now());
+        }
         let Some(st) = &self.state else { return };
         if let (Some(rules), Some(t)) = (st.delegate.textures.borrow_mut().take(), &mut self.textures)
         {
@@ -944,6 +961,23 @@ impl App {
         }
         if st.delegate.rescan.take() {
             Self::js(st, self.plugins.scan());
+        }
+        let asked: Vec<_> = st.delegate.store.borrow_mut().drain(..).collect();
+        let events = match &mut self.plugins.store {
+            Some(s) => {
+                for m in &asked {
+                    s.request(m);
+                }
+                s.poll()
+            }
+            None => Vec::new(),
+        };
+        for e in events {
+            match e {
+                store::Event::Rescan => Self::js(st, self.plugins.scan()),
+                store::Event::Page(call) if loaded => Self::js(st, call),
+                store::Event::Page(_) => {}
+            }
         }
         if let Some(rx) = &self.dev_changes {
             let changed: Vec<(String, bool)> = rx.try_iter().collect();
@@ -1160,10 +1194,30 @@ fn main() -> anyhow::Result<()> {
     if dev {
         println!("developer mode on");
     }
+    let config = axidps_protocol::paths::config_dir();
+    let user = user_plugins_dir(user_dir, config.clone());
+    if let Some(u) = &user {
+        // Scratch folders an interrupted store install or uninstall left behind.
+        for line in axidps_plugins::install::sweep(u) {
+            println!("store: {line}");
+        }
+    }
+    let store = match (&config, &user) {
+        (Some(c), Some(u)) => Some(store::Store::open(
+            c,
+            u,
+            &ui,
+            axidps_plugins::keys::Keys::release(),
+            Box::new(store::Ureq::new()),
+        )),
+        _ => None,
+    };
     let plugins = PluginHost {
         bundled: bundled_dir.unwrap_or_else(|| exe_dir.join("plugins")),
-        user: user_plugins_dir(user_dir, axidps_protocol::paths::config_dir()),
+        user,
         state: Arc::default(),
+        dev,
+        store,
     };
     // The player's enables as saved, then a scan, so the scheme serves from the first frame load;
     // the page gets the list after `axidps.restore`.

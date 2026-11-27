@@ -451,6 +451,272 @@ test("textures: only plugins with the permission reach the host, and their rules
   assert.deepStrictEqual(JSON.parse(sent[2]), { textures: [] });
 });
 
+// ---- the Store tab ----
+
+const listing = (id, extra) => Object.assign({ id, name: id, author: "someone", description: "", icon: "", repo: "",
+  version: "1.0.0", trust: "unverified", awaiting: false, permissions: ["fight"], network: [], installed: null,
+  handInstalled: false, update: null, busy: false }, extra);
+const storePayload = (plugins, extra) => Object.assign({ state: "ok", fetched: 1, plugins }, extra);
+
+test("storeModel filters by name, author and description, ignoring case", () => {
+  const s = storePayload([
+    listing("a.one", { name: "Boon Board", author: "Kat", description: "Shows boons" }),
+    listing("b.two", { name: "Squad Map", author: "Rin", description: "Where everyone is" }),
+  ]);
+  const ids = q => ph.storeModel(s, q).cards.map(c => c.id);
+  assert.deepStrictEqual(ids(""), ["a.one", "b.two"]);
+  assert.deepStrictEqual(ids("boon"), ["a.one"]);
+  assert.deepStrictEqual(ids("RIN"), ["b.two"]);
+  assert.deepStrictEqual(ids("everyone"), ["b.two"]);
+  assert.deepStrictEqual(ids("  map "), ["b.two"]);
+  assert.deepStrictEqual(ids("nothing like it"), []);
+  assert.match(ph.storeModel(s, "nothing like it").message, /No plugins match/);
+  assert.strictEqual(ph.storeModel(s, "").message, "");
+});
+
+test("storeModel: offline with no cached list says so; with one, the list stays", () => {
+  const offline = ph.storeModel(storePayload([], { state: "offline", fetched: null }), "");
+  assert.strictEqual(offline.state, "offline");
+  assert.strictEqual(offline.message, "Can't reach the plugin store. Installed plugins still work.");
+  assert.deepStrictEqual(offline.cards, []);
+  assert.strictEqual(ph.storeModel(null, "").message, "Can't reach the plugin store. Installed plugins still work.");
+  const cached = ph.storeModel(storePayload([listing("a.one")], { state: "offline" }), "");
+  assert.strictEqual(cached.cards.length, 1);
+  assert.match(cached.message, /last/);
+  assert.match(ph.storeModel(storePayload([], { state: "loading", fetched: null }), "").message, /Loading/);
+});
+
+test("storeModel rows: trust, uses sentence, action and note", () => {
+  const s = storePayload([
+    listing("v.ok", { name: "OK", trust: "verified", network: ["api.example.com"] }),
+    listing("u.new", { awaiting: true }),
+    listing("i.have", { installed: "1.0.0" }),
+    listing("i.old", { installed: "1.0.0", update: "1.1.0", version: "1.1.0" }),
+    listing("h.mine", { name: "Raid Timer", handInstalled: true }),
+    listing("e.bad", { error: "download failed: offline" }),
+    listing("b.busy", { busy: true }),
+  ]);
+  const c = Object.fromEntries(ph.storeModel(s, "").cards.map(x => [x.id, x]));
+  assert.strictEqual(c["v.ok"].trust, "verified");
+  assert.deepStrictEqual(c["v.ok"].uses, [{ text: "Reads your fight data.", deep: false },
+    { text: "Talks to api.example.com.", deep: false }]);
+  assert.strictEqual(c["v.ok"].action, "install");
+  assert.strictEqual(c["v.ok"].note, "");
+  assert.strictEqual(c["u.new"].trust, "unverified");
+  assert.deepStrictEqual(c["u.new"].uses.map(u => u.text), ["Reads your fight data.", "A newer version is waiting for review."]);
+  assert.strictEqual(c["u.new"].note, "");
+  assert.strictEqual(c["i.have"].action, "installed");
+  assert.strictEqual(c["i.old"].action, "update");
+  assert.strictEqual(c["i.old"].version, "1.1.0");
+  assert.strictEqual(c["i.old"].isUpdate, true);
+  assert.strictEqual(c["i.old"].uses.at(-1).text, "You have 1.0.0.");
+  assert.strictEqual(c["i.have"].isUpdate, false);
+  assert.strictEqual(c["h.mine"].action, "replace");
+  assert.strictEqual(c["h.mine"].note, "You added a Raid Timer yourself. Replacing it gets you updates; your copy is kept.");
+  assert.strictEqual(c["h.mine"].bad, false);
+  assert.strictEqual(c["e.bad"].note, "download failed: offline");
+  assert.strictEqual(c["e.bad"].bad, true);
+  assert.strictEqual(c["b.busy"].busy, true);
+  // An installed plugin the store pulled shows why, from the plugin list.
+  const r = ph.storeModel(storePayload([listing("r.gone", { installed: "1.0.0", trust: "verified" })]), "",
+    [plugin("r.gone", { trust: "revoked", reason: "malware", error: "Revoked: malware" })]);
+  assert.strictEqual(r.cards[0].trust, "revoked");
+  assert.strictEqual(r.cards[0].action, "revoked", "installed but turned off: no Installed, no Update");
+  assert.strictEqual(r.cards[0].note, "Revoked: malware");
+  assert.strictEqual(r.cards[0].bad, true);
+  // Needs a newer axidps: nothing to press.
+  const n = ph.storeModel(storePayload([listing("n.new", { error: "needs a newer axidps" })]), "");
+  assert.strictEqual(n.cards[0].action, null);
+});
+
+test("storeModel uses sentence: deeper permissions are marked, network hosts named", () => {
+  const s = storePayload([listing("d.eep", { permissions: ["fight", "textures", "squad"], network: ["a.example.com", "b.example.com"] })]);
+  assert.deepStrictEqual(ph.storeModel(s, "").cards[0].uses, [
+    { text: "Reads your fight data.", deep: false },
+    { text: "Changes how the game's icons look (commander tags, markers, targets).", deep: true },
+    { text: "Reads your squad and party.", deep: true },
+    { text: "Talks to a.example.com and b.example.com.", deep: false },
+  ]);
+  const none = storePayload([listing("n.one", { permissions: [], network: ["x.com", "y.com", "z.com"] })]);
+  assert.deepStrictEqual(ph.storeModel(none, "").cards[0].uses, [{ text: "Talks to x.com, y.com and z.com.", deep: false }]);
+});
+
+test("storeModel filters: All, Installed and Updates, with counts", () => {
+  const s = storePayload([
+    listing("a.new"), listing("h.mine", { handInstalled: true }),
+    listing("i.have", { name: "Have", installed: "1.0.0" }),
+    listing("i.old", { name: "Old", installed: "1.0.0", update: "1.1.0" }),
+  ]);
+  const ids = (f, q = "") => ph.storeModel(s, q, [], f).cards.map(c => c.id);
+  assert.deepStrictEqual(ph.storeModel(s, "").counts, { all: 4, installed: 2, updates: 1 });
+  assert.strictEqual(ph.storeModel(s, "").filter, "all");
+  assert.deepStrictEqual(ids("all"), ["a.new", "h.mine", "i.have", "i.old"]);
+  assert.deepStrictEqual(ids("installed"), ["i.have", "i.old"]);
+  assert.deepStrictEqual(ids("updates"), ["i.old"]);
+  assert.deepStrictEqual(ids("nonsense"), ids("all"), "unknown filter: all");
+  // Counts follow the search.
+  assert.deepStrictEqual(ph.storeModel(s, "old").counts, { all: 1, installed: 1, updates: 1 });
+  assert.deepStrictEqual(ids("installed", "have"), ["i.have"]);
+});
+
+test("storeModel empty filters say so in one line", () => {
+  const s = storePayload([listing("a.new")]);
+  assert.strictEqual(ph.storeModel(s, "", [], "installed").message, "Nothing installed from the store yet.");
+  assert.strictEqual(ph.storeModel(s, "", [], "updates").message, "Everything is up to date.");
+  assert.strictEqual(ph.storeModel(s, "", [], "all").message, "");
+  assert.match(ph.storeModel(s, "zzz", [], "installed").message, /No plugins match “zzz”/);
+});
+
+// A host for the Store tab: confirm answers with `answer` and records what it was asked.
+function storeHost(store, saved, answer) {
+  const { h, sent } = fakeHost([], saved);
+  const asked = [];
+  h.env.confirm = (text, ok, yes) => { asked.push({ text, ok }); if (answer) yes(); };
+  h.store = store;
+  return { h, sent, asked };
+}
+
+test("store_card_asks_before_replacing", () => {
+  const s = storePayload([listing("h.mine", { handInstalled: true })]);
+  const saved = { plugins: {}, pos: {}, open: {}, cfg: {} };
+  const no = storeHost(s, saved, false);
+  no.h.storeAct("h.mine", "replace");
+  assert.strictEqual(no.asked.length, 1);
+  assert.match(no.asked[0].text, /Replace the plugin you added yourself/);
+  assert.match(no.asked[0].text, /replaced folder/);
+  assert.deepStrictEqual(no.sent, [], "nothing sent without a yes");
+  const yes = storeHost(s, saved, true);
+  yes.h.storeAct("h.mine", "replace");
+  assert.deepStrictEqual(yes.sent.map(t => JSON.parse(t)), [{ store: { replace: "h.mine" } }]);
+  // Install is refused for a hand-installed id: it never goes out as a plain install.
+  yes.h.storeAct("h.mine", "install");
+  assert.strictEqual(yes.sent.length, 1);
+});
+
+test("store actions: install and update go straight out, busy cards and unknown ids do nothing", () => {
+  const s = storePayload([listing("a.one"), listing("i.old", { installed: "1.0.0", update: "1.1.0" }),
+    listing("b.busy", { busy: true })]);
+  const { h, sent, asked } = storeHost(s, { plugins: {}, pos: {}, open: {}, cfg: {} }, true);
+  h.storeAct("a.one", "install");
+  h.storeAct("i.old", "update");
+  h.storeAct("b.busy", "install");
+  h.storeAct("nope.z", "install");
+  h.storeAct("a.one", "uninstall"); // not installed
+  assert.deepStrictEqual(sent.map(t => JSON.parse(t)), [{ store: { install: "a.one" } }, { store: { update: "i.old" } }]);
+  assert.strictEqual(asked.length, 0);
+  h.storeOpen();
+  h.storeRefresh();
+  assert.deepStrictEqual(sent.slice(2), ['{"store":"open"}', '{"store":"refresh"}']);
+});
+
+test("uninstall asks first; nothing is sent or forgotten without a yes", () => {
+  const s = storePayload([listing("i.have", { installed: "1.0.0" })]);
+  const keep = uninstallSaved();
+  const no = storeHost(s, keep, false);
+  no.h.storeAct("i.have", "uninstall");
+  assert.strictEqual(no.asked.length, 1);
+  assert.deepStrictEqual(no.sent, []);
+  assert.deepStrictEqual(keep, uninstallSaved());
+});
+
+const uninstallSaved = () => ({ plugins: { "i.have": { enabled: true, granted: ["fight"] }, "o.p": { enabled: true, granted: [] } },
+  pos: {}, open: {}, cfg: { "i.have/w": { n: 1 }, "i.haveX/w": { n: 2 }, "o.p/w": { n: 3 } } });
+
+test("a confirmed uninstall forgets the plugin's enable and settings once the store says it's gone", () => {
+  const saved = uninstallSaved();
+  const yes = storeHost(storePayload([listing("i.have", { installed: "1.0.0" })]), saved, true);
+  yes.h.storeAct("i.have", "uninstall");
+  assert.deepStrictEqual(yes.sent.map(t => JSON.parse(t)), [{ store: { uninstall: "i.have" } }]);
+  assert.deepStrictEqual(saved, uninstallSaved(), "kept while the host works on it");
+  yes.h.setStore(storePayload([listing("i.have", { installed: "1.0.0", busy: true })]));
+  assert.deepStrictEqual(saved, uninstallSaved());
+  // Uninstalled: the card is offered again, not installed.
+  yes.h.setStore(storePayload([listing("i.have")]));
+  assert.deepStrictEqual(Object.keys(saved.plugins), ["o.p"]);
+  assert.deepStrictEqual(Object.keys(saved.cfg), ["i.haveX/w", "o.p/w"], "only i.have's own windows");
+  assert.deepStrictEqual(JSON.parse(yes.sent[1]).save.plugins, { "o.p": { enabled: true, granted: [] } }, "then saved");
+  // Once only: a later reinstall's settings aren't wiped by an old uninstall.
+  saved.plugins["i.have"] = { enabled: true, granted: ["fight"] };
+  yes.h.setStore(storePayload([listing("i.have")]));
+  assert.ok(saved.plugins["i.have"]);
+  assert.strictEqual(yes.sent.length, 2);
+  // A plugin pulled from the store and uninstalled drops off the list: gone too.
+  const saved2 = uninstallSaved();
+  const y2 = storeHost(storePayload([listing("i.have", { installed: "1.0.0" })]), saved2, true);
+  y2.h.storeAct("i.have", "uninstall");
+  y2.h.setStore(storePayload([]));
+  assert.deepStrictEqual(Object.keys(saved2.plugins), ["o.p"]);
+});
+
+test("a refused uninstall keeps the plugin's enable and settings", () => {
+  for (const refused of [
+    listing("i.have", { installed: "1.0.0", error: "couldn't remove it" }),
+    // The player changed its files meanwhile: theirs now, and the host leaves it alone.
+    listing("i.have", { handInstalled: true, error: "a plugin you added yourself is in the way" }),
+  ]) {
+    const saved = uninstallSaved();
+    const h = storeHost(storePayload([listing("i.have", { installed: "1.0.0" })]), saved, true);
+    h.h.storeAct("i.have", "uninstall");
+    h.h.setStore(storePayload([listing("i.have", { installed: "1.0.0", busy: true })]));
+    h.h.setStore(storePayload([refused]));
+    assert.deepStrictEqual(saved, uninstallSaved());
+    // The refusal ended it: a later payload without the plugin installed doesn't clear them.
+    h.h.setStore(storePayload([listing("i.have")]));
+    assert.deepStrictEqual(saved, uninstallSaved());
+    assert.strictEqual(h.sent.length, 1, "nothing saved");
+  }
+});
+
+test("cardModel label per trust level, the revoked reason shown", () => {
+  const label = extra => ph.cardModel(plugin("x.y", extra), {}).label;
+  assert.strictEqual(ph.cardModel(plugin("axidps.perf", { bundled: true, trust: "bundled" }), {}).label, null);
+  assert.strictEqual(label({ trust: "verified" }), "Verified");
+  assert.strictEqual(label({ trust: "unverified" }), "Unverified");
+  assert.strictEqual(label({ trust: "dev" }), "DEV");
+  assert.strictEqual(label({}), "Unverified", "no trust given: unverified");
+  const r = ph.cardModel(plugin("x.y", { trust: "revoked", reason: "malware", error: "Revoked: malware" }), {});
+  assert.strictEqual(r.label, "Revoked");
+  assert.strictEqual(r.reason, "Revoked: malware");
+  assert.strictEqual(r.action, null);
+  // A verified plugin granted a deeper permission: its enable card says what it does.
+  const deep = ph.cardModel(plugin("x.y", { trust: "verified", permissions: ["fight", "textures"], granted: ["textures"] }), {});
+  assert.strictEqual(deep.action, "enable");
+  assert.ok(deep.lines.includes("Changes how the game's icons look (commander tags, markers, targets)"), deep.lines);
+});
+
+test("sampleStore covers every kind of row", () => {
+  const m = ph.storeModel(ph.sampleStore(), "", ph.sampleStoreList());
+  assert.deepStrictEqual([...new Set(m.cards.map(c => c.action))].sort(), ["install", "installed", "replace", "revoked", "update"]);
+  assert.deepStrictEqual([...new Set(m.cards.map(c => c.trust))].sort(), ["revoked", "unverified", "verified"]);
+  assert.ok(m.cards.some(c => c.uses.some(u => u.deep)));
+  assert.ok(m.counts.updates >= 1 && m.counts.installed >= 2);
+});
+
+test("a revoked install: action revoked, counted as installed, and it can still be uninstalled", () => {
+  const list = [plugin("r.gone", { trust: "revoked", reason: "malware", error: "Revoked: malware" })];
+  const s = storePayload([listing("r.gone", { installed: "1.0.0" }), listing("a.new")]);
+  const m = ph.storeModel(s, "", list, "installed");
+  assert.deepStrictEqual(m.cards.map(c => [c.id, c.action]), [["r.gone", "revoked"]]);
+  assert.deepStrictEqual(m.counts, { all: 2, installed: 1, updates: 0 });
+  const saved = { plugins: {}, pos: {}, open: {}, cfg: {} };
+  const { h, sent, asked } = storeHost(s, saved, true);
+  h.list = list;
+  h.storeAct("r.gone", "install");
+  h.storeAct("r.gone", "update");
+  assert.deepStrictEqual(sent, []);
+  h.storeAct("r.gone", "uninstall");
+  assert.strictEqual(asked.length, 1);
+  assert.deepStrictEqual(sent.map(t => JSON.parse(t)), [{ store: { uninstall: "r.gone" } }]);
+});
+
+test("an empty filter mid-search says nothing matches, not that nothing is there", () => {
+  const s = storePayload([listing("a.new", { name: "Boon Board" }), listing("i.have", { name: "Tag Colours", installed: "1.0.0" })]);
+  assert.strictEqual(ph.storeModel(s, "boon", [], "installed").message, "No installed plugins match.");
+  assert.strictEqual(ph.storeModel(s, "boon", [], "updates").message, "No updates match.");
+  assert.strictEqual(ph.storeModel(s, "tag", [], "installed").message, "");
+  assert.strictEqual(ph.storeModel(s, "", [], "updates").message, "Everything is up to date.");
+});
+
 const T = (key, extra) => Object.assign({ key, type: "toggle", label: key }, extra);
 const N = (key, extra) => Object.assign({ key, type: "number", label: key, min: 1, max: 20 }, extra);
 const C = (key, extra) => Object.assign({ key, type: "choice", label: key, options: ["ms", "s"] }, extra);
