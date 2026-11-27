@@ -2,9 +2,8 @@
 
 This guide is for people who want to add their own windows to the axidps overlay. It covers
 how to build and test a plugin, the manifest, permissions, the API, theming and the limits.
-The example plugin in [`example/`](example/) is walked through below. The bundled Fight,
-Timeline and Healing windows in `apps/axidps-overlay/plugins/` are plugins too, built on the
-same public API, and make good larger examples.
+The example plugin in [`example/`](example/) is walked through below. The bundled Performance
+window in `apps/axidps-overlay/plugins/` is a plugin too, built on the same public API.
 
 ## What a plugin is
 
@@ -256,6 +255,7 @@ The same helpers the built-in windows use:
 - `axidps.esc(s)`: `s` escaped for HTML.
 - `axidps.profColor(prof)`: the colour for a profession id (`axidps.PROF` is the list, index 1–9:
   Guardian, Warrior, Engineer, Ranger, Thief, Elementalist, Mesmer, Necromancer, Revenant).
+- `axidps.specIcon(spec)`: the URL of a specialization's icon for a player's `spec` (like `"Firebrand"`), the icons the built-in tables show: `<img src="${axidps.specIcon(p.spec)}">`. `""` for no spec.
 - `axidps.fightStatus(feed)`: `{text, live}` for the title bar status, like the built-in
   windows: "in combat 1:23" (live), "last fight 1:23", "out of combat", "cleared" or
   "waiting for core".

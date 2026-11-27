@@ -209,6 +209,9 @@ b, strong { font-weight: 600; }
 
     const sdk = Object.assign({}, kit, {
       api: 1,
+      // The URL of a specialization's icon (the feed's `spec`, like "Firebrand"), the same icons
+      // the built-in tables show; "" for none.
+      specIcon(spec) { return typeof spec === "string" && spec ? "/_sdk/icons/" + encodeURIComponent(spec) + ".png" : ""; },
       ready(fn) {
         if (typeof fn !== "function") return;
         if (info) call(fn, clone(info)); else readyQ.push(fn);

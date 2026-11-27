@@ -73,6 +73,14 @@ test("sdk perf reaches the plugin, and a late handler gets the latest", () => {
   assert.deepStrictEqual(late, { fps: 60, ping: 80, tick_rate: 25 });
 });
 
+test("sdk specIcon", () => {
+  const sdk = makeSdk(fakeWin());
+  assert.strictEqual(sdk.specIcon("Firebrand"), "/_sdk/icons/Firebrand.png");
+  assert.strictEqual(sdk.specIcon("Ü x"), "/_sdk/icons/%C3%9C%20x.png");
+  assert.strictEqual(sdk.specIcon(""), "");
+  assert.strictEqual(sdk.specIcon(null), "");
+});
+
 test("sdk ignores messages not from the page", () => {
   const w = fakeWin();
   const sdk = makeSdk(w);
