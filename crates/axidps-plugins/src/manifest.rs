@@ -34,6 +34,8 @@ pub struct WindowDef {
     pub icon: String,
     pub open: bool,
     pub place: Place,
+    /// The settings the hub shows for this window, checked and with defaults filled in.
+    pub settings: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,6 +352,7 @@ fn parse_window(w: &Value, i: usize, out: &mut Vec<String>) -> Option<WindowDef>
             Place::BesideMeter
         }
     };
+    let settings = parse_settings(o.get("settings"), &format!("windows[{i}].settings"), out);
     if out.len() != before {
         return None;
     }
@@ -361,7 +364,151 @@ fn parse_window(w: &Value, i: usize, out: &mut Vec<String>) -> Option<WindowDef>
         icon,
         open,
         place,
+        settings,
     })
+}
+
+pub const MAX_SETTINGS: usize = 16;
+const MAX_LABEL: usize = 60;
+const MAX_OPTION: usize = 40;
+const MAX_OPTIONS: usize = 12;
+
+/// A window's `settings` list. Each entry comes back with only the known fields and its
+/// `default` filled in; anything wrong goes into `out`.
+fn parse_settings(v: Option<&Value>, ctx: &str, out: &mut Vec<String>) -> Vec<Value> {
+    let list = match v {
+        None => return Vec::new(),
+        Some(Value::Array(a)) => a,
+        Some(_) => {
+            out.push(format!("{ctx}: must be a list"));
+            return Vec::new();
+        }
+    };
+    if list.len() > MAX_SETTINGS {
+        out.push(format!("{ctx}: at most {MAX_SETTINGS} settings"));
+        return Vec::new();
+    }
+    let mut keys = std::collections::HashSet::new();
+    let mut res = Vec::new();
+    for (n, s) in list.iter().enumerate() {
+        let c = format!("{ctx}[{n}]");
+        let Some(o) = s.as_object() else {
+            out.push(format!("{c}: must be an object"));
+            continue;
+        };
+        let before = out.len();
+        let key = match o.get("key") {
+            Some(Value::String(k)) if valid_window_id(k) => {
+                if !keys.insert(k.clone()) {
+                    out.push(format!("{c}.key: \"{k}\" is used twice"));
+                }
+                k.clone()
+            }
+            _ => {
+                out.push(format!("{c}.key: must be a-z 0-9 -"));
+                String::new()
+            }
+        };
+        let label = match o.get("label") {
+            Some(Value::String(l)) if !l.is_empty() && l.chars().count() <= MAX_LABEL => l.clone(),
+            _ => {
+                out.push(format!("{c}.label: must be 1-{MAX_LABEL} characters"));
+                String::new()
+            }
+        };
+        let def = o.get("default");
+        let entry = match o.get("type").and_then(Value::as_str) {
+            Some("toggle") => {
+                let d = match def {
+                    None => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(_) => {
+                        out.push(format!("{c}.default: must be true or false"));
+                        false
+                    }
+                };
+                serde_json::json!({"key": key, "type": "toggle", "label": label, "default": d})
+            }
+            Some("choice") => {
+                let opts: Vec<String> = match o.get("options") {
+                    Some(Value::Array(a))
+                        if (1..=MAX_OPTIONS).contains(&a.len())
+                            && a.iter().all(|x| {
+                                x.as_str().is_some_and(|t| {
+                                    !t.is_empty() && t.chars().count() <= MAX_OPTION
+                                })
+                            }) =>
+                    {
+                        a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()
+                    }
+                    _ => {
+                        out.push(format!(
+                            "{c}.options: must be 1-{MAX_OPTIONS} names of 1-{MAX_OPTION} characters"
+                        ));
+                        Vec::new()
+                    }
+                };
+                let d = match def {
+                    None => opts.first().cloned().unwrap_or_default(),
+                    Some(Value::String(t)) if opts.contains(t) => t.clone(),
+                    Some(_) => {
+                        out.push(format!("{c}.default: must be one of the options"));
+                        String::new()
+                    }
+                };
+                serde_json::json!({"key": key, "type": "choice", "label": label, "options": opts, "default": d})
+            }
+            Some("number") => {
+                let num = |f: &str| o.get(f).and_then(Value::as_f64).filter(|x| x.is_finite());
+                let (min, max) = match (num("min"), num("max")) {
+                    (Some(a), Some(b)) if a <= b => (a, b),
+                    _ => {
+                        out.push(format!("{c}: a number needs min and max, with min <= max"));
+                        (0.0, 0.0)
+                    }
+                };
+                let step = match o.get("step") {
+                    None => 1.0,
+                    Some(_) => match num("step") {
+                        Some(x) if x > 0.0 => x,
+                        _ => {
+                            out.push(format!("{c}.step: must be a number above 0"));
+                            1.0
+                        }
+                    },
+                };
+                let d = match def {
+                    None => min,
+                    Some(_) => match num("default") {
+                        Some(x) if (min..=max).contains(&x) => x,
+                        _ => {
+                            out.push(format!("{c}.default: must be a number from min to max"));
+                            min
+                        }
+                    },
+                };
+                serde_json::json!({"key": key, "type": "number", "label": label,
+                    "min": json_num(min), "max": json_num(max), "step": json_num(step), "default": json_num(d)})
+            }
+            _ => {
+                out.push(format!("{c}.type: must be \"toggle\", \"choice\" or \"number\""));
+                Value::Null
+            }
+        };
+        if out.len() == before {
+            res.push(entry);
+        }
+    }
+    res
+}
+
+/// Whole numbers stay integers in the JSON, so `1` doesn't come out as `1.0`.
+fn json_num(x: f64) -> Value {
+    if x.fract() == 0.0 && x.abs() < 1e15 {
+        Value::from(x as i64)
+    } else {
+        Value::from(x)
+    }
 }
 
 /// `problems`, reduced to the first line.
@@ -607,5 +754,71 @@ mod tests {
                 .unwrap_err()
                 .contains("version")
         );
+    }
+
+    fn with_settings(s: Value) -> Result<Manifest, Vec<String>> {
+        problems(&with(|v| v["windows"][0]["settings"] = s), &tmp())
+    }
+
+    #[test]
+    fn settings_parse_and_fill_defaults() {
+        let m = with_settings(serde_json::json!([
+            {"key": "big", "type": "toggle", "label": "Large numbers"},
+            {"key": "unit", "type": "choice", "label": "Units", "options": ["ms", "s"]},
+            {"key": "rows", "type": "number", "label": "Rows", "min": 1, "max": 20}
+        ]))
+        .unwrap();
+        let s = &m.windows[0].settings;
+        assert_eq!(s[0]["default"], false);
+        assert_eq!(s[1]["default"], "ms");
+        assert_eq!(s[2]["default"], 1);
+        assert_eq!(s[2]["step"], 1);
+    }
+
+    #[test]
+    fn settings_absent_is_empty() {
+        let m = parse(EXAMPLE.as_bytes(), &tmp()).unwrap();
+        assert!(m.windows[0].settings.is_empty());
+    }
+
+    #[test]
+    fn rejects_bad_settings() {
+        use serde_json::json;
+        let toggle = |k: &str| json!({"key": k, "type": "toggle", "label": "x"});
+        let many: Vec<Value> = (0..17).map(|i| toggle(&format!("k{i}"))).collect();
+        let opts13: Vec<String> = (0..13).map(|i| format!("o{i}")).collect();
+        let cases = [
+            json!("big"),
+            json!(many),
+            json!([toggle("Big")]),
+            json!([toggle("a"), toggle("a")]),
+            json!([{"key": "a", "type": "toggle", "label": ""}]),
+            json!([{"key": "a", "type": "toggle", "label": "x".repeat(61)}]),
+            json!([{"key": "a", "type": "text", "label": "x"}]),
+            json!([{"key": "a", "label": "x"}]),
+            json!([{"key": "a", "type": "choice", "label": "x", "options": []}]),
+            json!([{"key": "a", "type": "choice", "label": "x", "options": opts13}]),
+            json!([{"key": "a", "type": "choice", "label": "x", "options": ["o".repeat(41)]}]),
+            json!([{"key": "a", "type": "choice", "label": "x", "options": ["a"], "default": "b"}]),
+            json!([{"key": "a", "type": "toggle", "label": "x", "default": "yes"}]),
+            json!([{"key": "a", "type": "number", "label": "x", "min": 5, "max": 1}]),
+            json!([{"key": "a", "type": "number", "label": "x", "min": 1, "max": 5, "default": 9}]),
+            json!([{"key": "a", "type": "number", "label": "x", "min": 1, "max": 5, "step": 0}]),
+        ];
+        for (n, c) in cases.into_iter().enumerate() {
+            let e = with_settings(c).expect_err(&format!("case {n} should fail"));
+            assert!(
+                e.iter().any(|p| p.contains("windows[0].settings")),
+                "case {n}: {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn page_json_has_settings() {
+        let m = with_settings(serde_json::json!([{"key": "big", "type": "toggle", "label": "Big"}]))
+            .unwrap();
+        let j = to_page_json(std::slice::from_ref(&plugin(m)));
+        assert_eq!(j[0]["windows"][0]["settings"][0]["key"], "big");
     }
 }

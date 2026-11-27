@@ -123,6 +123,10 @@
 
   /* ---- the axidps button: a bare glyph that sits with the game's own menu icons ---- */
   .win.bare { border: 0; background: transparent; border-radius: 0; }
+  /* plugin windows: the hub's "Show title bar" off, and "Transparent background" on */
+  .win.nobar .bar { display: none; }
+  .win.nobar.trouble .bar { display: flex; }
+  .win.clear { background: transparent; border-color: transparent; }
   .launch { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }
 
   /* ---- hub: a full window over the dimmed game ---- */
@@ -214,6 +218,15 @@
   .pc small { color: var(--faint); font-size: 11px; margin-bottom: 3px; }
   .pc .pl { color: var(--dim); font-size: 11px; }
   .pc .pl.bad { color: var(--bad); }
+  .pc-h button.cog { padding: 2px 6px; display: flex; align-items: center; }
+  .pc .pset { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 4px; }
+  .pc .pset h4 { margin: 6px 0 0; font-size: 11px; font-weight: 600; color: var(--title); }
+  .pc .pset .opt { padding: 5px 0; gap: 10px; font-size: 12px; }
+  .pc .pset .opt:last-child { border-bottom: 0; }
+  .pc .pset .seg { flex: none; }
+  .pc .pset .seg button { flex: none; padding: 2px 9px; }
+  .pc .pset .step button { width: 24px; }
+  .pc .pset .step b { width: 34px; font-size: 12px; }
   .tag { font-size: 10px; color: var(--dim); border: 1px solid var(--line-hi); border-radius: var(--rs);
     padding: 0 5px; line-height: 15px; white-space: nowrap; }
   /* Tables tab */
