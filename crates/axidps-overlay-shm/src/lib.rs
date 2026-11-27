@@ -73,6 +73,18 @@ pub fn unpack_grab(b: u32) -> (i32, i32) {
     ((b & 0xffff) as i32, (b >> 16) as i32)
 }
 
+/// During a pull on window `pulled`, the window that takes the drag over: the first other window
+/// with `FLAG_GRAB`, as (key, grab x, grab y). `windows` = (key, flags, drag zone).
+pub fn grab_target(
+    windows: impl IntoIterator<Item = (u64, u32, Rect)>,
+    pulled: u64,
+) -> Option<(u64, i32, i32)> {
+    windows
+        .into_iter()
+        .find(|&(k, f, _)| k != pulled && f & FLAG_GRAB != 0)
+        .map(|(k, _, d)| (k, d.x, d.y))
+}
+
 /// Table flag: don't draw the game's UI areas in edit mode (the Layout window's switch). Clear
 /// in tables from hosts that predate it, so those show them.
 pub const TABLE_HIDE_ZONES: u32 = 1;
@@ -564,6 +576,16 @@ pub fn keep_on_screen(x: i32, y: i32, w: i32, h: i32, sw: i32, sh: i32, keep: i3
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grab_target_finds_the_hand_off() {
+        let r = |x, y| Rect::new(x, y, 0, 0);
+        let ws = [(1u64, FLAG_GROUP, r(0, 0)), (2, 0, r(0, 0)), (3, FLAG_GRAB, r(171, 12))];
+        assert_eq!(grab_target(ws, 1), Some((3, 171, 12)));
+        // The pulled window itself never takes it; nothing flagged: none.
+        assert_eq!(grab_target([(1u64, FLAG_GROUP | FLAG_GRAB, r(5, 5))], 1), None);
+        assert_eq!(grab_target([(2u64, 0, r(0, 0))], 1), None);
+    }
+
     #[test]
     fn grab_packs_round_trip() {
         assert_eq!(unpack_grab(pack_grab(5, 300)), (5, 300));
