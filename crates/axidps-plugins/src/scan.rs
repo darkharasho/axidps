@@ -334,6 +334,15 @@ mod tests {
     }
 
     #[test]
+    fn bundled_outline_plugin_scans() {
+        let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/axidps-overlay/plugins"));
+        let (plugins, log) = scan_logged(dir, Path::new("/nonexistent-player-dir"));
+        let p = plugins.iter().find(|p| p.manifest.as_ref().is_some_and(|m| m.id == "axidps.outline")).unwrap_or_else(|| panic!("not scanned: {log:?}"));
+        assert!(p.bundled && loadable(p));
+        assert!(log.iter().all(|l| !l.contains("outline")), "{log:?}");
+    }
+
+    #[test]
     fn privileged_only_loads_bundled() {
         let b = plugin("axidps.outline", true, &["outline"], &[]);
         assert!(loadable(&b));

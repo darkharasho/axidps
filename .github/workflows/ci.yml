@@ -26,7 +26,7 @@ jobs:
           node-version: 20
 
       - name: page-tests
-        run: node --test apps/axidps-overlay/page/*.test.js apps/axidps-overlay/sdk/*.test.js
+        run: node --test apps/axidps-overlay/page/*.test.js apps/axidps-overlay/sdk/*.test.js apps/axidps-overlay/plugins/*/*.test.js
 
       - uses: dtolnay/rust-toolchain@stable
 
