@@ -33,20 +33,19 @@ Each window can list `settings`:
 "settings": [
   {"key": "big", "type": "toggle", "label": "Large numbers", "default": false},
   {"key": "unit", "type": "choice", "label": "Units", "options": ["ms", "s"], "default": "ms"},
-  {"key": "rows", "type": "number", "label": "Rows", "min": 1, "max": 20, "default": 5},
-  {"key": "name", "type": "text", "label": "Label", "max": 40, "default": ""}
+  {"key": "rows", "type": "number", "label": "Rows", "min": 1, "max": 20, "default": 5}
 ]
 ```
 
-- The types are `toggle`, `choice`, `number` and `text`.
+- The types are `toggle`, `choice` and `number`. There is no text type: the overlay gets
+  mouse input only, so nothing could be typed into it.
 - `key` follows the window id rules, and keys must be unique within a window.
 - `label` is at most 60 characters.
 - `choice` needs 1–12 options, each at most 40 characters.
-- `number` needs `min` ≤ `max`.
-- `text` has a `max` of at most 200 characters.
+- `number` needs `min` ≤ `max`, and takes an optional `step` (default 1). It is shown as
+  − / + buttons.
 - A window has at most 16 settings.
-- `default` must fit its type. If left out, it is false, the first option, `min`, or an
-  empty string.
+- `default` must fit its type. If left out, it is false, the first option, or `min`.
 - The Rust manifest check (`crates/axidps-plugins/src/manifest.rs`) reports a bad
   setting as a manifest problem, the same as other fields. The page checks the list
   again before drawing anything. Labels are shown as text, never as HTML.
@@ -65,10 +64,12 @@ Each window can list `settings`:
   - The plugin never sees or writes this entry, so `settings.set` can't wipe a player's
     choice. (My call: this changes the earlier proposal, which put them in `cfg`.)
   - The host applies them to the window's element.
-  - *Show title bar* off adds the existing `bare` styling: no bar. The arrange overlay
-    still lets you drag the window.
+  - *Show title bar* off adds a new `nobar` class that hides the bar. The existing `bare`
+    class also drops the background, so it would tie the two options together. The arrange
+    overlay still lets you drag the window.
   - *Transparent background* on adds a new `clear` class:
-    `background: transparent; border-color: transparent`.
+    `background: transparent; border-color: transparent`. The window also tells the DLL to
+    draw no blur or rounded corners behind it.
 
 ## Approaches considered
 
