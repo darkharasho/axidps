@@ -95,14 +95,16 @@ fn proton_log_dir(home: &Path) -> Option<PathBuf> {
     Some(default_log_dir(&docs))
 }
 
-/// Encode `log` and write it as `<end local time>.zevtc` in `dir`.
+/// Encode `log` and write it as `<end local time>_axidps.zevtc` in `dir`. The suffix matters:
+/// beside arcdps in its log folder, arcdps names the same fight's log by the same time, and when
+/// ours took that name first arcdps could not rename its finished `.tmp.zip` and its log was lost.
 pub fn write_fight(
     dir: &Path,
     log: &Log,
     end_unix_s: i64,
     to_local: impl Fn(i64) -> chrono::NaiveDateTime,
 ) -> io::Result<PathBuf> {
-    let stem = log_file_stem(to_local(end_unix_s));
+    let stem = format!("{}_axidps", log_file_stem(to_local(end_unix_s)));
     write_log_atomic(dir, &stem, &encode(log))
 }
 
@@ -204,7 +206,9 @@ mod tests {
         let end = 1_795_032_361;
         let to_local = |s: i64| chrono::DateTime::from_timestamp(s, 0).unwrap().naive_utc();
         let p = write_fight(&dir, &log, end, to_local).unwrap();
-        assert_eq!(p.file_name().unwrap(), "20261118-200601.zevtc");
+        assert_eq!(p.file_name().unwrap(), "20261118-200601_axidps.zevtc");
         assert!(p.exists());
+        // arcdps's log of the same fight keeps its own name free.
+        assert!(!dir.join("20261118-200601.zevtc").exists());
     }
 }
