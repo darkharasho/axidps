@@ -111,62 +111,109 @@
     offline: "Can't reach the plugin store right now. This is the list from last time.",
     error: "The plugin store sent a list that didn't check out. This is the last good one.",
   };
-  const HAND_NOTE = "You added a plugin with this name yourself. Replace it with this one to get updates; " +
-    "your copy is kept.";
+  // Permissions that need verification (`fight` is the only basic one): marked in the Store.
+  const DEEPER = ["world", "position", "squad", "enemies", "textures"];
+  const STORE_FILTERS = ["all", "installed", "updates"];
+  const EMPTY_FILTER = {installed: "Nothing installed from the store yet.", updates: "Everything is up to date."};
 
-  // The Store tab from the host's `axidps.store` payload, filtered by `query` (name, author or
-  // description, any case). `list` (the plugin list) adds why an installed plugin was revoked.
-  // Card action: "install" | "update" | "installed" (Uninstall) | "replace" (over the player's own
-  // folder, after asking) | null (needs a newer axidps). note: awaiting review, revoked, the
-  // player's own copy, or the last error (bad: true for those last).
-  function storeModel(store, query, list) {
+  // "a", "a and b", "a, b and c".
+  function andList(xs) {
+    return xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1];
+  }
+
+  // What a Store plugin uses, as plain sentences: one per permission (deep: true for the ones that
+  // need verification), then the network hosts it talks to.
+  function usesOf(x) {
+    const perms = Array.isArray(x && x.permissions) ? x.permissions : [];
+    const net = Array.isArray(x && x.network) ? x.network.filter(h => typeof h === "string") : [];
+    const out = perms.filter(k => own(PERMISSION_TEXT, k))
+      .map(k => ({text: PERMISSION_TEXT[k] + ".", deep: DEEPER.includes(k)}));
+    if (net.length) out.push({text: `Talks to ${andList(net.map(h => h.slice(0, MAX_TEXT)))}.`, deep: false});
+    return out;
+  }
+
+  // The Store tab from the host's `axidps.store` payload: the rows matching `query` (name, author
+  // or description, any case) and `filter` ("all" | "installed" | "updates"), and how many match
+  // the query under each filter. `list` (the plugin list) marks installed plugins that were
+  // revoked. Row action: "install" | "update" | "installed" (Uninstall) | "replace" (over the
+  // player's own folder, after asking) | null (needs a newer axidps). trust: "verified" |
+  // "unverified" | "revoked". uses: usesOf plus "You have <v>." for an update and the awaiting-
+  // review sentence. note: the player's own copy, the revocation or the last error (bad: true for
+  // those last two).
+  function storeModel(store, query, list, filter) {
     const st = store && typeof store === "object" ? store : {};
     const state = typeof st.state === "string" ? st.state : "offline";
+    const f = STORE_FILTERS.includes(filter) ? filter : "all";
     const all = Array.isArray(st.plugins) ? st.plugins.filter(x => x && typeof x === "object"
       && typeof x.id === "string" && PLUGIN_ID.test(x.id)) : [];
     const str = (v, n = MAX_TEXT) => typeof v === "string" ? v.slice(0, n) : "";
     const q = String(query || "").trim().toLowerCase();
     const hit = x => !q || [x.name, x.author, x.description].some(v => typeof v === "string" && v.toLowerCase().includes(q));
     const plugins = Array.isArray(list) ? list : [];
-    const cards = all.filter(hit).map(x => {
+    const rows = all.filter(hit).map(x => {
       const err = str(x.error, 200);
       const mine = plugins.find(p => p && p.id === x.id);
       const revoked = mine && mine.trust === "revoked" ? String(mine.error || "Revoked") : "";
       const action = x.handInstalled ? "replace" : x.installed ? (x.update ? "update" : "installed")
         : err === "needs a newer axidps" ? null : "install";
-      const note = revoked || err || (x.handInstalled ? HAND_NOTE : x.awaiting ? "Update awaiting review" : "");
+      const title = str(x.name) || x.id;
+      const uses = usesOf(x);
+      if (action === "update") uses.push({text: `You have ${str(x.installed)}.`, deep: false});
+      if (x.awaiting) uses.push({text: "A newer version is waiting for review.", deep: false});
+      const note = revoked || err
+        || (x.handInstalled ? `You added a ${title} yourself. Replacing it gets you updates; your copy is kept.` : "");
       return {
-        id: x.id, title: str(x.name) || x.id, author: str(x.author), version: str(x.update || x.installed || x.version),
-        description: str(x.description, 200), badge: x.trust === "verified" ? "Verified" : "Unverified",
-        lines: permissionLines(x), action, note, bad: !!(revoked || err), busy: x.busy === true,
+        id: x.id, title, author: str(x.author), version: str(x.update || x.installed || x.version),
+        have: str(x.installed), isUpdate: action === "update",
+        description: str(x.description, 200), trust: revoked ? "revoked" : x.trust === "verified" ? "verified" : "unverified",
+        uses, action, note, bad: !!(revoked || err), busy: x.busy === true,
       };
     });
+    const inFilter = {
+      all: () => true,
+      installed: r => r.action === "installed" || r.action === "update",
+      updates: r => r.action === "update",
+    };
+    const counts = {all: rows.length, installed: rows.filter(inFilter.installed).length,
+      updates: rows.filter(inFilter.updates).length};
+    const cards = rows.filter(inFilter[f]);
     let message;
     if (!all.length) message = state === "loading" ? STORE_TEXT.loading : state === "ok" ? "No plugins in the store yet." : OFFLINE;
     else {
       const parts = state !== "ok" && STORE_TEXT[state] ? [STORE_TEXT[state]] : [];
-      if (q && !cards.length) parts.push(`No plugins match “${String(query).trim()}”.`);
-      message = parts.join(" ");
+      if (!cards.length) parts.push(q && !rows.length ? `No plugins match “${String(query).trim()}”.` : EMPTY_FILTER[f] || "");
+      message = parts.filter(Boolean).join(" ");
     }
-    return {state, message, cards};
+    return {state, filter: f, counts, message, cards};
   }
 
-  // A canned `axidps.store` payload: the browser demo's Store tab (index.html?demo&hub&tab=store).
+  // A canned `axidps.store` payload and plugin list: the browser demo's Store tab
+  // (index.html?demo&hub&tab=store). Every kind of row: verified, unverified, an update, installed,
+  // the player's own copy (Replace) and a revoked install.
   function sampleStore() {
     const l = (id, name, author, description, extra) => Object.assign({id, name, author, description, icon: "", repo: "",
       version: "1.0.0", trust: "unverified", awaiting: false, permissions: ["fight"], network: [], installed: null,
       handInstalled: false, update: null, busy: false}, extra);
     return {state: "ok", fetched: Date.now(), plugins: [
-      l("kat.boon-board", "Boon Board", "kat", "Your squad's boon uptime, one row per subgroup.",
-        {trust: "verified"}),
-      l("rin.squad-map", "Squad Map", "rin", "Where everyone in your squad is, on a small map.",
-        {permissions: ["squad", "position"], awaiting: true}),
       l("jo.dps-log", "Fight Log", "jo", "Uploads your fights to a log site when they end.",
         {trust: "verified", network: ["dps.report"], installed: "1.0.0", update: "1.1.0", version: "1.1.0"}),
       l("mo.tag-colors", "Tag Colours", "mo", "Commander tags in colours you can tell apart.",
         {trust: "verified", permissions: ["textures"], installed: "2.0.1", version: "2.0.1"}),
-      l("ash.timer", "Raid Timer", "ash", "Countdowns for raid and strike mechanics.", {handInstalled: true}),
+      l("kat.boon-board", "Boon Board", "kat", "Your squad's boon uptime, one row per subgroup.",
+        {trust: "verified"}),
+      l("rin.squad-map", "Squad Map", "rin", "Where everyone in your squad is, on a small map.",
+        {permissions: ["squad", "position"], awaiting: true}),
+      l("ash.timer", "Raid Timer", "ash", "Counts down to the next enrage and mechanic.",
+        {version: "0.3.0", handInstalled: true}),
+      l("zed.loot", "Loot Counter", "zed", "Counts what drops in a session.",
+        {installed: "0.9.0", version: "0.9.0"}),
     ]};
+  }
+  // The plugin list entries sampleStore's rows imply (Loot Counter was revoked).
+  function sampleStoreList() {
+    return [{id: "zed.loot", name: "Loot Counter", version: "0.9.0", author: "zed", api: 1, permissions: ["fight"],
+      network: [], windows: [], bundled: false, trust: "revoked", reason: "sent your account name to a third party",
+      error: "Revoked: sent your account name to a third party"}];
   }
 
   // Move the saved position and open state of Fight, Timeline and Healing from their plugin ids
@@ -750,7 +797,7 @@
     },
   };
 
-  const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, trustLabel, storeModel, sampleStore, migrateSaved, clampSize, accept,
+  const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, trustLabel, storeModel, usesOf, sampleStore, sampleStoreList, migrateSaved, clampSize, accept,
     logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, MAX_OPEN};
   Object.assign(host, pure);
   if (typeof window !== "undefined") window.pluginHost = host;

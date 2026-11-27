@@ -1932,16 +1932,20 @@ function badge(label) {
   const cls = {Verified: "v", Unverified: "u", DEV: "dev", Revoked: "r"}[label] || "u";
   return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
-const STORE_BUTTON = {install: "Install", update: "Update", replace: "Replace", uninstall: "Uninstall"};
-// The Store tab: the search box, the store's note and a card per plugin.
+const STORE_BUTTON = {install: "Install", update: "Update", replace: "Replace yours", uninstall: "Uninstall"};
+const STORE_FILTER_LABEL = [["all", "All"], ["installed", "Installed"], ["updates", "Updates"]];
+// The Store tab, laid out like the meters: filter tabs with counts, the search box, a dim column
+// header and one row per plugin with a trust bar at its left edge.
 function renderStore(w) {
   const t = ui.text && ui.text.id === STORE_SEARCH ? ui.text : null;
   const query = t ? t.value : (w.storeQuery || "");
-  const m = pluginHost.storeModel(pluginHost.store, query, pluginHost.list);
+  const m = pluginHost.storeModel(pluginHost.store, query, pluginHost.list, w.storeFilter);
   w.body.querySelector("[data-storeauto] .tog").classList.toggle("on", saved.storeAutoUpdate !== false);
   const key = JSON.stringify([m, t]);
   if (w.storeKey === key) return;
   w.storeKey = key;
+  w.body.querySelector(".stabs").innerHTML = STORE_FILTER_LABEL.map(([f, label]) =>
+    `<span data-sfilter="${f}"${m.filter === f ? ' class="on"' : ""}>${label} <i>${m.counts[f]}</i></span>`).join("");
   w.body.querySelector(".sfield").innerHTML = t
     ? `<span class="field focus search" data-search>${esc(t.value.slice(0, t.caret))}<i class="caret"></i>` +
       `${esc(t.value.slice(t.caret))}</span>`
@@ -1949,19 +1953,23 @@ function renderStore(w) {
   const msg = w.body.querySelector(".store-msg");
   msg.textContent = m.message;
   msg.style.display = m.message ? "" : "none";
-  const btn = (act, primary) => `<button data-sact="${act}"${primary ? ' class="primary"' : ""}>${STORE_BUTTON[act]}</button>`;
-  w.body.querySelector(".scards").innerHTML = m.cards.map(c => {
+  w.body.querySelector(".shead").style.display = m.cards.length ? "" : "none";
+  const btn = (act, cls) => `<button data-sact="${act}"${cls ? ` class="${cls}"` : ""}>${STORE_BUTTON[act]}</button>`;
+  const TRUST = {verified: "v", unverified: "u", revoked: "r"};
+  w.body.querySelector(".srows").innerHTML = m.cards.map(c => {
     const acts = c.busy ? `<button disabled>Working…</button>`
-      : c.action === "install" ? btn("install", true)
-      : c.action === "replace" ? btn("replace", false)
-      : c.action === "update" ? btn("uninstall", false) + btn("update", true)
-      : c.action === "installed" ? `<span class="have">Installed</span>` + btn("uninstall", false) : "";
-    return `<div class="pc" data-s="${esc(c.id)}"><div class="pc-h"><b>${esc(c.title)}</b>${badge(c.badge)}</div>` +
-      `<small>${esc([c.version && "v" + c.version, c.author && "by " + c.author].filter(Boolean).join(" · "))}</small>` +
-      `${c.description ? `<span class="pd">${esc(c.description)}</span>` : ""}` +
-      `${c.lines.map(l => `<span class="pl">${esc(l)}</span>`).join("")}` +
-      `${c.note ? `<span class="pl${c.bad ? " bad" : " hint"}">${esc(c.note)}</span>` : ""}` +
-      `${acts ? `<div class="pc-a">${acts}</div>` : ""}</div>`;
+      : c.action === "install" ? btn("install", "primary")
+      : c.action === "replace" ? btn("replace")
+      : c.action === "update" ? btn("uninstall", "quiet") + btn("update", "primary")
+      : c.action === "installed" ? `<span class="have">Installed</span>` + btn("uninstall", "quiet") : "";
+    const uses = c.uses.map(u => u.deep ? `<em>${esc(u.text)}</em>` : esc(u.text)).join(" ");
+    return `<div class="srow ${TRUST[c.trust] || "u"}" data-s="${esc(c.id)}"><div class="top">` +
+      `<span class="nm"><b>${esc(c.title)}</b><span class="trust">${esc(c.trust)}</span></span>` +
+      `<span class="au">${esc(c.author)}</span><span class="ver${c.isUpdate ? " up" : ""}">${esc(c.version)}</span>` +
+      `<span class="sa">${acts}</span></div>` +
+      `${c.description ? `<div class="desc">${esc(c.description)}</div>` : ""}` +
+      `${uses ? `<div class="uses">${uses}</div>` : ""}` +
+      `${c.note ? `<div class="snote${c.bad ? " bad" : ""}">${esc(c.note)}</div>` : ""}</div>`;
   }).join("");
 }
 
@@ -2014,9 +2022,11 @@ const hub = defineWindow({
       `mode.</small></div><span class="tog"><i></i></span></div>` +
       `<p class="note dev-note">Developer tools: open about:debugging in Firefox, add 127.0.0.1:6080</p></section>` +
       // Store: the registry's plugins, a search box, and whether store plugins update by themselves
-      `<section data-tab="store"><div class="store-top"><span class="sfield"></span><span class="grow"></span>` +
+      `<section data-tab="store"><div class="store-top"><div class="stabs"></div><span class="grow"></span>` +
+      `<span class="sfield"></span>` +
       `<button data-sact="refresh" data-tip="check the store for new plugins and versions">Refresh</button></div>` +
-      `<p class="note store-msg"></p><div class="scards"></div>` +
+      `<div class="shead"><span>Plugin</span><span>Author</span><span class="ver">Version</span><span></span></div>` +
+      `<p class="note store-msg"></p><div class="srows"></div>` +
       `<div class="opt" data-storeauto><div>Update automatically<small>Store plugins update by themselves ` +
       `when the new version asks for nothing new. Anything else waits for you to press Update.</small></div>` +
       `<span class="tog"><i></i></span></div></section>` +
@@ -2059,6 +2069,8 @@ const hub = defineWindow({
     };
     q('section[data-tab="store"]').onclick = e => {
       if (e.target.closest("[data-search]")) { startText(STORE_SEARCH); return; }
+      const f = e.target.closest("[data-sfilter]");
+      if (f) { w.storeFilter = f.dataset.sfilter; renderAll(); return; }
       if (e.target.closest("[data-storeauto]")) { saved.storeAutoUpdate = saved.storeAutoUpdate === false; save(); renderAll(); return; }
       const b = e.target.closest("[data-sact]");
       if (!b || b.disabled) return;
@@ -2304,7 +2316,7 @@ if (DEMO.includes("demo")) {
   const tb = /tab=(\w+)/.exec(DEMO);
   if (tb) hub.tab = tb[1];
   // ?demo&...&tab=store: the Store tab with a canned list (pluginHost.sampleStore).
-  if (DEMO.includes("store")) axidps.store(pluginHost.sampleStore());
+  if (DEMO.includes("store")) { axidps.plugins(pluginHost.sampleStoreList()); axidps.store(pluginHost.sampleStore()); }
   for (const k of ["support", "defense", "fight", "timeline", "healing"]) {
     saved.open[k] = true;
   }

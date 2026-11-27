@@ -486,38 +486,84 @@ test("storeModel: offline with no cached list says so; with one, the list stays"
   assert.match(ph.storeModel(storePayload([], { state: "loading", fetched: null }), "").message, /Loading/);
 });
 
-test("storeModel cards: badge, lines, action and note", () => {
+test("storeModel rows: trust, uses sentence, action and note", () => {
   const s = storePayload([
-    listing("v.ok", { trust: "verified", network: ["api.example.com"] }),
+    listing("v.ok", { name: "OK", trust: "verified", network: ["api.example.com"] }),
     listing("u.new", { awaiting: true }),
     listing("i.have", { installed: "1.0.0" }),
     listing("i.old", { installed: "1.0.0", update: "1.1.0", version: "1.1.0" }),
-    listing("h.mine", { handInstalled: true }),
+    listing("h.mine", { name: "Raid Timer", handInstalled: true }),
     listing("e.bad", { error: "download failed: offline" }),
     listing("b.busy", { busy: true }),
   ]);
   const c = Object.fromEntries(ph.storeModel(s, "").cards.map(x => [x.id, x]));
-  assert.strictEqual(c["v.ok"].badge, "Verified");
-  assert.deepStrictEqual(c["v.ok"].lines, ["Reads your fight data", "Talks to api.example.com"]);
+  assert.strictEqual(c["v.ok"].trust, "verified");
+  assert.deepStrictEqual(c["v.ok"].uses, [{ text: "Reads your fight data.", deep: false },
+    { text: "Talks to api.example.com.", deep: false }]);
   assert.strictEqual(c["v.ok"].action, "install");
   assert.strictEqual(c["v.ok"].note, "");
-  assert.strictEqual(c["u.new"].badge, "Unverified");
-  assert.strictEqual(c["u.new"].note, "Update awaiting review");
+  assert.strictEqual(c["u.new"].trust, "unverified");
+  assert.deepStrictEqual(c["u.new"].uses.map(u => u.text), ["Reads your fight data.", "A newer version is waiting for review."]);
+  assert.strictEqual(c["u.new"].note, "");
   assert.strictEqual(c["i.have"].action, "installed");
   assert.strictEqual(c["i.old"].action, "update");
+  assert.strictEqual(c["i.old"].version, "1.1.0");
+  assert.strictEqual(c["i.old"].isUpdate, true);
+  assert.strictEqual(c["i.old"].uses.at(-1).text, "You have 1.0.0.");
+  assert.strictEqual(c["i.have"].isUpdate, false);
   assert.strictEqual(c["h.mine"].action, "replace");
-  assert.match(c["h.mine"].note, /^You added a plugin with this name yourself/);
+  assert.strictEqual(c["h.mine"].note, "You added a Raid Timer yourself. Replacing it gets you updates; your copy is kept.");
+  assert.strictEqual(c["h.mine"].bad, false);
   assert.strictEqual(c["e.bad"].note, "download failed: offline");
   assert.strictEqual(c["e.bad"].bad, true);
   assert.strictEqual(c["b.busy"].busy, true);
   // An installed plugin the store pulled shows why, from the plugin list.
-  const r = ph.storeModel(storePayload([listing("r.gone", { installed: "1.0.0" })]), "",
+  const r = ph.storeModel(storePayload([listing("r.gone", { installed: "1.0.0", trust: "verified" })]), "",
     [plugin("r.gone", { trust: "revoked", reason: "malware", error: "Revoked: malware" })]);
+  assert.strictEqual(r.cards[0].trust, "revoked");
   assert.strictEqual(r.cards[0].note, "Revoked: malware");
   assert.strictEqual(r.cards[0].bad, true);
   // Needs a newer axidps: nothing to press.
   const n = ph.storeModel(storePayload([listing("n.new", { error: "needs a newer axidps" })]), "");
   assert.strictEqual(n.cards[0].action, null);
+});
+
+test("storeModel uses sentence: deeper permissions are marked, network hosts named", () => {
+  const s = storePayload([listing("d.eep", { permissions: ["fight", "textures", "squad"], network: ["a.example.com", "b.example.com"] })]);
+  assert.deepStrictEqual(ph.storeModel(s, "").cards[0].uses, [
+    { text: "Reads your fight data.", deep: false },
+    { text: "Changes how the game's icons look (commander tags, markers, targets).", deep: true },
+    { text: "Reads your squad and party.", deep: true },
+    { text: "Talks to a.example.com and b.example.com.", deep: false },
+  ]);
+  const none = storePayload([listing("n.one", { permissions: [], network: ["x.com", "y.com", "z.com"] })]);
+  assert.deepStrictEqual(ph.storeModel(none, "").cards[0].uses, [{ text: "Talks to x.com, y.com and z.com.", deep: false }]);
+});
+
+test("storeModel filters: All, Installed and Updates, with counts", () => {
+  const s = storePayload([
+    listing("a.new"), listing("h.mine", { handInstalled: true }),
+    listing("i.have", { name: "Have", installed: "1.0.0" }),
+    listing("i.old", { name: "Old", installed: "1.0.0", update: "1.1.0" }),
+  ]);
+  const ids = (f, q = "") => ph.storeModel(s, q, [], f).cards.map(c => c.id);
+  assert.deepStrictEqual(ph.storeModel(s, "").counts, { all: 4, installed: 2, updates: 1 });
+  assert.strictEqual(ph.storeModel(s, "").filter, "all");
+  assert.deepStrictEqual(ids("all"), ["a.new", "h.mine", "i.have", "i.old"]);
+  assert.deepStrictEqual(ids("installed"), ["i.have", "i.old"]);
+  assert.deepStrictEqual(ids("updates"), ["i.old"]);
+  assert.deepStrictEqual(ids("nonsense"), ids("all"), "unknown filter: all");
+  // Counts follow the search.
+  assert.deepStrictEqual(ph.storeModel(s, "old").counts, { all: 1, installed: 1, updates: 1 });
+  assert.deepStrictEqual(ids("installed", "have"), ["i.have"]);
+});
+
+test("storeModel empty filters say so in one line", () => {
+  const s = storePayload([listing("a.new")]);
+  assert.strictEqual(ph.storeModel(s, "", [], "installed").message, "Nothing installed from the store yet.");
+  assert.strictEqual(ph.storeModel(s, "", [], "updates").message, "Everything is up to date.");
+  assert.strictEqual(ph.storeModel(s, "", [], "all").message, "");
+  assert.match(ph.storeModel(s, "zzz", [], "installed").message, /No plugins match “zzz”/);
 });
 
 // A host for the Store tab: confirm answers with `answer` and records what it was asked.
@@ -637,8 +683,10 @@ test("cardModel label per trust level, the revoked reason shown", () => {
   assert.ok(deep.lines.includes("Changes how the game's icons look (commander tags, markers, targets)"), deep.lines);
 });
 
-test("sampleStore is a payload storeModel can show", () => {
-  const m = ph.storeModel(ph.sampleStore(), "");
-  assert.ok(m.cards.length >= 4);
+test("sampleStore covers every kind of row", () => {
+  const m = ph.storeModel(ph.sampleStore(), "", ph.sampleStoreList());
   assert.deepStrictEqual([...new Set(m.cards.map(c => c.action))].sort(), ["install", "installed", "replace", "update"]);
+  assert.deepStrictEqual([...new Set(m.cards.map(c => c.trust))].sort(), ["revoked", "unverified", "verified"]);
+  assert.ok(m.cards.some(c => c.uses.some(u => u.deep)));
+  assert.ok(m.counts.updates >= 1 && m.counts.installed >= 2);
 });
