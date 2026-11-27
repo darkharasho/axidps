@@ -335,9 +335,11 @@ pub struct Zone {
 const UI_SCALE: [f32; 4] = [0.9, 1.0, 1.11, 1.22];
 
 /// Where the game's fixed UI parts are on a `screen`-sized backbuffer: estimates from the
-/// interface size, scaled from sizes measured at "normal", except the minimap, whose size the
-/// game reports. Chat is at its default size (the player can resize it). None while the map is
-/// open (it covers the screen) or before the link was read.
+/// interface size, scaled from sizes measured at "normal" (3440x1440, 2026-11-26), except the
+/// minimap when the game reports its size. In WvW and PvP (competitive mode) the game reports
+/// the compass as 0x0, so the minimap falls back to its measured default size. Chat is at its
+/// default size (the player can resize it). None while the map is open (it covers the screen)
+/// or before the link was read.
 pub fn zones(ui: &GameUi, screen: (i32, i32)) -> Vec<Zone> {
     let (sw, sh) = screen;
     if !ui.known || ui.ui_state & UI_MAP_OPEN != 0 || sw <= 0 || sh <= 0 {
@@ -358,19 +360,22 @@ pub fn zones(ui: &GameUi, screen: (i32, i32)) -> Vec<Zone> {
             });
         }
     };
-    // The minimap and the strip of buttons on its inner edge.
-    let (cw, ch) = (i32::from(ui.compass_w), i32::from(ui.compass_h));
-    let mut tracker_y = px(190.0);
-    if cw > 0 && ch > 0 {
-        let h = ch + px(36.0);
-        if top_right {
-            add("minimap", "Minimap", sw - cw, 0, cw, h);
-            tracker_y = h + px(16.0);
-        } else {
-            add("minimap", "Minimap", sw - cw, sh - h, cw, h);
-        }
-    }
-    let skills = (px(1090.0), px(175.0));
+    // The minimap and the strip of buttons on its inner edge. With the minimap at the bottom
+    // the event tracker starts at the top of the screen; at the top, below the minimap.
+    let (cw, h) = if ui.compass_w > 0 && ui.compass_h > 0 {
+        let ch = i32::from(ui.compass_h);
+        (i32::from(ui.compass_w), ch + px(36.0))
+    } else {
+        (px(362.0), px(450.0))
+    };
+    let tracker_y = if top_right {
+        add("minimap", "Minimap", sw - cw, 0, cw, h);
+        h + px(16.0)
+    } else {
+        add("minimap", "Minimap", sw - cw, sh - h, cw, h);
+        0
+    };
+    let skills = (px(800.0), px(175.0));
     add(
         "skills",
         "Skill bar",
@@ -384,11 +389,12 @@ pub fn zones(ui: &GameUi, screen: (i32, i32)) -> Vec<Zone> {
         "Chat (default size)",
         0,
         sh - px(290.0),
-        px(520.0),
+        px(550.0),
         px(290.0),
     );
     add("menu", "Menu bar", 0, 0, px(320.0), px(42.0));
-    add("party", "Party", 0, px(44.0), px(250.0), px(330.0));
+    // Wide enough for the squad panel, which is wider than the party one.
+    add("party", "Party / squad", 0, px(44.0), px(400.0), px(330.0));
     let target = (px(560.0), px(120.0));
     add(
         "target",
@@ -404,7 +410,7 @@ pub fn zones(ui: &GameUi, screen: (i32, i32)) -> Vec<Zone> {
         sw - px(320.0),
         tracker_y,
         px(320.0),
-        px(360.0),
+        px(560.0),
     );
     out
 }
@@ -555,15 +561,16 @@ mod tests {
         assert_eq!(get(&z, "minimap"), Rect::new(2200, 1440 - 376, 360, 376));
         assert_eq!(
             get(&z, "skills"),
-            Rect::new((2560 - 1090) / 2, 1440 - 175, 1090, 175)
+            Rect::new((2560 - 800) / 2, 1440 - 175, 800, 175)
         );
         assert_eq!(get(&z, "chat").x, 0);
+        assert_eq!(get(&z, "tracker").y, 0);
         ui.ui_state = UI_COMPASS_TOP_RIGHT;
         let z = zones(&ui, s);
         assert_eq!(get(&z, "minimap").y, 0);
         assert!(get(&z, "tracker").y >= 376);
         ui.uisz = 3;
-        assert_eq!(get(&zones(&ui, s), "skills").w, 1330);
+        assert_eq!(get(&zones(&ui, s), "skills").w, 976);
         // Every zone lies on screen; none while the map is open or the link is unknown.
         assert!(
             zones(&ui, s).iter().all(|z| z.rect.x >= 0
@@ -573,6 +580,26 @@ mod tests {
         ui.ui_state |= UI_MAP_OPEN;
         assert!(zones(&ui, s).is_empty());
         assert!(zones(&GameUi::default(), s).is_empty());
+    }
+
+    // Measured in WvW at normal interface size, 3440x1440, where the game reports a 0x0 compass.
+    #[test]
+    fn zones_measured_in_wvw() {
+        let ui = GameUi {
+            known: true,
+            ui_state: 0b11000,
+            uisz: 1,
+            compass_w: 0,
+            compass_h: 0,
+        };
+        let z = zones(&ui, (3440, 1440));
+        let get = |id: &str| z.iter().find(|z| z.id == id).unwrap().rect;
+        assert_eq!(z.len(), 7);
+        assert_eq!(get("minimap"), Rect::new(3440 - 362, 1440 - 450, 362, 450));
+        assert_eq!(get("tracker"), Rect::new(3440 - 320, 0, 320, 560));
+        assert_eq!(get("skills"), Rect::new(1320, 1440 - 175, 800, 175));
+        assert_eq!(get("party"), Rect::new(0, 44, 400, 330));
+        assert_eq!(get("chat"), Rect::new(0, 1440 - 290, 550, 290));
     }
 
     #[test]
