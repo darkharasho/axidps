@@ -222,7 +222,6 @@ const ui = {
   editing: false,      // the DLL's edit mode, as reported by the host
   editSeq: 0,          // our edit requests: odd = on, even = off
   session: {},         // open state of windows that always start closed (the hub, Details)
-  plugOpen: new Set(), // plugin ids whose settings panel is open in the hub (this session only)
   detailFrom: "",      // the window whose player click opened Details (it sits beside it)
   update: null,        // the launcher's self-update status (host, from update-status.json)
   zones: [],           // the game's own UI (host, from MumbleLink): [{id, label, x, y, w, h}]
@@ -2433,51 +2432,59 @@ function builderAct(hw, b) {
   }
 }
 
-// A trust badge: Verified, Unverified, DEV or Revoked.
-function badge(label) {
-  const cls = {Verified: "v", Unverified: "u", DEV: "dev", Revoked: "r"}[label] || "u";
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
-}
-const STORE_BUTTON = {install: "Install", update: "Update", replace: "Replace yours", uninstall: "Uninstall"};
-const STORE_FILTER_LABEL = [["all", "All"], ["installed", "Installed"], ["updates", "Updates"]];
-// The Store tab, laid out like the meters: filter tabs with counts, the search box, a dim column
-// header and one row per plugin with a trust bar at its left edge.
-function renderStore(w) {
+const PLUGIN_FILTERS = [["all", "Everything"], ["installed", "Installed"], ["updates", "Has an update"]];
+const PLUGIN_BUTTON = {install: "Install", update: "Update", replace: "Replace yours"};
+const PLUGIN_TRUST = {verified: "v", unverified: "u", revoked: "r"};
+const UNCHECKED = "Not checked yet. Nobody has looked at what this plugin does.";
+// The Plugins tab: one list of everything, from the store and from this computer. A filter column on
+// the left (with counts), the search box and Refresh above the rows, and one row per plugin with a
+// trust bar at its left edge. Returns the rows' counts, for the tab's update pill.
+function renderPlugins(w) {
   const t = ui.text && ui.text.id === STORE_SEARCH ? ui.text : null;
   const query = t ? t.value : (w.storeQuery || "");
-  const m = pluginHost.storeModel(pluginHost.store, query, pluginHost.list, w.storeFilter);
+  const list = pluginHost.list.filter(p => p && typeof p === "object");
+  const sm = pluginHost.storeModel(pluginHost.store, query, list, "all");
+  const installed = list.map(p => ({id: String(p.id), card: pluginHost.cardModel(p, saved), bundled: p.bundled === true}));
+  const pm = axidpsHub.pluginRows(sm.cards, installed, w.storeFilter, query, sm.state === "ok");
+  const filter = PLUGIN_FILTERS.some(f => f[0] === w.storeFilter) ? w.storeFilter : "all";
   w.body.querySelector("[data-storeauto] .tog").classList.toggle("on", saved.storeAutoUpdate !== false);
-  const key = JSON.stringify([m, t]);
-  if (w.storeKey === key) return;
+  const key = JSON.stringify([pm, filter, sm.message, sm.state, t]);
+  if (w.storeKey === key) return pm.counts;
   w.storeKey = key;
-  w.body.querySelector(".stabs").innerHTML = STORE_FILTER_LABEL.map(([f, label]) =>
-    `<span data-sfilter="${f}"${m.filter === f ? ' class="on"' : ""}>${label} <i>${m.counts[f]}</i></span>`).join("");
+  w.body.querySelector(".pfilters").innerHTML = PLUGIN_FILTERS.map(([f, label]) =>
+    `<div class="pf${filter === f ? " on" : ""}" data-sfilter="${f}">${esc(label)} <i>${pm.counts[f === "all" ? "all" : f]}</i></div>`).join("");
   w.body.querySelector(".sfield").innerHTML = t
     ? `<span class="field focus search" data-search>${esc(t.value.slice(0, t.caret))}<i class="caret"></i>` +
       `${esc(t.value.slice(t.caret))}</span>`
     : `<span class="field search${query ? "" : " empty"}" data-search>${esc(query || "Search plugins")}</span>`;
   const msg = w.body.querySelector(".store-msg");
-  msg.textContent = m.message;
-  msg.style.display = m.message ? "" : "none";
-  w.body.querySelector(".shead").style.display = m.cards.length ? "" : "none";
-  const btn = (act, cls) => `<button data-sact="${act}"${cls ? ` class="${cls}"` : ""}>${STORE_BUTTON[act]}</button>`;
-  const TRUST = {verified: "v", unverified: "u", revoked: "r"};
-  w.body.querySelector(".srows").innerHTML = m.cards.map(c => {
-    const acts = c.busy ? `<button disabled>Working…</button>`
-      : c.action === "install" ? btn("install", "primary")
-      : c.action === "replace" ? btn("replace")
-      : c.action === "update" ? btn("uninstall", "quiet") + btn("update", "primary")
-      : c.action === "installed" ? `<span class="have">Installed</span>` + btn("uninstall", "quiet")
-      : c.action === "revoked" ? `<span class="have off">Turned off</span>` + btn("uninstall", "quiet") : "";
-    const uses = c.uses.map(u => u.deep ? `<em>${esc(u.text)}</em>` : esc(u.text)).join(" ");
-    return `<div class="srow ${TRUST[c.trust] || "u"}" data-s="${esc(c.id)}"><div class="top">` +
-      `<span class="nm"><b>${esc(c.title)}</b><span class="trust">${esc(c.trust)}</span></span>` +
-      `<span class="au">${esc(c.author)}</span><span class="ver${c.isUpdate ? " up" : ""}">${esc(c.version)}</span>` +
-      `<span class="sa">${acts}</span></div>` +
-      `${c.description ? `<div class="desc">${esc(c.description)}</div>` : ""}` +
+  const text = !pm.rows.length ? sm.message : sm.state !== "ok" && sm.cards.length ? sm.message : "";
+  msg.textContent = text;
+  msg.style.display = text ? "" : "none";
+  const btn = (attr, act, label, cls) => `<button data-${attr}="${act}"${cls ? ` class="${cls}"` : ""}>${esc(label)}</button>`;
+  w.body.querySelector(".srows").innerHTML = pm.rows.map(r => {
+    const acts = [];
+    if (r.busy) acts.push(`<button disabled>Working…</button>`);
+    else {
+      if (r.reload) acts.push(`<button data-pact="reload" data-tip="reload its windows">Reload</button>`);
+      if (PLUGIN_BUTTON[r.store]) acts.push(btn("sact", r.store, PLUGIN_BUTTON[r.store], "primary"));
+      if (r.reason) acts.push(`<span class="have off">${esc(r.reason)}</span>`);
+      else if (r.toggle) acts.push(btn("pact", r.toggle, r.toggle === "enable" ? "Turn on" : "Turn off", r.toggle === "enable" && !r.store ? "primary" : "quiet"));
+      if (r.remove) acts.push(btn("sact", "uninstall", "Remove", "quiet"));
+    }
+    const uses = r.uses.map(u => u.deep ? `<em>${esc(u.text)}</em>` : esc(u.text)).join(" ");
+    const who = r.local ? "Installed from your computer" : r.author;
+    return `<div class="srow ${PLUGIN_TRUST[r.trust] || "u"}" data-s="${esc(r.id)}" data-p="${esc(r.id)}"><div class="rtop">` +
+      `<span class="nm"><b>${esc(r.title)}</b>${r.trust ? `<span class="trust">${esc(r.trust)}</span>` : ""}` +
+      `${who ? `<span class="au">${esc(who)}</span>` : ""}</span>` +
+      `<span class="ver${r.store === "update" ? " up" : ""}">${r.version ? esc(r.version) : ""}${r.toggle ? ` <span class="have">Installed</span>` : ""}</span>` +
+      `<span class="sa">${acts.join("")}</span></div>` +
+      `${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}` +
       `${uses ? `<div class="uses">${uses}</div>` : ""}` +
-      `${c.note ? `<div class="snote${c.bad ? " bad" : ""}">${esc(c.note)}</div>` : ""}</div>`;
+      `${r.unchecked ? `<div class="snote bad">${esc(UNCHECKED)}</div>` : ""}` +
+      `${r.note ? `<div class="snote${r.bad ? " bad" : ""}">${esc(r.note)}</div>` : ""}</div>`;
   }).join("");
+  return pm.counts;
 }
 
 // Everything in one place: a full window over the dimmed game, centred, closed by a click
@@ -2506,19 +2513,14 @@ const hub = defineWindow({
       `<div class="bottom"><button data-act="clear" class="quiet" data-tip="blank every window until the next fight">Clear this fight</button>` +
       `<button data-act="clearsession" class="quiet" data-tip="start the session span of every custom window over">Clear session</button>` +
       `<span class="grow"></span><small></small></div></div></section>` +
-      // Plugins: today's Store and Plugins content, until the new page replaces it
-      `<section data-tab="plugins"><div class="pstore"><div class="store-top"><div class="stabs"></div><span class="grow"></span>` +
-      `<span class="sfield"></span>` +
+      // Plugins: a filter column (left), and the search, Refresh and one list of plugins (right)
+      `<section data-tab="plugins" class="psec"><div class="pfcol"><div class="pfilters"></div><div class="pffoot">` +
+      `<div class="opt" data-storeauto><div>Update plugins by themselves<small>Store plugins update when the new ` +
+      `version asks for nothing new. Anything else waits for you to press Update.</small></div>` +
+      `<span class="tog"><i></i></span></div></div></div>` +
+      `<div class="pmain"><div class="store-top"><span class="sfield"></span><span class="grow"></span>` +
       `<button data-sact="refresh" data-tip="check the store for new plugins and versions">Refresh</button></div>` +
-      `<p class="note store-msg"></p>` +
-      `<div class="shead"><span>Plugin</span><span>Author</span><span class="ver">Version</span><span></span></div>` +
-      `<div class="srows"></div>` +
-      `<div class="opt" data-storeauto><div>Update automatically<small>Store plugins update by themselves ` +
-      `when the new version asks for nothing new. Anything else waits for you to press Update.</small></div>` +
-      `<span class="tog"><i></i></span></div></div>` +
-      `<h3>Installed</h3><div class="blank pblank"><b>No plugins installed</b>` +
-      `Plugins will add their own windows and tools here, next to the built-in ones.</div>` +
-      `<div class="pcards"></div></section>` +
+      `<p class="note store-msg"></p><div class="srows"></div></div></section>` +
       // Options
       `<section data-tab="options"><div class="optpage"><h3>Look</h3><div class="themes">${THEMES.map(themeCard).join("")}</div>` +
       `<div class="opt"><div>How see-through<small>Lower is more see-through. Picking a theme brings its own look.</small></div>` +
@@ -2574,11 +2576,19 @@ const hub = defineWindow({
       renderAll();
       if (a && b && b.dataset.ask === "yes") a.yes();
     };
-    q(".pstore").onclick = e => {
+    q('section[data-tab="plugins"]').onclick = e => {
       if (e.target.closest("[data-search]")) { startText(STORE_SEARCH); return; }
       const f = e.target.closest("[data-sfilter]");
       if (f) { w.storeFilter = f.dataset.sfilter; renderAll(); return; }
       if (e.target.closest("[data-storeauto]")) { saved.storeAutoUpdate = saved.storeAutoUpdate === false; save(); renderAll(); return; }
+      const pb = e.target.closest("[data-pact]");
+      if (pb && !pb.disabled) {
+        const id = pb.closest("[data-p]").dataset.p;
+        if (pb.dataset.pact === "enable") pluginHost.enable(id);
+        else if (pb.dataset.pact === "disable") pluginHost.disable(id);
+        else if (pb.dataset.pact === "reload") pluginHost.reload(id);
+        return;
+      }
       const b = e.target.closest("[data-sact]");
       if (!b || b.disabled) return;
       if (b.dataset.sact === "refresh") { pluginHost.storeRefresh(); return; }
@@ -2645,18 +2655,6 @@ const hub = defineWindow({
       else if (tog && !(!isOpen(x) && axidpsHub.showBlock({open: false,
         openCount: wins.filter(v => capped(v) && isOpen(v)).length, cap: CAP, atlasFull: wins.some(v => v.overAtlas)}))) setOpen(x, !isOpen(x));
     };
-    w.body.querySelectorAll(".pcards").forEach(pc => pc.onclick = e => {
-      if (plugSettingClick(e)) return;
-      const b = e.target.closest("[data-pact]"), c = e.target.closest("[data-p]");
-      if (!b || !c) return;
-      if (b.dataset.pact === "settings") {
-        const id = c.dataset.p;
-        if (!ui.plugOpen.delete(id)) ui.plugOpen.add(id);
-        renderAll();
-      } else if (b.dataset.pact === "enable") pluginHost.enable(c.dataset.p);
-      else if (b.dataset.pact === "disable") pluginHost.disable(c.dataset.p);
-      else if (b.dataset.pact === "reload") pluginHost.reload(c.dataset.p);
-    });
     q(".themes").onclick = e => { const t = e.target.closest("[data-theme]"); if (t) pickTheme(t.dataset.theme); };
     w.body.querySelectorAll(".seg").forEach(sg => sg.onclick = e => {
       const b = e.target.closest("[data-v]");
@@ -2703,36 +2701,8 @@ const hub = defineWindow({
     hubEl.style.height = hh + "px";
     w.body.querySelectorAll(".tabb").forEach(n => n.classList.toggle("on", n.dataset.tab === w.tab));
     w.body.querySelectorAll("section").forEach(sc => sc.classList.toggle("on", sc.dataset.tab === w.tab));
-    // Plugin cards (the host's list), in the Windows and Plugins tabs: name, label, author, version,
-    // what it asks for, and why it can't be enabled or its Enable/Disable (and developer mode's
-    // Reload) buttons.
-    const plist = pluginHost.list.filter(p => p && typeof p === "object");
-    const models = plist.map(p => {
-      const m = pluginHost.cardModel(p, saved), id = String(p.id);
-      // The settings panel, for enabled plugins whose cog is open.
-      const panel = m.action === "disable" && ui.plugOpen.has(id) ? pluginHost.panelModel(p, saved) : null;
-      return [id, m, panel];
-    });
-    const plugKey = JSON.stringify(models);
-    if (w.plugKey !== plugKey) {
-      w.plugKey = plugKey;
-      w.body.querySelector(".pblank").style.display = models.length ? "none" : "";
-      const cards = models.map(([id, m, panel]) =>
-        `<div class="pc" data-p="${esc(id)}"><div class="pc-h"><b>${esc(m.title)}</b>` +
-        `${m.label ? badge(m.label) : ""}<span class="grow"></span>` +
-        `${m.reload ? `<button data-pact="reload" data-tip="reload its windows">Reload</button>` : ""}` +
-        `${m.action === "disable" ? `<button data-pact="settings" class="cog${panel ? " on" : ""}" aria-label="Settings" ` +
-          `data-tip="settings">${icon("sliders", 14, panel ? "accent" : "dim")}</button>` : ""}` +
-        `${m.action ? `<button data-pact="${m.action}"${m.action === "enable" ? ' class="primary"' : ""}>` +
-          `${m.action === "enable" ? "Enable" : "Disable"}</button>` : ""}</div>` +
-        `<small>${esc([m.version && "v" + m.version, m.author && "by " + m.author].filter(Boolean).join(" · "))}</small>` +
-        `${m.lines.map(l => `<span class="pl">${esc(l)}</span>`).join("")}` +
-        `${m.reason ? `<span class="pl bad">${esc(m.reason)}</span>` : ""}${panel ? plugPanel(panel) : ""}</div>`).join("");
-      w.body.querySelectorAll(".pcards").forEach(pc => pc.innerHTML = cards);
-    }
     if (w.tab === "windows") renderWindows(w);
-    renderStore(w);
-    const nUpd = pluginHost.storeModel(pluginHost.store, "", pluginHost.list, "all").counts.updates;
+    const nUpd = renderPlugins(w).updates;
     const pill = w.body.querySelector('.tabb[data-tab="plugins"] .n');
     pill.textContent = nUpd === 1 ? "1 update" : nUpd + " updates";
     pill.style.display = nUpd ? "" : "none";
