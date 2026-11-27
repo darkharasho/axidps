@@ -204,6 +204,9 @@ impl PluginState {
             if is_redirect {
                 return Some(format!("redirect from {host}"));
             }
+            if builtin_allowed(url, dest) {
+                return None;
+            }
             if matches!(
                 dest,
                 Destination::Document
@@ -250,6 +253,22 @@ impl PluginState {
         // Dropping the returned load finishes it with an empty body.
         let _ = load.intercept(resp);
     }
+}
+
+/// The overlay's own loads from ArenaNet's public API: a skill's icon address (a `fetch` from
+/// `api.guildwars2.com`) and the icon (an image from `render.guildwars2.com`), for the Details
+/// window. HTTPS on the default port, nothing else from either host.
+const BUILTIN: &[(&str, Destination)] = &[
+    ("api.guildwars2.com", Destination::None),
+    ("render.guildwars2.com", Destination::Image),
+];
+
+fn builtin_allowed(url: &url::Url, dest: Destination) -> bool {
+    url.scheme() == "https"
+        && url.port().is_none()
+        && BUILTIN
+            .iter()
+            .any(|&(h, d)| d == dest && url.host_str() == Some(h))
 }
 
 pub struct PluginScheme {
@@ -494,6 +513,24 @@ mod tests {
         assert_eq!(st.refuse(&url("axidps-plugin://p.off/index.html")), None);
         st.set_saved(serde_json::Value::Null);
         assert!(st.refuse(&url("https://on.example.com/x")).is_some());
+    }
+
+    #[test]
+    fn guard_allows_arenanets_api_and_icons_only() {
+        let (_t, s) = setup();
+        let st = &s.state;
+        let api = url("https://api.guildwars2.com/v2/skills?ids=1,2");
+        let icon = url("https://render.guildwars2.com/file/ABC/1.png");
+        assert_eq!(st.refuse_load(&api, false, Destination::None), None);
+        assert_eq!(st.refuse_load(&icon, false, Destination::Image), None);
+        // Each host for its own kind of load only, over HTTPS, never as a page or redirected.
+        assert!(st.refuse_load(&api, false, Destination::Image).is_some());
+        assert!(st.refuse_load(&icon, false, Destination::None).is_some());
+        assert!(st.refuse_load(&icon, false, Destination::Document).is_some());
+        assert!(st.refuse_load(&api, true, Destination::None).is_some());
+        assert!(st.refuse_load(&url("http://render.guildwars2.com/x.png"), false, Destination::Image).is_some());
+        assert!(st.refuse_load(&url("https://render.guildwars2.com:8443/x.png"), false, Destination::Image).is_some());
+        assert!(st.refuse_load(&url("https://wiki.guildwars2.com/x.png"), false, Destination::Image).is_some());
     }
 
     #[test]

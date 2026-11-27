@@ -112,36 +112,77 @@ struct HealSum {
     barrier: u64,
 }
 
+/// One copy of a player's healing one way, as one reporter saw it: the total, and for the
+/// Details window by skill (healing, barrier, hits), per [`BUCKET_MS`], and by the other player.
+#[derive(Debug, Clone, Default)]
+struct HealCopy {
+    sum: HealSum,
+    skills: BTreeMap<u32, (u64, u64, u32)>,
+    series: Vec<u64>,
+    skill_series: SkillSeries,
+    peers: BTreeMap<u32, HealSum>,
+}
+
+/// One heal as [`CopySums::add`] counts it.
+#[derive(Debug, Clone, Copy)]
+struct HealHit {
+    sum: HealSum,
+    skill: u32,
+    /// Bucket index into the fight.
+    at: usize,
+    /// The other side: the target for healing given, the healer for healing received.
+    peer: u32,
+}
+
 /// One player's healing one way (given or received) as copies by who reported them: `own` is
 /// the player's own copies, `by_sender` everyone else's. Every heal reaches the meter once per
 /// sharing squadmate, so the copies are alternatives, not additions (Elite Insights' rule).
 #[derive(Debug, Clone, Default)]
 struct CopySums {
-    own: Option<HealSum>,
-    by_sender: BTreeMap<u32, HealSum>,
+    own: Option<HealCopy>,
+    by_sender: BTreeMap<u32, HealCopy>,
 }
 
 impl CopySums {
-    fn add(&mut self, own: bool, sender: u32, h: HealSum) {
+    fn add(&mut self, own: bool, sender: u32, h: HealHit) {
         let e = if own {
-            self.own.get_or_insert_with(HealSum::default)
+            self.own.get_or_insert_with(HealCopy::default)
         } else {
             self.by_sender.entry(sender).or_default()
         };
-        e.healing = e.healing.saturating_add(h.healing);
-        e.barrier = e.barrier.saturating_add(h.barrier);
+        add_heal_sum(&mut e.sum, h.sum);
+        let k = e.skills.entry(h.skill).or_default();
+        k.0 = k.0.saturating_add(h.sum.healing);
+        k.1 = k.1.saturating_add(h.sum.barrier);
+        k.2 = k.2.saturating_add(1);
+        add_at(&mut e.series, h.at, h.sum.healing.saturating_add(h.sum.barrier));
+        add_at(
+            e.skill_series.entry(h.skill).or_default(),
+            h.at,
+            h.sum.healing.saturating_add(h.sum.barrier),
+        );
+        if h.peer != 0 {
+            add_heal_sum(e.peers.entry(h.peer).or_default(), h.sum);
+        }
     }
 
-    /// The player's own copies if any, else the largest sender's.
-    fn shown(&self) -> HealSum {
-        self.own.unwrap_or_else(|| {
+    /// The copy shown: the player's own if any, else the largest sender's.
+    fn shown_copy(&self) -> Option<&HealCopy> {
+        self.own.as_ref().or_else(|| {
             self.by_sender
                 .values()
-                .copied()
-                .max_by_key(|h| h.healing.saturating_add(h.barrier))
-                .unwrap_or_default()
+                .max_by_key(|c| c.sum.healing.saturating_add(c.sum.barrier))
         })
     }
+
+    fn shown(&self) -> HealSum {
+        self.shown_copy().map(|c| c.sum).unwrap_or_default()
+    }
+}
+
+fn add_heal_sum(e: &mut HealSum, h: HealSum) {
+    e.healing = e.healing.saturating_add(h.healing);
+    e.barrier = e.barrier.saturating_add(h.barrier);
 }
 
 /// Boons (Elite Insights' list): stripping one from someone else is a strip.
@@ -172,18 +213,98 @@ const MAX_BUCKETS: usize = 3600;
 struct Series {
     out: Vec<u64>,
     inc: Vec<u64>,
+    /// The condition part of `out`.
+    out_condi: Vec<u64>,
+    /// Boon stacks stripped and condition stacks cleansed per bucket.
+    strips: Vec<u64>,
+    cleanses: Vec<u64>,
 }
 
-/// One agent's damage by skill, one way: skill -> (damage, hits).
-type BySkill = BTreeMap<u32, (u64, u32)>;
+/// One skill's damage one way, with its hits by result (the details window's skill panel).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SkillStat {
+    damage: u64,
+    /// Hits that did damage, and the least and most one did.
+    hits: u32,
+    min: u32,
+    max: u32,
+    crit: u32,
+    glance: u32,
+    /// Strikes blocked, evaded, interrupted, absorbed (invulnerable) or missed (blind).
+    block: u32,
+    evade: u32,
+    interrupt: u32,
+    absorb: u32,
+    miss: u32,
+    /// The part of `damage` that hit barrier.
+    barrier: u64,
+}
+
+impl SkillStat {
+    fn hit(&mut self, dmg: u64) {
+        let v = u32::try_from(dmg).unwrap_or(u32::MAX);
+        self.min = if self.hits == 0 { v } else { self.min.min(v) };
+        self.max = self.max.max(v);
+        self.damage = self.damage.saturating_add(dmg);
+        self.hits = self.hits.saturating_add(1);
+    }
+
+    fn merge(&mut self, o: &SkillStat) {
+        if o.hits > 0 {
+            self.min = if self.hits == 0 { o.min } else { self.min.min(o.min) };
+        }
+        self.max = self.max.max(o.max);
+        self.damage = self.damage.saturating_add(o.damage);
+        self.hits += o.hits;
+        self.crit += o.crit;
+        self.glance += o.glance;
+        self.block += o.block;
+        self.evade += o.evade;
+        self.interrupt += o.interrupt;
+        self.absorb += o.absorb;
+        self.miss += o.miss;
+        self.barrier = self.barrier.saturating_add(o.barrier);
+    }
+}
+
+/// One agent's damage by skill, one way.
+type BySkill = BTreeMap<u32, SkillStat>;
+/// Healing by skill: skill -> (healing, barrier, hits).
+type HealSkills = BTreeMap<u32, (u64, u64, u32)>;
 
 /// Skills listed per direction in the feed's `detail`.
-const DETAIL_SKILLS: usize = 40;
+const DETAIL_SKILLS: usize = 60;
+/// Casts kept per agent per fight for the details chart's cast marks.
+const MAX_CASTS: usize = 4000;
 
 fn add_skill(m: &mut BTreeMap<u32, BySkill>, id: u32, skill: u32, dmg: u64) {
+    m.entry(id).or_default().entry(skill).or_default().hit(dmg);
+}
+
+/// A strike of `skill` by `id` (or on it): its damage (0: none) and how it landed.
+fn add_strike(m: &mut BTreeMap<u32, BySkill>, id: u32, skill: u32, dmg: u64, result: u8, barrier: u32) {
     let e = m.entry(id).or_default().entry(skill).or_default();
-    e.0 = e.0.saturating_add(dmg);
-    e.1 = e.1.saturating_add(1);
+    if dmg > 0 {
+        e.hit(dmg);
+        e.barrier = e.barrier.saturating_add(u64::from(barrier).min(dmg));
+    }
+    match result {
+        1 => e.crit += 1,
+        2 => e.glance += 1,
+        3 => e.block += 1,
+        4 => e.evade += 1,
+        5 => e.interrupt += 1,
+        6 => e.absorb += 1,
+        7 => e.miss += 1,
+        _ => {}
+    }
+}
+
+/// One skill's amount per [`BUCKET_MS`] (the details chart's bars for a selected skill).
+type SkillSeries = BTreeMap<u32, Vec<u64>>;
+
+fn add_skill_at(m: &mut BTreeMap<u32, SkillSeries>, id: u32, skill: u32, i: usize, n: u64) {
+    add_at(m.entry(id).or_default().entry(skill).or_default(), i, n);
 }
 
 fn add_heal(m: &mut BTreeMap<u32, HealSum>, id: u32, h: HealSum) {
@@ -249,8 +370,15 @@ pub struct LiveStats {
     /// Damage dealt (by owner) and taken per agent by skill, this fight (kept after it ends).
     skills_out: BTreeMap<u32, BySkill>,
     skills_in: BTreeMap<u32, BySkill>,
+    /// Damage dealt (by owner) per skill per bucket, exact and estimated.
+    skill_series: BTreeMap<u32, SkillSeries>,
+    est_skill_series: BTreeMap<u32, SkillSeries>,
+    /// The skill the details window selected (its casts and damage per bucket on the chart).
+    detail_skill: Option<u32>,
     /// Each agent's downs, deaths and rallies this fight: (ms into the fight, state).
     state_log: BTreeMap<u32, Vec<(u64, AgentState)>>,
+    /// Each agent's cast starts this fight (by owner): (ms into the fight, skill).
+    casts: BTreeMap<u32, Vec<(u64, u32)>>,
     /// The account whose breakdown the feed carries (`detail`): the overlay's details window.
     detail: Option<String>,
     /// The ended fight's rows and timeline, kept until the next fight starts.
@@ -296,6 +424,9 @@ pub struct LiveStats {
     boon_targets: BTreeMap<u32, (u8, bool)>,
     /// Game time of the tracker's last tick.
     boon_tick: Option<u64>,
+    /// Per tracker id and boon: its uptime total (ms, stack-ms for Might and Stability) at the
+    /// end of each bucket, as sampled at the tracker's ticks (the details chart's boon line).
+    boon_hist: BTreeMap<u32, BTreeMap<u32, Vec<u64>>>,
     /// The condition model estimating this fight's ticks nobody reports exactly.
     estimator: Option<Estimator>,
     /// Estimated condition damage this fight per owner: total, per bucket and per skill. Shown
@@ -305,6 +436,10 @@ pub struct LiveStats {
     est_skills: BTreeMap<u32, BySkill>,
     /// Peers who relayed their own exact condition ticks this fight.
     exact_condi: BTreeSet<u32>,
+    /// Boon and condition stacks each player (owner) removed this fight: buff -> stacks.
+    removed: BTreeMap<u32, BTreeMap<u32, u64>>,
+    /// Ids seen as condition damage (buff ids): the Details window tells them from strikes.
+    condi_skills: BTreeSet<u32>,
 }
 
 impl Default for LiveStats {
@@ -337,6 +472,10 @@ impl LiveStats {
             skills_out: BTreeMap::new(),
             skills_in: BTreeMap::new(),
             state_log: BTreeMap::new(),
+            casts: BTreeMap::new(),
+            skill_series: BTreeMap::new(),
+            est_skill_series: BTreeMap::new(),
+            detail_skill: None,
             detail: None,
             last_rows: Vec::new(),
             last_timeline: Value::Null,
@@ -359,11 +498,14 @@ impl LiveStats {
             boon_active: BTreeSet::new(),
             boon_targets: BTreeMap::new(),
             boon_tick: None,
+            boon_hist: BTreeMap::new(),
             estimator: None,
             est_condi: BTreeMap::new(),
             est_series: BTreeMap::new(),
             est_skills: BTreeMap::new(),
             exact_condi: BTreeSet::new(),
+            removed: BTreeMap::new(),
+            condi_skills: BTreeSet::new(),
         }
     }
 
@@ -470,17 +612,39 @@ impl LiveStats {
 
     /// One copy of a heal, reported by `sender`: given by `by` (when it has a source) and
     /// received by `to`.
-    fn count_heal(&mut self, sender: u32, has_src: bool, by: u32, to: u32, sum: HealSum) {
+    #[allow(clippy::too_many_arguments)]
+    fn count_heal(
+        &mut self,
+        t: u64,
+        sender: u32,
+        has_src: bool,
+        by: u32,
+        to: u32,
+        skill: u32,
+        sum: HealSum,
+    ) {
+        let at = self.bucket(t);
         if has_src {
-            self.given
-                .entry(by)
-                .or_default()
-                .add(sender == by, sender, sum);
+            let h = HealHit {
+                sum,
+                skill,
+                at,
+                peer: to,
+            };
+            self.given.entry(by).or_default().add(sender == by, sender, h);
         }
-        self.received
-            .entry(to)
-            .or_default()
-            .add(sender == to, sender, sum);
+        let h = HealHit {
+            sum,
+            skill,
+            at,
+            peer: if has_src { by } else { 0 },
+        };
+        self.received.entry(to).or_default().add(sender == to, sender, h);
+    }
+
+    /// The timeline bucket of game time `t`.
+    fn bucket(&self, t: u64) -> usize {
+        (t.saturating_sub(self.start_ms) / BUCKET_MS) as usize
     }
 
     /// A fight started at `start_ms` on `map` (0 = unknown): numbers start from zero.
@@ -497,6 +661,9 @@ impl LiveStats {
         self.skills_out.clear();
         self.skills_in.clear();
         self.state_log.clear();
+        self.casts.clear();
+        self.skill_series.clear();
+        self.est_skill_series.clear();
         self.heal_out.clear();
         self.heal_in.clear();
         self.given.clear();
@@ -511,11 +678,13 @@ impl LiveStats {
         self.boon_active.clear();
         self.boon_targets.clear();
         self.boon_tick = None;
+        self.boon_hist.clear();
         self.estimator = None;
         self.est_condi.clear();
         self.est_series.clear();
         self.est_skills.clear();
         self.exact_condi.clear();
+        self.removed.clear();
         // The stacks held at the start are the fight's first rows.
         let initial = self.buff_stacks.initial(start_ms);
         self.feed_boons(start_ms, initial);
@@ -586,14 +755,19 @@ impl LiveStats {
             && n > 0
         {
             let by = self.owner(remover);
+            let at = self.bucket(t);
             let a = self.acc.entry(by).or_default();
-            if BOONS.contains(&buff) && by != dst {
+            let strip = BOONS.contains(&buff) && by != dst;
+            if strip {
                 a.strips += n;
             } else if CONDITIONS.contains(&buff) {
                 a.cleanses += n;
             } else {
                 return;
             }
+            let series = self.series.entry(by).or_default();
+            add_at(if strip { &mut series.strips } else { &mut series.cleanses }, at, n);
+            *self.removed.entry(by).or_default().entry(buff).or_default() += n;
             self.generation += 1;
             return;
         }
@@ -604,11 +778,19 @@ impl LiveStats {
                 dst,
                 skill,
                 value,
+                overstack,
                 result,
                 ..
             } => {
                 let by = self.owner(src);
-                if DAMAGE_RESULTS.contains(&result) && value > 0 {
+                if DAMAGE_RESULTS.contains(&result) && value <= 0 && result >= 3 {
+                    // A strike avoided: no damage, but the skill panel counts it.
+                    if by == self.owner(dst) || src == 0 {
+                        return;
+                    }
+                    add_strike(&mut self.skills_out, by, skill, 0, result, 0);
+                    add_strike(&mut self.skills_in, dst, skill, 0, result, 0);
+                } else if DAMAGE_RESULTS.contains(&result) && value > 0 {
                     if by == self.owner(dst) {
                         return;
                     }
@@ -617,11 +799,13 @@ impl LiveStats {
                     a.power = a.power.saturating_add(dmg);
                     let d = self.acc.entry(dst).or_default();
                     d.taken = d.taken.saturating_add(dmg);
-                    self.add_series(t, by, dst, dmg);
+                    self.add_series(t, by, dst, dmg, false);
                     if src != 0 {
-                        add_skill(&mut self.skills_out, by, skill, dmg);
+                        add_strike(&mut self.skills_out, by, skill, dmg, result, overstack);
+                        let i = self.bucket(t);
+                        add_skill_at(&mut self.skill_series, by, skill, i, dmg);
                     }
-                    add_skill(&mut self.skills_in, dst, skill, dmg);
+                    add_strike(&mut self.skills_in, dst, skill, dmg, result, overstack);
                 } else if (result == STRIKE_DOWN || result == STRIKE_KILL) && src != 0 && src != dst
                 {
                     let a = self.acc.entry(by).or_default();
@@ -662,6 +846,7 @@ impl LiveStats {
             Event::Heal {
                 src,
                 dst,
+                skill,
                 value,
                 barrier,
                 ..
@@ -678,7 +863,7 @@ impl LiveStats {
                 let (by, to) = (self.owner(src), self.owner(dst));
                 // A local heal is a copy sent by the POV.
                 let sender = self.pov.unwrap_or(0);
-                self.count_heal(sender, src != 0, by, to, sum);
+                self.count_heal(t, sender, src != 0, by, to, skill, sum);
                 // Which side is the POV: the game reports only heals it gives or gets.
                 let pov = self.pov;
                 if src != 0 && pov.is_some_and(|p| p == by) {
@@ -695,6 +880,7 @@ impl LiveStats {
                 sender,
                 src,
                 dst,
+                skill,
                 value,
                 barrier,
                 ..
@@ -709,7 +895,7 @@ impl LiveStats {
                     barrier: bar,
                 };
                 let (by, to) = (self.owner(src), self.owner(dst));
-                self.count_heal(sender, src != 0, by, to, sum);
+                self.count_heal(t, sender, src != 0, by, to, skill, sum);
                 self.generation += 1;
             }
             Event::State { id, state } => {
@@ -728,6 +914,14 @@ impl LiveStats {
                     AgentState::Up => return,
                 }
                 self.generation += 1;
+            }
+            // A cast start: a mark on the details chart (no number changes).
+            Event::CastStart { agent, skill, .. } if skill != 0 => {
+                let at = t.saturating_sub(self.start_ms);
+                let casts = self.casts.entry(self.owner(agent)).or_default();
+                if casts.len() < MAX_CASTS {
+                    casts.push((at, skill));
+                }
             }
             _ => {}
         }
@@ -988,6 +1182,42 @@ impl LiveStats {
         // writer leave at 0 for every player: 0 is what axilog sees on both logs.
         self.boons.tick(now, &groups, &squad, &target, &|_| 0);
         self.boon_targets = targets;
+        if self.state == LiveState::Fight {
+            self.sample_boons(now);
+        }
+    }
+
+    /// Note each squad player's boon uptime totals at game time `t` (its bucket). Buckets the
+    /// ticks skipped are filled in a straight line from the last sample.
+    fn sample_boons(&mut self, t: u64) {
+        // The totals at `t` close the bucket that ends there.
+        let i = self.bucket(t.saturating_sub(1).max(self.start_ms));
+        if i >= MAX_BUCKETS {
+            return;
+        }
+        for &c in &self.boon_squad {
+            let Some(totals) = self.boons.totals(c) else {
+                continue;
+            };
+            let hist = self.boon_hist.entry(c).or_default();
+            for (&b, v) in totals {
+                let cum = hist.entry(b).or_default();
+                let (from, last) = cum.last().map_or((0, 0), |&l| (cum.len(), l));
+                let now = v[0].max(last);
+                if i < from {
+                    // Still the last sample's bucket: it moves up.
+                    if let Some(l) = cum.last_mut() {
+                        *l = now;
+                    }
+                    continue;
+                }
+                let span = (i + 1 - from) as u64;
+                for k in from..=i {
+                    let done = (k + 1 - from) as u64;
+                    cum.push(last + (now - last) * done / span);
+                }
+            }
+        }
     }
 
     /// A tracker total with group and squad as per-target averages, as axilog's rollup takes
@@ -1289,6 +1519,8 @@ impl LiveStats {
             let i = (t.time.saturating_sub(self.start_ms) / BUCKET_MS) as usize;
             add_at(self.est_series.entry(by).or_default(), i, dmg);
             add_skill(&mut self.est_skills, by, t.buff, dmg);
+            add_skill_at(&mut self.est_skill_series, by, t.buff, i, dmg);
+            self.condi_skills.insert(t.buff);
             self.generation += 1;
         }
     }
@@ -1305,21 +1537,29 @@ impl LiveStats {
             let a = self.acc.entry(by).or_default();
             a.condi = a.condi.saturating_add(dmg);
             add_skill(&mut self.skills_out, by, buff, dmg);
+            let i = self.bucket(t);
+            add_skill_at(&mut self.skill_series, by, buff, i, dmg);
         }
         if dst != 0 {
             let d = self.acc.entry(dst).or_default();
             d.taken = d.taken.saturating_add(dmg);
             add_skill(&mut self.skills_in, dst, buff, dmg);
         }
-        self.add_series(t, if src != 0 { by } else { 0 }, dst, dmg);
+        self.condi_skills.insert(buff);
+        self.add_series(t, if src != 0 { by } else { 0 }, dst, dmg, true);
         self.generation += 1;
     }
 
-    /// `dmg` at game time `t`, dealt by `by` (0: no one to credit) to `dst` (0: no one known).
-    fn add_series(&mut self, t: u64, by: u32, dst: u32, dmg: u64) {
-        let i = (t.saturating_sub(self.start_ms) / BUCKET_MS) as usize;
+    /// `dmg` at game time `t`, dealt by `by` (0: no one to credit) to `dst` (0: no one known);
+    /// `condi`: condition damage.
+    fn add_series(&mut self, t: u64, by: u32, dst: u32, dmg: u64, condi: bool) {
+        let i = self.bucket(t);
         if by != 0 {
-            add_at(&mut self.series.entry(by).or_default().out, i, dmg);
+            let s = self.series.entry(by).or_default();
+            add_at(&mut s.out, i, dmg);
+            if condi {
+                add_at(&mut s.out_condi, i, dmg);
+            }
         }
         if dst != 0 {
             add_at(&mut self.series.entry(dst).or_default().inc, i, dmg);
@@ -1471,10 +1711,18 @@ impl LiveStats {
         }
     }
 
+    /// Carry `skill`'s damage and healing per bucket in the breakdown (`None`: none selected).
+    pub fn set_detail_skill(&mut self, skill: Option<u32>) {
+        if self.detail_skill != skill {
+            self.detail_skill = skill;
+            self.generation += 1;
+        }
+    }
+
     /// The selected account's breakdown this fight (or the last): damage dealt and taken per
     /// bucket and by skill, and its downs and deaths. Every id the account had is summed (a
     /// player that left and came back has a new one).
-    fn detail_value(&self) -> Value {
+    fn detail_value(&self, reg: &Registry) -> Value {
         let Some(account) = self.detail.as_deref() else {
             return Value::Null;
         };
@@ -1492,48 +1740,158 @@ impl LiveStats {
         };
         let n = (self.duration_ms().div_ceil(BUCKET_MS) as usize).min(MAX_BUCKETS);
         let (mut out, mut inc) = (vec![0u64; n], vec![0u64; n]);
+        let (mut out_condi, mut strip_s, mut cleanse_s) = (vec![0u64; n], vec![0u64; n], vec![0u64; n]);
+        let (mut heal_s, mut heal_in_s) = (vec![0u64; n], vec![0u64; n]);
         let (mut by_out, mut by_in) = (BySkill::new(), BySkill::new());
+        let (mut heals, mut heals_in) = (HealSkills::new(), HealSkills::new());
+        let (mut targets, mut sources) = (BTreeMap::new(), BTreeMap::new());
+        let mut removed: BTreeMap<u32, u64> = BTreeMap::new();
+        let mut heal_full = who.me;
         let mut states = Vec::new();
+        let mut casts = Vec::new();
+        let (mut sel_out, mut sel_heal) = (vec![0u64; n], vec![0u64; n]);
+        let sum_into = |to: &mut Vec<u64>, from: &[u64]| {
+            for (o, v) in to.iter_mut().zip(from) {
+                *o += v;
+            }
+        };
         for id in &ids {
             if let Some(s) = self.series.get(id) {
-                for (o, v) in out.iter_mut().zip(&s.out) {
-                    *o += v;
+                sum_into(&mut out, &s.out);
+                sum_into(&mut inc, &s.inc);
+                sum_into(&mut out_condi, &s.out_condi);
+                sum_into(&mut strip_s, &s.strips);
+                sum_into(&mut cleanse_s, &s.cleanses);
+            }
+            // Healing given and received: the copy the rows show.
+            for (given, copies, skills, series, peers) in [
+                (true, &self.given, &mut heals, &mut heal_s, &mut targets),
+                (false, &self.received, &mut heals_in, &mut heal_in_s, &mut sources),
+            ] {
+                let Some(c) = copies.get(id).and_then(CopySums::shown_copy) else {
+                    continue;
+                };
+                for (&k, &(h, b, n)) in &c.skills {
+                    let e = skills.entry(k).or_default();
+                    e.0 += h;
+                    e.1 += b;
+                    e.2 += n;
                 }
-                for (o, v) in inc.iter_mut().zip(&s.inc) {
-                    *o += v;
+                sum_into(series, &c.series);
+                if given
+                    && let Some(v) = self.detail_skill.and_then(|k| c.skill_series.get(&k))
+                {
+                    sum_into(&mut sel_heal, v);
                 }
+                for (&peer, &h) in &c.peers {
+                    add_heal_sum(peers.entry(self.owner(peer)).or_default(), h);
+                }
+            }
+            heal_full |= self.given.get(id).is_some_and(|c| c.own.is_some());
+            for (&buff, &n) in self.removed.get(id).into_iter().flatten() {
+                *removed.entry(buff).or_default() += n;
             }
             for (from, to) in [
                 (&self.skills_out, &mut by_out),
                 (&self.skills_in, &mut by_in),
             ] {
-                for (&skill, &(d, h)) in from.get(id).into_iter().flatten() {
-                    let e = to.entry(skill).or_default();
-                    e.0 += d;
-                    e.1 += h;
+                for (&skill, st) in from.get(id).into_iter().flatten() {
+                    to.entry(skill).or_default().merge(st);
+                }
+            }
+            if let Some(k) = self.detail_skill {
+                if let Some(v) = self.skill_series.get(id).and_then(|m| m.get(&k)) {
+                    sum_into(&mut sel_out, v);
+                }
+                if self.estimated(*id)
+                    && let Some(v) = self.est_skill_series.get(id).and_then(|m| m.get(&k))
+                {
+                    sum_into(&mut sel_out, v);
                 }
             }
             if self.estimated(*id) {
-                for (o, v) in out.iter_mut().zip(self.est_series.get(id).into_iter().flatten()) {
-                    *o += v;
-                }
-                for (&skill, &(d, h)) in self.est_skills.get(id).into_iter().flatten() {
-                    let e = by_out.entry(skill).or_default();
-                    e.0 += d;
-                    e.1 += h;
+                let est = self.est_series.get(id).map_or(&[][..], Vec::as_slice);
+                sum_into(&mut out, est);
+                sum_into(&mut out_condi, est);
+                for (&skill, st) in self.est_skills.get(id).into_iter().flatten() {
+                    by_out.entry(skill).or_default().merge(st);
                 }
             }
             states.extend(self.state_log.get(id).into_iter().flatten().copied());
+            casts.extend(self.casts.get(id).into_iter().flatten().copied());
         }
         states.sort_by_key(|s| s.0);
+        casts.sort_by_key(|c| c.0);
+        let casts: Vec<Value> = casts.into_iter().map(|(at, skill)| json!([at, skill])).collect();
         let list = |m: BySkill| {
-            let mut v: Vec<(u32, (u64, u32))> = m.into_iter().collect();
-            v.sort_by_key(|&(_, (d, _))| std::cmp::Reverse(d));
+            let mut v: Vec<(u32, SkillStat)> = m.into_iter().collect();
+            v.sort_by_key(|&(_, s)| std::cmp::Reverse(s.damage));
             v.truncate(DETAIL_SKILLS);
             v.into_iter()
-                .map(|(id, (damage, hits))| {
-                    json!({"id": id, "name": crate::assemble::skill_name(id), "damage": damage, "hits": hits})
+                .map(|(id, s)| {
+                    let mut row = json!({"id": id, "name": crate::assemble::skill_name(id),
+                        "damage": s.damage, "hits": s.hits, "condi": self.condi_skills.contains(&id)});
+                    // The skill panel's breakdown, only what happened (most skills have no blocks).
+                    for (k, n) in [
+                        ("min", u64::from(s.min)),
+                        ("max", u64::from(s.max)),
+                        ("crit", u64::from(s.crit)),
+                        ("glance", u64::from(s.glance)),
+                        ("block", u64::from(s.block)),
+                        ("evade", u64::from(s.evade)),
+                        ("interrupt", u64::from(s.interrupt)),
+                        ("absorb", u64::from(s.absorb)),
+                        ("miss", u64::from(s.miss)),
+                        ("barrier", s.barrier),
+                    ] {
+                        if n > 0 {
+                            row[k] = json!(n);
+                        }
+                    }
+                    row
                 })
+                .collect::<Vec<_>>()
+        };
+        let heal_list = |m: HealSkills| {
+            let mut v: Vec<(u32, (u64, u64, u32))> = m.into_iter().collect();
+            v.sort_by_key(|&(_, (h, b, _))| std::cmp::Reverse(h + b));
+            v.truncate(DETAIL_SKILLS);
+            v.into_iter()
+                .map(|(id, (healing, barrier, hits))| {
+                    json!({"id": id, "name": crate::assemble::skill_name(id), "healing": healing,
+                        "barrier": barrier, "hits": hits})
+                })
+                .collect::<Vec<_>>()
+        };
+        let peer_list = |m: BTreeMap<u32, HealSum>| {
+            let mut v: Vec<(u32, HealSum)> = m.into_iter().collect();
+            v.sort_by_key(|(_, h)| std::cmp::Reverse(h.healing + h.barrier));
+            v.truncate(DETAIL_SKILLS);
+            v.into_iter()
+                .map(|(id, h)| {
+                    let (name, account, prof, elite) = match self.idents.get(&id) {
+                        Some(w) => (w.name.clone(), w.account.clone(), w.prof, w.elite),
+                        None => reg
+                            .agent(id)
+                            .map_or((String::new(), String::new(), 0, 0), |a| {
+                                (a.character.clone(), a.account.clone(), a.prof, a.elite)
+                            }),
+                    };
+                    json!({"name": name, "account": account, "prof": prof,
+                        "spec": crate::names::spec_name(prof, elite), "healing": h.healing,
+                        "barrier": h.barrier})
+                })
+                .collect::<Vec<_>>()
+        };
+        let removed_list = |boons: bool| {
+            let mut v: Vec<(u32, u64)> = removed
+                .iter()
+                .filter(|(b, _)| BOONS.contains(b) == boons)
+                .map(|(&b, &n)| (b, n))
+                .collect();
+            v.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+            v.into_iter()
+                .map(|(id, n)| json!({"id": id, "name": crate::assemble::skill_name(id), "count": n}))
                 .collect::<Vec<_>>()
         };
         let states: Vec<Value> = states
@@ -1558,6 +1916,31 @@ impl LiveStats {
             "skills_out": list(by_out),
             "skills_in": list(by_in),
             "states": states,
+            "casts": casts,
+            "skill": self.detail_skill.map_or(Value::Null, |id| json!({"id": id, "out": sel_out, "heal": sel_heal})),
+            // A selected boon: its uptime per bucket (ms; stack-ms for Might and Stability).
+            "boon": self.detail_skill.filter(|b| SQUAD_BOONS.contains(b)).map_or(Value::Null, |b| {
+                let c = self.boon_id(ids[0], account);
+                let cum = self.boon_hist.get(&c).and_then(|h| h.get(&b)).map_or(&[][..], Vec::as_slice);
+                let up: Vec<u64> = cum.iter().scan(0u64, |prev, &v| {
+                    let d = v.saturating_sub(*prev);
+                    *prev = v;
+                    Some(d)
+                }).collect();
+                json!({"id": b, "up": up})
+            }),
+            "out_condi": out_condi,
+            "heal_full": heal_full,
+            "heal_out": heal_s,
+            "heal_in": heal_in_s,
+            "heals": heal_list(heals),
+            "heals_in": heal_list(heals_in),
+            "heal_targets": peer_list(targets),
+            "heal_sources": peer_list(sources),
+            "strip_series": strip_s,
+            "cleanse_series": cleanse_s,
+            "strips": removed_list(true),
+            "cleanses": removed_list(false),
         })
     }
 
@@ -1591,7 +1974,7 @@ impl LiveStats {
             "players": players,
             "timeline": timeline,
             "healing": healing,
-            "detail": self.detail_value(),
+            "detail": self.detail_value(reg),
         })
     }
 }
@@ -2061,6 +2444,17 @@ mod tests {
             &[
                 (1100, hit(1, NPC, 5, 500)),
                 (1200, hit(1, NPC, 5, 100)),
+                (
+                    1300,
+                    Event::Strike {
+                        src: 1,
+                        dst: NPC,
+                        skill: 5,
+                        value: 0,
+                        overstack: 0,
+                        result: 3,
+                    },
+                ),
                 (2100, hit(NPC, 1, 7, 200)),
                 (
                     2500,
@@ -2095,18 +2489,132 @@ mod tests {
         assert_eq!(d["in"], json!([0, 230]));
         assert_eq!(
             d["skills_out"],
-            json!([{"id": 5, "name": "", "damage": 600, "hits": 2}])
+            json!([{"id": 5, "name": "", "damage": 600, "hits": 2, "condi": false,
+                "min": 100, "max": 500, "block": 1}])
         );
         assert_eq!(d["skills_in"][0]["damage"], 200);
         assert_eq!(
             d["skills_in"][1],
-            json!({"id": 736, "name": "Bleeding", "damage": 30, "hits": 1})
+            json!({"id": 736, "name": "Bleeding", "damage": 30, "hits": 1, "condi": true,
+                "min": 30, "max": 30})
         );
         assert_eq!(d["states"], json!([[1800, "down"]]));
         l.end(3000, &r);
         assert_eq!(l.snapshot(&r, 0)["detail"]["out"], json!([600, 0]));
         l.begin(9000, 38);
         assert_eq!(l.snapshot(&r, 0)["detail"]["skills_out"], json!([]));
+    }
+
+    /// The breakdown also carries the player's condition damage, heals given and received by
+    /// skill and by player, and the boons it stripped and conditions it cleansed.
+    #[test]
+    fn detail_lists_casts_in_time_order() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.set_pov(1);
+        l.begin(1000, 38);
+        let cast = |agent, skill| Event::CastStart {
+            agent,
+            target: 0,
+            skill,
+            kind: 1,
+            x: 0,
+        };
+        feed(
+            &mut l,
+            &r,
+            &[
+                (1100, tick(1, NPC, 40)),
+                (1200, cast(1, 5491)),
+                (1900, cast(4, 777)),
+                (2500, cast(1, 5492)),
+                (2600, cast(1, 0)),
+            ],
+        );
+        l.advance(3000);
+        let account = player(&l.snapshot(&r, 0), "Char 1").unwrap()["account"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        l.set_detail(Some(account));
+        let d = l.snapshot(&r, 0)["detail"].clone();
+        assert_eq!(d["casts"], json!([[200, 5491], [1500, 5492]]));
+        assert_eq!(d["skill"], Value::Null);
+        l.set_detail_skill(Some(5491));
+        let d = l.snapshot(&r, 0)["detail"].clone();
+        assert_eq!(d["skill"]["id"], 5491);
+        assert_eq!(d["skill"]["out"], json!([0, 0]));
+        // A strike of the skill lands in its bucket.
+        let hit = Event::Strike {
+            src: 1,
+            dst: NPC,
+            skill: 5491,
+            value: 300,
+            overstack: 0,
+            result: 0,
+        };
+        feed(&mut l, &r, &[(2200, hit)]);
+        let d = l.snapshot(&r, 0)["detail"].clone();
+        assert_eq!(d["skill"]["out"], json!([0, 300]));
+    }
+
+    #[test]
+    fn detail_breaks_down_heals_strips_and_cleanses() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.set_pov(1);
+        l.begin(1000, 38);
+        let heal = |src, dst, skill, value, barrier| Event::Heal {
+            src,
+            dst,
+            skill,
+            value,
+            barrier,
+            buff: false,
+        };
+        let remove = |dst, inst| Event::BuffRemove {
+            dst,
+            remover: 1,
+            inst,
+        };
+        feed(
+            &mut l,
+            &r,
+            &[
+                (1100, tick(1, NPC, 40)),
+                (1200, heal(1, 4, 9, 300, 100)),
+                (1300, heal(1, 4, 9, 50, 0)),
+                (2100, heal(4, 1, 12, 80, 0)),
+                (1400, boon_apply(ENEMY, ENEMY, 740, 70, 9000)),
+                (1500, remove(ENEMY, 70)),
+                (1600, boon_apply(4, NPC, 736, 71, 9000)),
+                (2600, remove(4, 71)),
+            ],
+        );
+        l.advance(3000);
+        let account = player(&l.snapshot(&r, 0), "Char 1").unwrap()["account"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        l.set_detail(Some(account));
+        let d = l.snapshot(&r, 0)["detail"].clone();
+        assert_eq!(d["out_condi"], json!([40, 0]));
+        assert_eq!(d["heal_full"], true);
+        assert_eq!(d["heal_out"], json!([350, 0]));
+        assert_eq!(d["heal_in"], json!([0, 80]));
+        assert_eq!(
+            d["heals"],
+            json!([{"id": 9, "name": crate::assemble::skill_name(9), "healing": 250, "barrier": 100, "hits": 2}])
+        );
+        assert_eq!(d["heals_in"][0]["id"], 12);
+        assert_eq!(d["heal_targets"][0]["name"], "Char 4");
+        assert_eq!(d["heal_targets"][0]["healing"], 250);
+        assert!(d["heal_targets"][0]["spec"].is_string());
+        assert_eq!(d["heal_sources"][0]["name"], "Char 4");
+        assert_eq!(d["strips"], json!([{"id": 740, "name": "Might", "count": 1}]));
+        assert_eq!(d["cleanses"], json!([{"id": 736, "name": "Bleeding", "count": 1}]));
+        assert_eq!(d["strip_series"], json!([1, 0]));
+        assert_eq!(d["cleanse_series"], json!([0, 1]));
     }
 
     #[test]
@@ -2820,6 +3328,32 @@ mod tests {
             player(&v, "Char 4").unwrap()["boons"],
             json!({"717": [0, 0, 0, 2000]})
         );
+    }
+
+    /// A boon picked in the details window: its uptime per second.
+    #[test]
+    fn detail_carries_a_picked_boons_uptime() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(1000, &boon_apply(4, 1, PROTECTION, 900, 2000));
+        let account = player(&l.snapshot(&r, 1), "Char 4").unwrap()["account"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        l.set_detail(Some(account));
+        l.set_detail_skill(Some(PROTECTION));
+        for t in [1000, 2000, 3000, 4000, 5000] {
+            l.advance(t);
+            l.snapshot(&r, 1);
+        }
+        let v = l.snapshot(&r, 1);
+        assert_eq!(
+            v["detail"]["boon"],
+            json!({"id": PROTECTION, "up": [0, 1000, 1000, 0, 0]})
+        );
+        l.set_detail_skill(Some(5));
+        assert!(l.snapshot(&r, 1)["detail"]["boon"].is_null());
     }
 
     #[test]

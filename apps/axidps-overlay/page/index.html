@@ -286,9 +286,40 @@
   .dhead .who img { width: 18px; height: 18px; }
   .dhead .who b { color: var(--title); }
   .dhead .who small { color: var(--faint); }
-  .dhead .seg { width: 230px; }
+  .dhead .seg { width: 170px; }
+  .win[data-id="details"] .seg.views { margin: 0 12px 6px; }
+  .win[data-id="details"] .seg.views button { padding: 3px 0; }
+  /* Skill and buff icons in the Details window (an empty slot until the icon is known). */
+  .win[data-id="details"] .sk { display: inline-block; width: 16px; height: 16px; margin-right: 6px; vertical-align: -3px;
+    border-radius: 2px; }
   .win[data-id="details"] canvas.chart { display: block; }
   .win[data-id="details"] tr.p td:first-child { color: var(--text); font-size: inherit; }
+  .win[data-id="details"] th[data-col] { cursor: pointer; }
+  .win[data-id="details"] tr[data-skill] { cursor: pointer; }
+  .win[data-id="details"] tr.sel td { background: var(--accent-soft) !important; }
+  .win[data-id="details"] tr.sel td:first-child { color: var(--title); }
+  /* The skill panel: a column to the right of the Details window, as tall as it; the stats scroll. */
+  .win[data-id="details"] .body { display: flex; }
+  .dside { display: none; position: relative; border-left: 1px solid var(--line); flex: none; }
+  .dside.on { display: block; }
+  .dside .din { position: absolute; inset: 0; display: flex; flex-direction: column; }
+  .dside .dtop { padding: 8px 10px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+  .dside h4 { margin: 0 0 4px; display: flex; align-items: center; font-size: 13px; color: var(--title); font-weight: 600;
+    white-space: nowrap; overflow: hidden; }
+  .dside h4 span { overflow: hidden; text-overflow: ellipsis; }
+  .dside .dbig { font-size: 16px; color: var(--title); font-variant-numeric: tabular-nums; }
+  .dside .dbig small { font-size: 11px; color: var(--faint); white-space: nowrap; }
+  .dside .dscroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 8px; }
+  .dside .dscroll::-webkit-scrollbar { width: 5px; }
+  .dside .dscroll::-webkit-scrollbar-thumb { background: var(--cls, var(--accent)); opacity: .5; border-radius: 3px; }
+  .dside .sec { color: var(--cls, var(--accent)); font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    margin: 8px 0 3px; }
+  .dside .kv { display: grid; grid-template-columns: 1fr auto; row-gap: 2px; column-gap: 8px; }
+  .dside .kv span { color: var(--dim); } .dside .kv b { text-align: right; color: var(--text); font-weight: 500;
+    font-variant-numeric: tabular-nums; }
+  .dside .cbl { color: var(--faint); font-size: 11px; margin-top: 5px; }
+  .dside .cb { height: 5px; background: var(--raise); border-radius: 3px; overflow: hidden; margin-top: 2px; }
+  .dside .cb div { height: 100%; background: var(--cls, var(--accent)); }
 </style>
 </head>
 <body>

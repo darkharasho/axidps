@@ -521,6 +521,12 @@ impl App {
                             .filter(|a| !a.is_empty())
                             .map(str::to_owned),
                     );
+                    l.stats.set_detail_skill(
+                        v.get("detail_skill")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|k| u32::try_from(k).ok())
+                            .filter(|&k| k != 0),
+                    );
                     if let Some(link) = self.relay.as_mut() {
                         link.set_enabled(relay_enabled(&v));
                     }

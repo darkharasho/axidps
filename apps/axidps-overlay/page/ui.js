@@ -169,7 +169,8 @@ const ui = {
   screen: [2560, 1440],
   editing: false,      // the DLL's edit mode, as reported by the host
   editSeq: 0,          // our edit requests: odd = on, even = off
-  session: {},         // open state of windows that always start closed (the hub)
+  session: {},         // open state of windows that always start closed (the hub, Details)
+  detailFrom: "",      // the window whose player click opened Details (it sits beside it)
   update: null,        // the launcher's self-update status (host, from update-status.json)
   zones: [],           // the game's own UI (host, from MumbleLink): [{id, label, x, y, w, h}]
   notice: "",          // the hub's Windows tab note (a window that could not open)
@@ -472,7 +473,7 @@ addEventListener("mousemove", e => {
 addEventListener("wheel", e => {
   const winEl = e.target.closest && e.target.closest(".win");
   const w = wins.find(w => w.el === winEl);
-  if (!w) return;
+  if (!w || e.target.closest(".dside")) return;
   w.tip.style.display = "none";
   w.offset += e.deltaY > 0 ? 3 : -3;
   if (w.def.render) w.def.render(w);
@@ -548,10 +549,10 @@ function tableWindow(def) {
       cols.map(c => `<th data-k="${c.k}" data-tip="${esc(c.tip)}">${esc(c.label)}</th>`).join("") +
       `</tr></thead><tbody></tbody></table><div class="empty"></div>` +
       `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
-    // A click on a player opens their breakdown (the Details window).
+    // A click on a player opens their breakdown beside this window (again: closes it).
     w.body.querySelector("tbody").onclick = e => {
       const tr = e.target.closest("tr[data-acct]");
-      if (tr && !ui.editing) openDetails(tr.dataset.acct);
+      if (tr && !ui.editing) openDetails(tr.dataset.acct, w, statOfClick(e, w));
     };
     w.body.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
       const c = w.cfg, key = th.dataset.k;
@@ -583,7 +584,7 @@ function tableWindow(def) {
       w.body.querySelector("tbody").innerHTML = shown.map((p, i) => {
         const frac = (typeof p[k] === "number" ? Math.max(0, p[k]) / top * 100 : 0).toFixed(1);
         return `<tr class="p${p.me ? " me" : ""}" data-acct="${esc(p.account)}"><td>${w.offset + i + 1}</td>${nameCell(p, frac)}` +
-          cols.map(cc => `<td${partial(STATS[cc.k], p) ? ' class="part"' : ""}>${statText(cc.k, p[cc.k])}</td>`)
+          cols.map(cc => `<td data-k="${cc.k}"${partial(STATS[cc.k], p) ? ' class="part"' : ""}>${statText(cc.k, p[cc.k])}</td>`)
             .join("") + `</tr>`;
       }).join("");
       const empty = w.body.querySelector(".empty");
@@ -595,6 +596,21 @@ function tableWindow(def) {
       w.body.querySelectorAll("th[data-k]").forEach(th => th.classList.toggle("sort", th.dataset.k === k));
     },
   }));
+}
+
+// A chart's per-second values: each bucket averaged with the two before and after it, so a peak
+// stays where it happened. Before the fight there was nothing (zeros); after the last bucket
+// nothing is known yet, so the live edge averages what there is. The Timeline and Details charts
+// share it, so the same damage peaks at the same height in both.
+const SMOOTH_HALF = 1;
+function smoothRate(series, bucketMs) {
+  const n = series.length;
+  return series.map((_, i) => {
+    const end = Math.min(n, i + SMOOTH_HALF + 1);
+    let sum = 0;
+    for (let j = Math.max(0, i - SMOOTH_HALF); j < end; j++) sum += Number(series[j]) || 0;
+    return sum / (end - (i - SMOOTH_HALF)) * 1000 / (bucketMs || 1000);
+  });
 }
 
 tableWindow({
@@ -683,17 +699,13 @@ defineWindow({
     const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 6, padR = 6;
     g.clearRect(0, 0, W, H);
     const bucket = (tl && tl.bucket_ms) || 1000;
-    const smooth = a => a.map((_, i) => {
-      const s = a.slice(Math.max(0, i - 4), i + 1);
-      return s.reduce((x, y) => x + y, 0) / s.length * 1000 / bucket;
-    });
-    const out = smooth((tl && tl.out) || []), inc = smooth((tl && tl.in) || []);
+    const out = smoothRate((tl && tl.out) || [], bucket), inc = smoothRate((tl && tl.in) || [], bucket);
     const n = Math.max(out.length, inc.length);
     const top = Math.max(1, ...out, ...inc);
     const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
     const y = v => H - padB - v / top * (H - padB - padT);
     g.strokeStyle = T("line"); g.lineWidth = 1;
-    g.font = "10px " + theme.s.font; g.fillStyle = T("faint");
+    g.font = "10px " + theme.s.font; g.fillStyle = T("text");
     for (const f of [0, 0.5, 1]) {
       const yy = Math.round(y(top * f)) + 0.5;
       g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
@@ -722,107 +734,437 @@ defineWindow({
 
 // ---- details: one player's breakdown, opened by clicking a row ------------------------------
 
-// The core adds the breakdown of saved.detail (an account) to the feed; it reads the choice from
-// ui.json, so the first numbers follow a second or two after the click.
-function openDetails(account) {
+// Not a window of its own: a click on a player's number in any window opens the breakdown of that
+// stat (damage, healing, strips, boons, ...) beside that window; the same click again, or its ✕,
+// closes it. It is never saved open and has no hub card. The core adds the breakdown of
+// saved.detail (an account) to the feed; it reads the choice from ui.json, so the first numbers
+// follow a second or two after the click.
+const DETAIL_VIEWS = [
+  ["damage", "Damage"], ["power", "Power"], ["condi", "Condi"], ["taken", "Taken"],
+  ["healing", "Healing"], ["healing_in", "Heal in"], ["strips", "Strips"], ["cleanses", "Cleanses"], ["boons", "Boons"],
+];
+// Which view a stat opens (boon stats: "boons"; anything else: damage).
+const STAT_VIEW = {damage: "damage", dps: "damage", down_contrib: "damage", downs: "damage", kills: "damage",
+  power: "power", condi: "condi", taken: "taken", deaths: "taken", downed: "taken",
+  healing: "healing", barrier: "healing", hps: "healing", healing_in: "healing_in", barrier_in: "healing_in",
+  strips: "strips", cleanses: "cleanses"};
+function viewOfStat(k) {
+  if (STAT_VIEW[k]) return STAT_VIEW[k];
+  const st = STATS[k];
+  return st && (st.kind === "boon" || st.kind === "boons") ? "boons" : "damage";
+}
+// The stat a click names: the cell's data-k, else the window's sort or first column.
+function statOfClick(e, w) {
+  const c = e.target.closest("[data-k]");
+  if (c && c.dataset.k) return c.dataset.k;
+  if (w.def.spec) return w.def.spec.sort && STATS[w.def.spec.sort.key] ? w.def.spec.sort.key : w.def.spec.stats[0].key;
+  return (w.cfg.sortKey && STATS[w.cfg.sortKey]) ? w.cfg.sortKey : (w.def.cols || ["damage"])[0];
+}
+function openDetails(account, from, stat) {
   const w = wins.find(v => v.id === "details");
+  if (!account) return;
+  const view = viewOfStat(stat || "damage");
+  if (isOpen(w) && saved.detail === account && ui.detailFrom === (from && from.id) && w.cfg.view === view) {
+    closeDetails();
+    return;
+  }
+  ui.detailFrom = from ? from.id : "";
+  w.cfg.view = view;
+  w.cfg.by = "skill";
+  w.sort = null;
   saved.detail = account;
+  saved.detail_skill = 0;
   saveNow();
   w.offset = 0;
   w.drawn = "";
   if (!isOpen(w)) setOpen(w, true); else renderAll();
 }
-const DETAIL_TABS = [["in", "Damage taken"], ["out", "Damage dealt"]];
+function closeDetails() {
+  const w = wins.find(v => v.id === "details");
+  saved.detail = "";
+  saved.detail_skill = 0;
+  saveNow();
+  setOpen(w, false);
+}
+// Beside the window it was opened from: to its right if it fits on screen, else to its left;
+// level with its top, kept on screen. The middle of the screen when that window is gone.
+function besideSource([sw, sh], el) {
+  const src = wins.find(v => v.id === ui.detailFrom);
+  const dw = el.offsetWidth || 600, dh = el.offsetHeight || 480;
+  if (!src || !isOpen(src)) return [Math.max(0, Math.round(sw / 2 - dw / 2)), Math.max(0, Math.round(sh / 2 - dh / 2))];
+  const [x, y] = posOf(src), gap = 6;
+  const right = x + src.el.offsetWidth + gap;
+  const left = x - dw - gap;
+  const nx = right + dw <= sw || left < 0 ? right : left;
+  return [Math.max(0, Math.min(Math.round(nx), sw - dw)), Math.max(0, Math.min(Math.round(y), sh - dh))];
+}
+
+// Skill and buff icons, from ArenaNet's API (the host lets the page reach only api.guildwars2.com
+// for this, and render.guildwars2.com for the images). Conditions and boons are not skills there:
+// their icons are listed here (as the API's skill facts give them).
+const RENDER = "https://render.guildwars2.com/file/";
+const BUFF_ICONS = {
+  720: "09770136BB76FD0DBE1CC4267DEED54774CB20F6/102837.png", 721: "070325E519C178D502A8160523766070D30C0C19/102838.png",
+  722: "28C4EC547A3516AF0242E826772DA43A5EAC3DF3/102839.png", 723: "559B0AF9FB5E1243D2649FAAE660CCB338AACC19/102840.png",
+  727: "397A613651BFCA2832B6469CE34735580A2C120E/102844.png", 736: "79FF0046A5F9ADA3B4C4EC19ADB4CB124D5F0021/102848.png",
+  737: "B47BF5803FED2718D7474EAF9617629AD068EE10/102849.png", 738: "3A394C1A0A3257EB27A44842DDEEF0DF000E1241/102850.png",
+  742: "6CB0E64AF9AA292E332A38C1770CE577E2CDE0E8/102853.png", 791: "30307A6E766D74B6EB09EDA12A4A2DE50E4D76F4/102869.png",
+  861: "289AA0A4644F0E044DED3D3F39CED958E1DDFF53/102880.png", 19426: "10BABF2708CA3575730AC662A2E72EC292565B08/598887.png",
+  26766: "F60D1EF5271D7B9319610855676D320CD25F01C6/961397.png", 27705: "02EED459AD65FAF7DF32A260E479C625070841B9/1228472.png",
+  740: "2FA9DF9D6BC17839BBEA14723F1C53D645DDB5E1/102852.png", 725: "96D90DF84CAFE008233DD1C2606A12C1A0E68048/102842.png",
+  1187: "D4AB6401A6D6917C3D4F230764452BCCE1035B0D/1012835.png", 30328: "4FDAC2113B500104121753EF7E026E45C141E94D/1938787.png",
+  717: "CD77D1FAB7B270223538A8F8ECDA1CFB044D65F4/102834.png", 718: "F69996772B9E18FD18AD0AABAB25D7E3FC42F261/102835.png",
+  726: "58E92EBAF0DB4DA7C4AC04D9B22BCA5ECF0100DE/102843.png", 743: "DFB4D1B50AE4D6A275B349E15B179261EE3EB0AF/102854.png",
+  1122: "3D3A1C2D6D791C05179AB871902D28782C65C244/415959.png", 719: "20CFC14967E67F7A3FD4A4B8722B4CF5B8565E11/102836.png",
+  26980: "50BAC1B8E10CFAB9E749A5D910D4A9DCF29EBB7C/961398.png", 873: "D104A6B9344A2E2096424A3C300E46BC2926E4D7/2440718.png",
+  5974: "E04392C3D8ED985125973AEB99D8460C483263F9/103458.png",
+};
+// id -> icon URL, or "" (none known); missing: not asked yet. Asked in batches.
+const skillIcons = new Map(Object.entries(BUFF_ICONS).map(([id, f]) => [Number(id), RENDER + f]));
+const iconWanted = new Set();
+let iconTimer = 0, iconFails = 0;
+function skillIcon(id) {
+  id = Number(id);
+  if (!(id > 0)) return "";
+  if (skillIcons.has(id)) return skillIcons.get(id);
+  if (iconFails < 3) {
+    iconWanted.add(id);
+    if (!iconTimer) iconTimer = setTimeout(fetchIcons, 150);
+  }
+  return "";
+}
+async function fetchIcons() {
+  iconTimer = 0;
+  const ids = [...iconWanted].slice(0, 200);
+  for (const id of ids) iconWanted.delete(id);
+  if (!ids.length) return;
+  try {
+    const r = await fetch(`https://api.guildwars2.com/v2/skills?ids=${ids.join(",")}`);
+    const list = r.ok || r.status === 206 ? await r.json() : r.status === 404 ? [] : null;
+    if (!Array.isArray(list)) throw new Error(`status ${r.status}`);
+    for (const id of ids) skillIcons.set(id, "");
+    for (const s of list) {
+      if (s && Number(s.id) > 0 && typeof s.icon === "string" && s.icon.startsWith(RENDER)) skillIcons.set(Number(s.id), s.icon);
+    }
+    iconFails = 0;
+  } catch (e) {
+    // Offline or refused: ask again later, up to three times in a row.
+    iconFails += 1;
+    for (const id of ids) iconWanted.add(id);
+  }
+  const w = wins.find(v => v.id === "details");
+  if (w && isOpen(w)) { w.drawnTable = ""; w.def.render(w); }
+  if (iconWanted.size && iconFails < 3) iconTimer = setTimeout(fetchIcons, iconFails ? 5000 : 150);
+}
+const iconImg = id => {
+  const u = skillIcon(id);
+  return u ? `<img class="sk" src="${esc(u)}" alt="">` : `<i class="sk"></i>`;
+};
+
+// One view of the feed's breakdown: the chart's series and colour, the table's columns and rows,
+// the footer, and the empty text. p: the player's row (boons come from it).
+// A squad member's spec by account (for a feed row without one).
+function specOf(account) {
+  const p = account && players().find(x => x.account === account);
+  return p && typeof p.spec === "string" ? p.spec : "";
+}
+function detailView(view, by, d, p) {
+  const sum = a => a.reduce((n, v) => n + (Number(v) || 0), 0);
+  const share = (v, t) => t ? (v / t * 100).toFixed(1) + "%" : "–";
+  const dmgRows = list => {
+    const total = sum(list.map(s => s.damage));
+    return {total, rows: list.map(s => ({icon: s.id, name: s.name || `Skill ${s.id}`, v: s.damage, stat: s,
+      keys: [s.damage, s.damage, s.hits, s.hits ? s.damage / s.hits : 0],
+      cells: [fmt(s.damage), share(s.damage, total), int(s.hits), fmt(s.hits ? s.damage / s.hits : 0)]}))};
+  };
+  const dmgHead = ["Damage", "Share", "Hits", "Per hit"];
+  const minus = (a, b) => a.map((v, i) => Math.max(0, v - (b[i] || 0)));
+  if (view === "damage" || view === "power" || view === "condi") {
+    const all = d ? d.skills_out : [];
+    const list = view === "damage" ? all : all.filter(s => !!s.condi === (view === "condi"));
+    const {total, rows} = dmgRows(list);
+    for (const r of rows) r.panel = {kind: "dmg", total, casts: true};
+    const series = !d ? [] : view === "damage" ? d.out : view === "condi" ? (d.out_condi || []) : minus(d.out, d.out_condi || []);
+    const est = view !== "power" && p && (p.condi_est || 0) > 0;
+    return {series, col: T("good"), head: dmgHead, rows, pick: "out", sum: `${fmt(total)} ${view === "damage" ? "" : view + " "}dealt` +
+      (est ? " · condition damage estimated" : ""), empty: `No ${view === "damage" ? "damage" : view + " damage"} dealt this fight`};
+  }
+  if (view === "taken") {
+    const {total, rows} = dmgRows(d ? d.skills_in : []);
+    for (const r of rows) r.panel = {kind: "dmg", total, casts: false};
+    const downs = d ? d.states.filter(s => s[1] === "down").length : 0;
+    const deaths = d ? d.states.filter(s => s[1] === "dead").length : 0;
+    return {series: d ? d.in : [], col: T("bad"), head: dmgHead, rows,
+      sum: `${fmt(total)} taken · ${downs} down${downs === 1 ? "" : "s"} · ${deaths} death${deaths === 1 ? "" : "s"}`,
+      empty: "No damage taken this fight"};
+  }
+  if (view === "healing" || view === "healing_in") {
+    const out = view === "healing";
+    const partial = d && out && !d.heal_full;
+    if (by === "player") {
+      const list = d ? (out ? d.heal_targets : d.heal_sources) || [] : [];
+      const total = sum(list.map(h => h.healing + h.barrier));
+      return {series: d ? (out ? d.heal_out : d.heal_in) || [] : [], col: T("accent"), byToggle: true,
+        head: ["Healing", "Barrier", "Share"], nameHead: out ? "Healed" : "Healed by",
+        rows: list.map(h => ({prof: h.prof, spec: h.spec || specOf(h.account), name: h.name || h.account || "Unknown",
+          v: h.healing + h.barrier,
+          keys: [h.healing, h.barrier, h.healing + h.barrier],
+          cells: [fmt(h.healing), fmt(h.barrier), share(h.healing + h.barrier, total)]})),
+        sum: `${fmt(total)} ${out ? "given" : "received"}` + (partial ? " · only what passed between you" : ""),
+        empty: out ? "No healing given this fight" : "No healing received this fight"};
+    }
+    const list = d ? (out ? d.heals : d.heals_in) || [] : [];
+    const total = sum(list.map(h => h.healing + h.barrier));
+    return {series: d ? (out ? d.heal_out : d.heal_in) || [] : [], col: T("accent"), byToggle: true,
+      head: ["Healing", "Barrier", "Share", "Hits"], pick: out ? "heal" : null,
+      rows: list.map(h => ({icon: h.id, name: h.name || `Skill ${h.id}`, v: h.healing + h.barrier, stat: h,
+        panel: {kind: "heal", total, casts: out},
+        keys: [h.healing, h.barrier, h.healing + h.barrier, h.hits],
+        cells: [fmt(h.healing), fmt(h.barrier), share(h.healing + h.barrier, total), int(h.hits)]})),
+      sum: `${fmt(total)} ${out ? "given" : "received"}` + (partial ? " · only what passed between you" : ""),
+      empty: out ? "No healing given this fight" : "No healing received this fight"};
+  }
+  if (view === "strips" || view === "cleanses") {
+    const strips = view === "strips";
+    const list = d ? (strips ? d.strips : d.cleanses) || [] : [];
+    const total = sum(list.map(x => x.count));
+    return {series: d ? (strips ? d.strip_series : d.cleanse_series) || [] : [], col: T("accent"), perSecond: false,
+      head: ["Stacks", "Share"], nameHead: strips ? "Boon" : "Condition",
+      rows: list.map(x => ({icon: x.id, name: x.name || `Buff ${x.id}`, v: x.count, keys: [x.count, x.count], cells: [int(x.count), share(x.count, total)]})),
+      sum: `${int(total)} stack${total === 1 ? "" : "s"} ${strips ? "stripped" : "cleansed"}`,
+      empty: strips ? "No boons stripped this fight" : "No conditions cleansed this fight"};
+  }
+  // Boons: the row's uptime and generation, per boon.
+  const C = axidpsCustom, f = ui.live && ui.live.fight, span = f ? Number(f.duration_ms) || 0 : 0;
+  const rows = [];
+  for (const b of C.SQUAD_BOONS) {
+    const ms = p && p.boons && p.boons[b];
+    if (!Array.isArray(ms) || !ms.some(v => v > 0)) continue;
+    const vals = ["up", "self", "group", "squad"].map((m, i) => C.boonRate(`boon:${b}:${m}`, ms[i], span));
+    rows.push({icon: b, name: STATS[`boon:${b}:up`].label, v: vals[0], keys: vals,
+      cells: vals.map((v, i) => C.formatBoon(`boon:${b}:${["up", "self", "group", "squad"][i]}`, v))});
+  }
+  // The chart: the picked boon's uptime each second (render fills it in once the core sends it).
+  return {series: [], perSecond: false, pick: "boon", col: T("accent"), head: ["Uptime", "Self", "Group", "Squad"], nameHead: "Boon", rows,
+    sum: "generation per player of the subgroup and squad", empty: "No boons this fight"};
+}
+
 const DETAIL_ROWS = 12;
 defineWindow({
-  id: "details", blurb: ["Details", "one player's damage by skill and over time", "activity"],
-  title: "Details",
-  cfg: {tab: "in"},
+  id: "details", title: "Details", session: true, fixed: true,
+  cfg: {view: "damage", by: "skill"},
   tools: [{id: "close", tip: "Close", label: "✕"}],
   tool(w, id) {
-    if (id !== "close") return;
-    saved.detail = "";
-    saveNow();
-    setOpen(w, false);
+    if (id === "close") closeDetails();
   },
-  at: ([sw, sh]) => [Math.max(0, Math.round(sw / 2 - 300)), Math.max(0, Math.round(sh / 2 - 240))],
+  at: besideSource,
   mount(w) {
     const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
-    w.body.style.width = px(600) + "px";
-    w.body.innerHTML = `<div class="dhead"><span class="who"></span><div class="seg">` +
-      DETAIL_TABS.map(([k, label]) => `<button data-tab="${k}">${label}</button>`).join("") + `</div></div>` +
-      `<canvas class="chart" width="${px(600)}" height="${px(150)}"></canvas>` +
-      `<table><colgroup><col><col style="width:${px(90)}px"><col style="width:${px(56)}px">` +
-      `<col style="width:${px(56)}px"><col style="width:${px(70)}px"></colgroup><thead><tr>` +
-      `<th class="l">Skill</th><th>Damage</th><th>Share</th><th>Hits</th><th>Per hit</th>` +
-      `</tr></thead><tbody></tbody></table><div class="empty"></div>` +
-      `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
-    w.body.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => {
-      w.cfg.tab = b.dataset.tab; w.offset = 0; w.drawn = ""; save(); w.def.render(w);
+    w.body.style.width = "";
+    w.body.innerHTML = `<div class="dmain" style="width:${px(620)}px"><div class="dhead"><span class="who"></span><div class="seg by">` +
+      `<button data-by="skill">By skill</button><button data-by="player">By player</button></div></div>` +
+      `<div class="seg views">` + DETAIL_VIEWS.map(([k, label]) => `<button data-view="${k}">${label}</button>`).join("") + `</div>` +
+      `<canvas class="chart" width="${px(620)}" height="${px(140)}"></canvas>` +
+      `<table><colgroup></colgroup><thead><tr></tr></thead><tbody></tbody></table><div class="empty"></div>` +
+      `<div class="foot"><span class="sum"></span><span class="scroll"></span></div></div>` +
+      `<div class="dside" style="width:${px(210)}px"><div class="din"><div class="dtop"></div><div class="dscroll"></div></div></div>`;
+    w.body.querySelectorAll("[data-view]").forEach(b => b.onclick = () => {
+      w.cfg.view = b.dataset.view; w.offset = 0; w.drawn = ""; w.drawnTable = ""; w.pin = 0; w.hover = 0; pickSkill(0); save(); w.def.render(w);
+    });
+    // A header click sorts by that column (again: the other way); the name column sorts A-Z first.
+    w.body.querySelector("thead").onclick = e => {
+      const th = e.target.closest("th[data-col]");
+      if (!th) return;
+      const col = Number(th.dataset.col), cur = w.sort || {};
+      w.sort = cur.col === col ? {col, asc: !cur.asc} : {col, asc: col < 0};
+      w.offset = 0; w.drawnTable = ""; w.def.render(w);
+    };
+    // A skill row click marks its casts and its damage per second on the chart (again: clears).
+    // The skill panel (right) also opens; clicking the same row again closes both.
+    const tbody = w.body.querySelector("tbody"), side = w.body.querySelector(".dside");
+    tbody.onclick = e => {
+      const tr = e.target.closest("tr[data-panel], tr[data-skill]");
+      if (!tr) return;
+      const id = Number(tr.dataset.panel || tr.dataset.skill);
+      // A boon stays charted (clicking it again keeps it).
+      if (w.cfg.view === "boons") pickSkill(id);
+      else if (tr.dataset.skill) pickSkill(saved.detail_skill === id ? 0 : id);
+      else w.pin = w.pin === id ? 0 : id;
+      w.hover = 0;
+      w.drawn = ""; w.drawnTable = ""; w.def.render(w);
+    };
+    // Hovering a skill row shows its panel until the pointer leaves the rows (or the panel).
+    tbody.onmouseover = e => {
+      const tr = e.target.closest("tr[data-panel]");
+      const id = tr ? Number(tr.dataset.panel) : 0;
+      if (id && id !== w.hover) { w.hover = id; w.def.render(w); }
+    };
+    const leave = e => {
+      if (e.relatedTarget && (tbody.contains(e.relatedTarget) || side.contains(e.relatedTarget))) return;
+      if (w.hover) { w.hover = 0; w.def.render(w); }
+    };
+    tbody.onmouseleave = leave;
+    side.onmouseleave = leave;
+    w.body.querySelectorAll("[data-by]").forEach(b => b.onclick = () => {
+      w.cfg.by = b.dataset.by; w.offset = 0; w.drawnTable = ""; w.drawn = ""; w.pin = 0; w.hover = 0; pickSkill(0); save(); w.def.render(w);
     });
     w.compact = saved.compact;
   },
   render(w) {
     if (w.compact !== saved.compact) w.def.mount(w);
     fightState(w);
+    const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
     const want = saved.detail || "";
     const d = ui.live && !ui.cleared && ui.live.detail && ui.live.detail.account === want ? ui.live.detail : null;
-    const tab = DETAIL_TABS.some(([k]) => k === w.cfg.tab) ? w.cfg.tab : "in";
-    w.body.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+    const view = DETAIL_VIEWS.some(([k]) => k === w.cfg.view) ? w.cfg.view : "damage";
+    const by = w.cfg.by === "player" ? "player" : "skill";
+    w.body.querySelectorAll("[data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === view));
+    w.body.querySelectorAll("[data-by]").forEach(b => b.classList.toggle("on", b.dataset.by === by));
     const p = players().find(x => x.account === want);
     const name = d ? d.name : p ? p.name : want;
     const spec = d ? d.spec : p && p.spec;
+    // The player's profession colour paints the name, the bars and the chart (else the view's).
+    const prof = d && d.prof !== undefined ? d.prof : p ? p.prof : undefined;
+    const cls = prof !== undefined && PROF[prof] ? PROF[prof] : null;
     w.body.querySelector(".who").innerHTML = (spec ? `<img src="icons/${encodeURIComponent(spec)}.png" alt="">` : "") +
-      `<b>${esc(name)}</b><small>${esc(want)}</small>`;
-    const skills = d ? (tab === "in" ? d.skills_in : d.skills_out) : [];
-    const total = skills.reduce((n, s) => n + s.damage, 0);
-    w.offset = Math.max(0, Math.min(w.offset, skills.length - DETAIL_ROWS));
-    const shown = skills.slice(w.offset, w.offset + DETAIL_ROWS);
-    const top = Math.max(1, ...skills.map(s => s.damage));
-    const col = tab === "in" ? T("bad") : T("good");
-    w.body.querySelector("tbody").innerHTML = shown.map(s => {
-      const frac = (s.damage / top * 100).toFixed(1);
-      return `<tr class="p"><td class="l name" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
-        `${esc(s.name || "Skill " + s.id)}</td><td>${fmt(s.damage)}</td>` +
-        `<td>${total ? (s.damage / total * 100).toFixed(1) + "%" : "–"}</td><td>${int(s.hits)}</td>` +
-        `<td>${fmt(s.hits ? s.damage / s.hits : 0)}</td></tr>`;
+      `<b${cls ? ` style="color:${cls}"` : ""}>${esc(name)}</b><small>${esc(want)}</small>`;
+    const v = detailView(view, by, d, p);
+    if (cls) v.col = cls;
+    w.body.querySelector(".seg.by").style.visibility = v.byToggle ? "visible" : "hidden";
+    // The table: columns per view (rebuilt when the view changes).
+    const layout = `${view}|${by}|${saved.compact}`;
+    if (w.layoutKey !== layout) {
+      if (w.layoutKey && w.layoutKey.split("|")[0] !== view) w.sort = null;
+      w.layoutKey = layout;
+      w.body.querySelector("colgroup").innerHTML = `<col>` + v.head.map(() => `<col style="width:${px(78)}px">`).join("");
+      w.body.querySelector("thead tr").innerHTML = `<th class="l" data-col="-1">${esc(v.nameHead || "Skill")}</th>` +
+        v.head.map((h, i) => `<th data-col="${i}">${esc(h)}</th>`).join("");
+    }
+    // Sorted by the clicked column; the feed's order (largest first) until one is clicked.
+    const so = w.sort;
+    const rows = !so ? v.rows : v.rows.slice().sort((a, b) => {
+      const d = so.col < 0 ? String(a.name).localeCompare(String(b.name))
+        : (Number(a.keys && a.keys[so.col]) || 0) - (Number(b.keys && b.keys[so.col]) || 0);
+      return so.asc ? d : -d;
+    });
+    w.body.querySelectorAll("th[data-col]").forEach(th => th.classList.toggle("sort", !!so && Number(th.dataset.col) === so.col));
+    let pick = v.pick && rows.some(r => r.icon === saved.detail_skill) ? saved.detail_skill : 0;
+    // Boons always chart one: the first until another is clicked.
+    if (v.pick === "boon" && !pick && rows.length) { pick = rows[0].icon; pickSkill(pick); }
+    const boonUp = v.pick === "boon" && d && d.boon && d.boon.id === pick ? d.boon.up || [] : null;
+    if (v.pick === "boon") {
+      // Uptime in % per second; Might and Stability as average stacks.
+      const stacks = [740, 1122].includes(pick), bucket = (d && d.bucket_ms) || 1000;
+      v.series = boonUp ? boonUp.map(ms => stacks ? ms / 1000 : Math.min(100, ms / bucket * 100)) : [];
+    }
+    w.offset = Math.max(0, Math.min(w.offset, rows.length - DETAIL_ROWS));
+    const shown = rows.slice(w.offset, w.offset + DETAIL_ROWS);
+    const top = Math.max(1, ...rows.map(r => r.v));
+    const html = shown.map(r => {
+      const frac = (Math.max(0, r.v) / top * 100).toFixed(1);
+      const col = r.prof !== undefined ? PROF[r.prof] || PROF[0] : v.col;
+      const lead = r.icon !== undefined ? iconImg(r.icon)
+        : r.spec ? `<img class="sk" src="icons/${encodeURIComponent(r.spec)}.png" alt="">` : "";
+      const sel = v.pick && r.icon !== undefined;
+      const on = v.pick ? sel && r.icon === pick : r.panel && r.icon === w.pin;
+      return `<tr class="p${on ? " sel" : ""}"${sel ? ` data-skill="${r.icon}"` : ""}${r.panel ? ` data-panel="${r.icon}"` : ""}>` +
+        `<td class="l name" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
+        `${lead}${esc(r.name)}</td>` + r.cells.map(c => `<td>${esc(c)}</td>`).join("") + `</tr>`;
     }).join("");
+    if (w.drawnTable !== html) { w.drawnTable = html; w.body.querySelector("tbody").innerHTML = html; }
     const empty = w.body.querySelector(".empty");
     empty.style.display = shown.length ? "none" : "block";
-    empty.textContent = !want ? "Click a player in a table" : !d ? (ui.live && ui.live.state === "idle"
-      ? emptyText() : "Loading…") : tab === "in" ? "No damage taken this fight" : "No damage dealt this fight";
-    const downs = d ? d.states.filter(s => s[1] === "down").length : 0;
-    const deaths = d ? d.states.filter(s => s[1] === "dead").length : 0;
-    w.body.querySelector(".sum").textContent = d ? `${fmt(total)} ${tab === "in" ? "taken" : "dealt"}` +
-      (tab === "in" ? ` · ${downs} down${downs === 1 ? "" : "s"} · ${deaths} death${deaths === 1 ? "" : "s"}` : "") : "";
-    w.body.querySelector(".scroll").textContent = skills.length > DETAIL_ROWS
-      ? `${w.offset + 1}-${Math.min(skills.length, w.offset + DETAIL_ROWS)} of ${skills.length} (wheel)` : "";
-    drawDetail(w, d, tab, col);
+    empty.textContent = !want ? "Click a player's number in a window" : !d ? (ui.live && ui.live.state === "idle"
+      ? emptyText() : "Loading…") : v.empty;
+    const pickRow = pick && rows.find(r => r.icon === pick);
+    const nCasts = pick && d && Array.isArray(d.casts) ? d.casts.filter(c => c[1] === pick).length : 0;
+    w.body.querySelector(".sum").textContent = !d ? "" : v.pick === "boon"
+      ? (pickRow ? `${pickRow.name}: ${[740, 1122].includes(pick) ? "average stacks" : "uptime %"} per second · click a boon to chart it` : v.sum)
+      : pickRow
+      ? `${pickRow.name}: ${nCasts ? `${int(nCasts)} cast${nCasts === 1 ? "" : "s"}` : "no casts (it comes from another skill or a trait)"}`
+      : v.sum + (v.pick ? " · click a skill for its casts" : "");
+    w.body.querySelector(".scroll").textContent = v.rows.length > DETAIL_ROWS
+      ? `${w.offset + 1}-${Math.min(v.rows.length, w.offset + DETAIL_ROWS)} of ${v.rows.length} (wheel)` : "";
+    // The skill panel: the hovered row's, else the clicked one's.
+    const shownId = w.hover || (v.pick ? pick : w.pin) || 0;
+    const prow = shownId && rows.find(r => r.icon === shownId && r.panel);
+    const side = w.body.querySelector(".dside");
+    const ph = prow ? skillPanel(prow, d) : "";
+    if (w.drawnPanel !== ph) {
+      w.drawnPanel = ph;
+      side.classList.toggle("on", !!prow);
+      if (prow) {
+        side.style.setProperty("--cls", v.col);
+        const [top, body] = ph.split("\u0000");
+        side.querySelector(".dtop").innerHTML = top;
+        side.querySelector(".dscroll").innerHTML = body;
+      }
+      scheduleReport();
+    }
+    const cv = w.body.querySelector("canvas");
+    cv.style.display = v.series ? "block" : "none";
+    if (v.series) drawDetail(w, d, v.series, v.col, view, v.perSecond !== false,
+      pick && v.pick !== "boon" ? {id: pick, of: v.pick} : null);
   },
 });
-// The chart: the tab's damage per second (3 s rolling average), downs and deaths marked.
-function drawDetail(w, d, tab, col) {
-  const series = d ? d[tab] : [];
-  const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${tab}|${theme.id}|${theme.s.font}|${saved.compact}`;
+// The Details skill panel for row `r`: its header and its scrolling stats, split by a NUL.
+function skillPanel(r, d) {
+  const s = r.stat || {}, p = r.panel;
+  const f = ui.live && ui.live.fight, secs = f ? (Number(f.duration_ms) || 0) / 1000 : 0;
+  const amount = p.kind === "heal" ? (s.healing || 0) + (s.barrier || 0) : s.damage || 0;
+  const pct = (n, of) => of ? (n / of * 100).toFixed(1) + "%" : "–";
+  const kv = list => `<div class="kv">` + list.map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v)}</b>`).join("") + `</div>`;
+  const sec = t => `<div class="sec">${esc(t)}</div>`;
+  const bar = (label, n, of) => `<div class="cbl">${esc(label)} ${pct(n, of)}</div>` +
+    `<div class="cb"><div style="width:${of ? Math.min(100, n / of * 100).toFixed(1) : 0}%"></div></div>`;
+  const top = `<h4>${iconImg(r.icon)}<span>${esc(r.name)}</span></h4><div class="dbig">${fmt(amount)}` +
+    ` <small>· ${pct(amount, p.total)}${secs > 0 ? ` · ${fmt(amount / secs)}/s` : ""}</small></div>`;
+  const hits = s.hits || 0;
+  let body = "";
+  if (p.casts && !s.condi) {
+    const n = d && Array.isArray(d.casts) ? d.casts.filter(c => c[1] === r.icon).length : 0;
+    body += sec("Casts") + kv(n ? [["Activations", int(n)], ["Hits per cast", (hits / n).toFixed(1)]]
+      : [["Activations", "none"]]);
+  }
+  if (p.kind === "heal") {
+    body += sec("Hits") + kv([["Hits", int(hits)], ["Healing", fmt(s.healing || 0)], ["Barrier", fmt(s.barrier || 0)],
+      ["Per hit", fmt(hits ? amount / hits : 0)]]);
+    return top + "\u0000" + body;
+  }
+  body += sec(s.condi ? "Ticks" : "Hits") + kv([[s.condi ? "Ticks" : "Hits", int(hits)], ["Min", fmt(s.min || 0)],
+    ["Avg", fmt(hits ? amount / hits : 0)], ["Max", fmt(s.max || 0)]]);
+  if (!s.condi) {
+    body += bar("Crit", s.crit || 0, hits) + bar("Glance", s.glance || 0, hits);
+    const avoided = [["Blocked", s.block], ["Evaded", s.evade], ["Missed (blind)", s.miss], ["Absorbed", s.absorb],
+      ["Interrupts", s.interrupt]];
+    body += sec("Avoided") + kv(avoided.map(([k, n]) => [k, int(n)]).concat([["On barrier", fmt(s.barrier || 0)]]));
+  }
+  return top + "\u0000" + body;
+}
+// The chart: the view's amount per second (smoothRate, as the Timeline), downs and deaths marked.
+function drawDetail(w, d, series, col, view, perSecond, pick) {
+  // The selected skill: its amount per bucket (once the core sends it) and its cast starts.
+  const sk = pick && d && d.skill && d.skill.id === pick.id ? d.skill[pick.of] || [] : null;
+  const casts = pick && d && Array.isArray(d.casts) ? d.casts.filter(c => c[1] === pick.id).map(c => c[0]) : [];
+  const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${view}|${theme.id}|${theme.s.font}|${saved.compact}` +
+    `|${pick ? pick.id : ""}|${JSON.stringify(sk)}|${casts.length}`;
   if (w.drawn === key) return;
   w.drawn = key;
   const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
   const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 8, padR = 8;
   g.clearRect(0, 0, W, H);
   const bucket = (d && d.bucket_ms) || 1000;
-  const a = series.map((_, i) => {
-    const s = series.slice(Math.max(0, i - 2), i + 1);
-    return s.reduce((x, y) => x + y, 0) / s.length * 1000 / bucket;
-  });
-  const n = a.length, top = Math.max(1, ...a);
+  const a = smoothRate(series, perSecond ? bucket : 1000);
+  const bars = sk ? sk.map(v => (Number(v) || 0) * 1000 / bucket) : [];
+  const n = a.length, top = Math.max(1, ...a, ...bars);
   const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
   const y = v => H - padB - v / top * (H - padB - padT);
   g.strokeStyle = T("line"); g.lineWidth = 1;
-  g.font = "10px " + theme.s.font; g.fillStyle = T("faint");
+  g.font = "10px " + theme.s.font; g.fillStyle = T("text");
   for (const f of [0, 0.5, 1]) {
     const yy = Math.round(y(top * f)) + 0.5;
     g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
-    if (n > 1) g.fillText(fmt(top * f), 2, yy + 3);
+    if (n > 1) g.fillText(perSecond ? fmt(top * f) : (top * f).toFixed(top < 10 ? 1 : 0), 2, yy + 3);
   }
   if (n < 2) {
     g.fillStyle = T("dim"); g.textAlign = "center";
@@ -841,13 +1183,34 @@ function drawDetail(w, d, tab, col) {
     g.beginPath(); g.moveTo(xx, padT); g.lineTo(xx, H - padB); g.stroke();
   }
   g.setLineDash([]);
-  g.fillStyle = alpha(col, 0.18);
+  g.fillStyle = alpha(col, pick ? 0.08 : 0.18);
   g.beginPath(); g.moveTo(x(0), y(0));
   a.forEach((v, i) => g.lineTo(x(i), y(v)));
   g.lineTo(x(n - 1), y(0)); g.closePath(); g.fill();
-  g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath();
+  g.strokeStyle = pick ? alpha(col, 0.45) : col; g.lineWidth = 1.5; g.beginPath();
   a.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
   g.stroke();
+  if (!pick) return;
+  // The skill's own amount each second, as bars (not smoothed), under its cast marks.
+  const bw = Math.max(1, (W - padL - padR) / Math.max(1, n - 1) - 1);
+  g.fillStyle = col;
+  bars.forEach((v, i) => {
+    if (v <= 0 || i >= n) return;
+    const yy = y(v);
+    g.fillRect(Math.round(x(i) - bw / 2), yy, Math.max(1, Math.round(bw)), H - padB - yy);
+  });
+  // A cast: a tick along the top.
+  g.strokeStyle = T("title"); g.lineWidth = 1;
+  for (const at of casts) {
+    const xx = Math.round(x(Math.min(n - 1, at / bucket))) + 0.5;
+    g.beginPath(); g.moveTo(xx, padT); g.lineTo(xx, padT + 7); g.stroke();
+  }
+}
+// The skill the Details chart marks (saved: the core sends its numbers per second).
+function pickSkill(id) {
+  if ((saved.detail_skill || 0) === id) return;
+  saved.detail_skill = id;
+  saveNow();
 }
 
 // ---- custom windows (saved.custom: the player's specs; see custom.js) ------------------------
@@ -927,7 +1290,7 @@ function drawChart(w, spec) {
   const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
   const y = v => H - padB - v / top * (H - padB - padT);
   g.strokeStyle = T("line"); g.lineWidth = 1;
-  g.font = "10px " + theme.s.font; g.fillStyle = T("faint");
+  g.font = "10px " + theme.s.font; g.fillStyle = T("text");
   for (const fr of [0, 0.5, 1]) {
     const yy = Math.round(y(top * fr)) + 0.5;
     g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
@@ -959,6 +1322,11 @@ function drawChart(w, spec) {
 // A custom window's body for its look (again whenever the spec or compact mode changes).
 function buildCustom(w) {
   const spec = w.def.spec;
+  // A click on a player (not the Total row) opens their breakdown beside this window.
+  w.body.onclick = e => {
+    const r = e.target.closest("[data-acct]");
+    if (r && r.dataset.acct && !ui.editing) openDetails(r.dataset.acct, w, statOfClick(e, w));
+  };
   const k = saved.compact ? 0.8 : 1, px = n => Math.round(n * k);
   w.layout = JSON.stringify(spec) + (saved.compact ? "/c" : "");
   w.drawn = "";
@@ -1022,7 +1390,7 @@ function renderCustom(w) {
     const s = spec.stats[0];
     w.body.querySelector(".cbars").innerHTML = shown.map(r => {
       const p = r.p, col = PROF[p.prof] || PROF[0];
-      return `<div class="bl${p.me ? " me" : ""}" data-tip="${esc(p.account)}" style="border-left-color:${col};` +
+      return `<div class="bl${p.me ? " me" : ""}" data-acct="${esc(p.account)}" data-tip="${esc(p.account)}" style="border-left-color:${col};` +
         `background:${rowBar(col, frac(r))}"><span class="n">` +
         `${p.spec ? `<img src="icons/${encodeURIComponent(p.spec)}.png" alt="">` : ""}${esc(p.name)}</span>` +
         `<span class="v${part(s, p) ? " part" : ""}">${esc(customText(s, r.values[0]))}</span></div>`;
@@ -1035,8 +1403,8 @@ function renderCustom(w) {
         return `<tr class="p"><td>${w.offset + i + 1}</td><td class="l name">${esc(p.name)}</td>` +
           spec.stats.map((s, j) => `<td>${esc(customText(s, r.values[j], r.keys[j]))}</td>`).join("") + `</tr>`;
       }
-      return `<tr class="p${p.me ? " me" : ""}"><td>${w.offset + i + 1}</td>${nameCell(p, frac(r))}` +
-        spec.stats.map((s, j) => `<td${part(s, p) ? ' class="part"' : ""}>${esc(customText(s, r.values[j]))}</td>`).join("") +
+      return `<tr class="p${p.me ? " me" : ""}" data-acct="${esc(p.account)}"><td>${w.offset + i + 1}</td>${nameCell(p, frac(r))}` +
+        spec.stats.map((s, j) => `<td data-k="${esc(s.key)}"${part(s, p) ? ' class="part"' : ""}>${esc(customText(s, r.values[j]))}</td>`).join("") +
         `</tr>`;
     }).join("");
     w.body.querySelectorAll("th[data-k]").forEach(th => th.classList.toggle("sort", th.dataset.k === spec.sort.key));
@@ -1748,6 +2116,10 @@ window.axidps = {
         dev: s.dev === true,
         rows: s.rows ?? Math.max(15, ...Object.values(s.cfg || {}).map(c => (c && c.maxRows) || 0))};
     }
+    // Details was a window of its own, saved open and placed: now it opens only from a click.
+    if (saved.open.details !== undefined || saved.pos.details) {
+      delete saved.open.details; delete saved.pos.details; migrated = true;
+    }
     // The old fixed tables become custom windows once (saved.custom absent).
     if (saved.custom === undefined && axidpsCustom.migrateTables(saved)) migrated = true;
     saved.custom = axidpsCustom.normalizeAll(saved.custom);
@@ -1916,21 +2288,48 @@ if (DEMO.includes("demo")) {
     tl.in[k] = (tl.in[k] || 0) + Math.round(40000 * (1 + Math.cos(k / 13)) * (0.6 + Math.random() * 0.8));
     // The Details window's player (the core sends only the one asked for).
     const dp = ps.find(p => p.account === saved.detail);
-    const sk = (names, scale) => names.map((n, i) => ({id: 9000 + i, name: n,
-      damage: Math.round(scale * ms / (i + 1.5)), hits: Math.round(ms / 900 / (i + 1))}));
+    // Real skill ids, so the icons show; ids under 1000 and Torment are conditions.
+    const sk = (list, scale) => list.map(([id, n], i) => {
+      const condi = [736, 737, 723, 861, 19426].includes(id), hits = Math.max(1, Math.round(ms / 900 / (i + 1)));
+      const damage = Math.round(scale * ms / (i + 1.5)), avg = damage / hits;
+      return Object.assign({id, name: n, condi, damage, hits, min: Math.round(avg * 0.3), max: Math.round(avg * 1.4)},
+        condi ? {} : {crit: Math.round(hits * 0.9), glance: i % 4 ? 0 : 2, block: i % 3 ? 0 : 1, evade: i % 2, barrier: Math.round(damage / 40)});
+    });
+    const hl = list => list.map(([id, n], i) => ({id, name: n, healing: Math.round(3 * ms / (i + 1.5)),
+      barrier: i % 3 ? 0 : Math.round(ms / (i + 2)), hits: Math.round(ms / 1500 / (i + 1))}));
+    const peers = ps.slice(0, 8).map((p, i) => ({name: p.name, account: p.account, prof: p.prof, spec: p.spec,
+      healing: Math.round(2 * ms / (i + 1.5)), barrier: Math.round(ms / (i + 3))}));
     const detail = dp && {account: dp.account, name: dp.name, prof: dp.prof, spec: dp.spec, bucket_ms: 1000,
       out: tl.out.map(v => Math.round((v || 0) / 9)), in: tl.in.map(v => Math.round((v || 0) / 14)),
-      skills_out: sk(["Mighty Blow", "Burning", "Whirlwind Attack", "Bleeding", "Earthshaker", "Hammer Swing",
-        "Backbreaker", "Fierce Blow", "Staggering Blow", "Signet of Rage", "Bull's Charge", "Torment", "Rampage", "Arc Divider"], 5),
-      skills_in: sk(["Meteor Shower", "Burning", "Lava Font", "Bleeding", "Grenade Barrage", "Poisoned",
-        "Unload", "Confusion", "Dragon's Tooth", "Torment", "Mind Wrack", "Phase Smash", "Flame Grab"], 3),
-      states: [[42000, "down"], [47000, "up"], [96000, "down"], [99000, "dead"]]};
+      out_condi: tl.out.map(v => Math.round((v || 0) / 30)),
+      skills_out: sk([[5690, "Earthquake"], [737, "Burning"], [5671, "Static Field"], [736, "Bleeding"], [5681, "Geyser"],
+        [5675, "Phoenix"], [5683, "Unsteady Ground"], [19426, "Torment"], [5661, "Murky Water"], [5687, "Updraft"]], 5),
+      skills_in: sk([[10545, "Well of Corruption"], [737, "Burning"], [9140, "Holy Strike"], [736, "Bleeding"],
+        [723, "Poisoned"], [861, "Confusion"]], 3),
+      states: [[42000, "down"], [47000, "up"], [96000, "down"], [99000, "dead"]],
+      heal_full: true, heal_out: tl.out.map(v => Math.round((v || 0) / 20)), heal_in: tl.in.map(v => Math.round((v || 0) / 25)),
+      heals: hl([[9083, "\"Receive the Light!\""], [718, "Regeneration"], [9158, "Signet of Resolve"], [10213, "Mantra of Recovery"]]),
+      heals_in: hl([[718, "Regeneration"], [10176, "Ether Feast"]]),
+      heal_targets: peers, heal_sources: peers.slice(2, 6),
+      strips: [{id: 740, name: "Might", count: 41}, {id: 1187, name: "Quickness", count: 17}, {id: 717, name: "Protection", count: 12},
+        {id: 1122, name: "Stability", count: 9}],
+      cleanses: [{id: 736, name: "Bleeding", count: 55}, {id: 737, name: "Burning", count: 23}, {id: 721, name: "Crippled", count: 7}],
+      casts: [5690, 5671, 5681, 5675, 5683, 5661, 5687, 9083, 9158].flatMap((id, j) =>
+        tl.out.map((_, i) => i).filter(i => (i + j * 3) % (6 + j) === 0).map(i => [i * 1000 + 200, id])),
+      skill: saved.detail_skill ? {id: saved.detail_skill,
+        out: tl.out.map((_, i) => (i % 6) < 2 ? Math.round(9000 + 4000 * Math.sin(i)) : 0),
+        heal: tl.out.map((_, i) => (i % 5) < 2 ? 1500 : 0)} : null,
+      boon: axidpsCustom.SQUAD_BOONS.includes(saved.detail_skill) ? {id: saved.detail_skill,
+        up: tl.out.map((_, i) => [740, 1122].includes(saved.detail_skill)
+          ? Math.round(1000 * (12 + 10 * Math.sin(i / 7))) : (i % 40) < 28 ? 1000 : (i % 40) < 31 ? 500 : 0)} : null,
+      strip_series: tl.out.map((_, i) => (i * 7) % 5 === 0 ? 3 : i % 4 === 0 ? 1 : 0),
+      cleanse_series: tl.out.map((_, i) => (i * 3) % 7 === 0 ? 4 : i % 5 === 0 ? 2 : 0)};
     axidps.update({v: 1, t: Date.now(), state: "fight", fight: {duration_ms: ms, map: 38}, players: ps,
       timeline: {bucket_ms: 1000, out: tl.out.map(v => v || 0), in: tl.in.map(v => v || 0)}, healing: heal,
       detail: detail || null});
   };
   // ?demo&details: the Details window open on the fourth player.
-  if (DEMO.includes("details")) { saved.detail = ps[3].account; saved.open.details = true; }
+  if (DEMO.includes("details")) { saved.detail = ps[3].account; ui.session.details = true; }
   for (let i = 0; i < 240; i++) step();
   setInterval(step, 500);
   setInterval(() => axidps.perf({fps: 55 + Math.round(Math.random() * 10), ping: 90 + Math.round(Math.random() * 40),
