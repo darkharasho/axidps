@@ -2,7 +2,7 @@
 
 use axidps_protocol::v2::{AgentState, Event};
 
-use super::wire::{Endpoint, WireHeal, agent_of, endpoint_of};
+use super::wire::{Endpoint, WireCombat, WireHeal, agent_of, endpoint_of};
 use crate::registry::Registry;
 
 /// The POV's account name, once known.
@@ -63,8 +63,7 @@ pub fn incoming(
         return None;
     }
     let barrier = h.barrier.min(value.unsigned_abs());
-    let mapped = i128::from(clock.0) + i128::from(h.t_unix_ms) - i128::from(clock.1);
-    let t = u64::try_from(mapped.max(0)).unwrap_or(u64::MAX).max(floor);
+    let t = local_time(h.t_unix_ms, clock, floor);
     Some((
         t,
         Event::RelayHeal {
@@ -76,6 +75,34 @@ pub fn incoming(
             barrier,
             buff: h.buff,
             downed: h.downed,
+        },
+    ))
+}
+
+/// The local time for a peer's `t_unix_ms` (see [`incoming`]).
+fn local_time(t_unix_ms: u64, clock: (u64, u64), floor: u64) -> u64 {
+    let mapped = i128::from(clock.0) + i128::from(t_unix_ms) - i128::from(clock.1);
+    u64::try_from(mapped.max(0)).unwrap_or(u64::MAX).max(floor)
+}
+
+/// The local event for a peer's own combat change, like [`incoming`]. `None` for the POV's
+/// own batches or an unknown sender.
+pub fn incoming_combat(
+    reg: &Registry,
+    from: &str,
+    c: &WireCombat,
+    clock: (u64, u64),
+    floor: u64,
+) -> Option<(u64, Event)> {
+    if pov_account(reg) == Some(from) {
+        return None;
+    }
+    let sender = agent_of(reg, &Endpoint::Player(from.to_string()))?;
+    Some((
+        local_time(c.t_unix_ms, clock, floor),
+        Event::RelayCombat {
+            sender,
+            in_combat: c.in_combat,
         },
     ))
 }

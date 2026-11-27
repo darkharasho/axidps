@@ -15,7 +15,7 @@ use axidps_core::output::{resolve_log_dir, write_fight};
 use axidps_core::processor::{FightOutcome, Processor};
 use axidps_core::relay::client::{Cmd, Relay};
 use axidps_core::relay::{DEFAULT_RELAY_URL, link};
-use axidps_core::relay::wire::room_id;
+use axidps_core::relay::wire::{WireCombat, room_id};
 use axidps_core::replay::{Player, Recorder, Step, apply};
 use axidps_core::rules::{Trigger, WvwRules};
 use axidps_protocol::v2::{Event, RingHost, ring_path};
@@ -394,6 +394,14 @@ impl App {
             Step::Push(_, Event::GroupKey { key }) | Step::Prime(_, Event::GroupKey { key }) => {
                 link.set_room(room_id(*key));
             }
+            Step::Push(_, Event::Combat { id, in_combat })
+                if link.enabled && reg.pov() == Some(*id) =>
+            {
+                link.relay.send(Cmd::Combat(WireCombat {
+                    t_unix_ms: now_unix_ms(),
+                    in_combat: *in_combat,
+                }));
+            }
             Step::Push(_, ev @ Event::Heal { .. }) if link.enabled => {
                 if let Some(h) = link::outgoing(reg, now_unix_ms(), ev) {
                     link.relay.send(Cmd::Heal(h));
@@ -428,14 +436,24 @@ impl App {
         let now = clock
             .0
             .saturating_add(now_unix_ms().saturating_sub(clock.1));
-        for (from, heals) in batches {
-            for h in &heals {
+        for b in batches {
+            // Combat changes and heals in time order: an enter must come before the heals in it.
+            let floor = self.relay.as_ref().map_or(0, |l| l.last_time);
+            let reg = self.processor.registry();
+            let mut evs: Vec<(u64, Event)> = b
+                .combat
+                .iter()
+                .filter_map(|c| link::incoming_combat(reg, &b.from, c, clock, floor))
+                .chain(
+                    b.heals
+                        .iter()
+                        .filter_map(|h| link::incoming(reg, &b.from, h, clock, floor)),
+                )
+                .collect();
+            evs.sort_by_key(|(t, _)| *t);
+            for (t, ev) in evs {
                 let floor = self.relay.as_ref().map_or(0, |l| l.last_time);
-                if let Some((t, ev)) =
-                    link::incoming(self.processor.registry(), &from, h, clock, floor)
-                {
-                    self.step(Step::Push(t.min(now.max(floor)), ev));
-                }
+                self.step(Step::Push(t.max(floor).min(now.max(floor)), ev));
             }
         }
     }

@@ -59,8 +59,8 @@ fn main() {
     while start.elapsed() < Duration::from_secs(5) && !got.iter().all(|g| *g) {
         for (i, r) in relays.iter().enumerate() {
             let peer = accounts[1 - i];
-            for (from, heals) in r.try_recv() {
-                if from == peer && heals.iter().any(|h| h.skill == 100 + (1 - i) as u32) {
+            for b in r.try_recv() {
+                if b.from == peer && b.heals.iter().any(|h| h.skill == 100 + (1 - i) as u32) {
                     got[i] = true;
                 }
             }

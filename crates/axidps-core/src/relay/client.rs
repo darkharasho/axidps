@@ -18,7 +18,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{HandshakeError, Message, WebSocket};
 
 use super::wire;
-pub use super::wire::WireHeal;
+pub use super::wire::{Batch, WireCombat, WireHeal};
 
 /// The `client` field of hello.
 pub const CLIENT: &str = concat!("axidps-core/", env!("CARGO_PKG_VERSION"));
@@ -41,6 +41,9 @@ pub enum Cmd {
     Active(bool),
     /// A local heal to share.
     Heal(WireHeal),
+    /// The POV entered or left combat. The latest state is sent again on every connect, so
+    /// peers who join later still know it.
+    Combat(WireCombat),
     /// Close the socket and end the thread.
     Stop,
 }
@@ -71,7 +74,7 @@ impl Default for Timing {
 /// Handle to the relay thread. Dropping it stops the thread.
 pub struct Relay {
     tx: Sender<Cmd>,
-    rx: Receiver<(String, Vec<WireHeal>)>,
+    rx: Receiver<Batch>,
 }
 
 impl Relay {
@@ -95,8 +98,8 @@ impl Relay {
         let _ = self.tx.send(c);
     }
 
-    /// Peer batches received since the last call, as `(sender account, heals)`. Never blocks.
-    pub fn try_recv(&self) -> Vec<(String, Vec<WireHeal>)> {
+    /// Peer batches received since the last call. Never blocks.
+    pub fn try_recv(&self) -> Vec<Batch> {
         self.rx.try_iter().collect()
     }
 }
@@ -119,12 +122,15 @@ struct Worker {
     base: String,
     timing: Timing,
     cmds: Receiver<Cmd>,
-    out: Sender<(String, Vec<WireHeal>)>,
+    out: Sender<Batch>,
     room: Option<String>,
     account: Option<String>,
     active: bool,
     last_activity: Option<Instant>,
     pending: VecDeque<(Instant, WireHeal)>,
+    /// Combat changes not sent yet, and the latest one.
+    combat: Vec<WireCombat>,
+    last_combat: Option<WireCombat>,
     conn: Option<Conn>,
     backoff: Duration,
     next_attempt: Instant,
@@ -148,12 +154,7 @@ fn would_block(e: &tungstenite::Error) -> bool {
 }
 
 impl Worker {
-    fn new(
-        base: String,
-        timing: Timing,
-        cmds: Receiver<Cmd>,
-        out: Sender<(String, Vec<WireHeal>)>,
-    ) -> Self {
+    fn new(base: String, timing: Timing, cmds: Receiver<Cmd>, out: Sender<Batch>) -> Self {
         Self {
             base,
             timing,
@@ -164,6 +165,8 @@ impl Worker {
             active: false,
             last_activity: None,
             pending: VecDeque::new(),
+            combat: Vec::new(),
+            last_combat: None,
             conn: None,
             backoff: BACKOFF_MIN.min(timing.backoff_max),
             next_attempt: Instant::now(),
@@ -275,6 +278,10 @@ impl Worker {
                 self.last_activity = Some(now);
                 self.pending.push_back((now, h));
             }
+            Cmd::Combat(c) => {
+                self.last_combat = Some(c);
+                self.combat.push(c);
+            }
             Cmd::Stop => return false,
         }
         true
@@ -293,6 +300,9 @@ impl Worker {
         match opened {
             Ok(ws) => {
                 eprintln!("relay: connected to room {}", short(&room));
+                // A new room's peers know nothing yet: the current state is enough.
+                self.combat.clear();
+                self.combat.extend(self.last_combat);
                 let now = Instant::now();
                 self.conn = Some(Conn {
                     ws,
@@ -325,10 +335,13 @@ impl Worker {
             return;
         };
         let mut result = Ok(());
-        if !self.pending.is_empty() && now.duration_since(conn.last_batch) >= self.timing.batch {
+        if (!self.pending.is_empty() || !self.combat.is_empty())
+            && now.duration_since(conn.last_batch) >= self.timing.batch
+        {
             conn.last_batch = now;
             let from = self.account.as_deref().unwrap_or_default();
-            if let Some(text) = take_batch(from, &mut self.pending) {
+            let combat = std::mem::take(&mut self.combat);
+            if let Some(text) = take_batch(from, &mut self.pending, &combat) {
                 result = conn.ws.send(Message::text(text));
             }
         }
@@ -375,14 +388,19 @@ impl Worker {
     }
 }
 
-/// Removes from the front of `pending` as many heals as fit in one message and returns that
-/// message. A heal too large to send at all is dropped.
-fn take_batch(from: &str, pending: &mut VecDeque<(Instant, WireHeal)>) -> Option<String> {
-    let base = wire::batch(from, &[]).len();
+/// Removes from the front of `pending` as many heals as fit in one message beside `combat` and
+/// returns that message. A heal too large to send at all is dropped.
+fn take_batch(
+    from: &str,
+    pending: &mut VecDeque<(Instant, WireHeal)>,
+    combat: &[WireCombat],
+) -> Option<String> {
+    let base = wire::batch(from, &[], combat).len();
     let mut size = base;
     let mut n = 0;
     for (_, h) in pending.iter() {
-        let add = wire::batch(from, std::slice::from_ref(h)).len() - base + usize::from(n > 0);
+        let add =
+            wire::batch(from, std::slice::from_ref(h), combat).len() - base + usize::from(n > 0);
         if size + add > MAX_MESSAGE {
             break;
         }
@@ -390,11 +408,12 @@ fn take_batch(from: &str, pending: &mut VecDeque<(Instant, WireHeal)>) -> Option
         n += 1;
     }
     if n == 0 {
+        // Nothing fits (or nothing is waiting): a heal too large is dropped, combat goes alone.
         pending.pop_front();
-        return None;
+        return (!combat.is_empty()).then(|| wire::batch(from, &[], combat));
     }
     let heals: Vec<WireHeal> = pending.drain(..n).map(|(_, h)| h).collect();
-    Some(wire::batch(from, &heals))
+    Some(wire::batch(from, &heals, combat))
 }
 
 /// Opens the socket with bounded connect/handshake times, then switches to the short read
@@ -593,19 +612,41 @@ mod tests {
         r.send(Cmd::Heal(heal(1)));
         assert_eq!(s.next(), Ev::Open(format!("/v1/room/{ROOM_A}")));
         assert_eq!(s.next(), Ev::Text(wire::hello(":a.1", CLIENT)));
-        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[heal(1)])));
+        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[heal(1)], &[])));
         r.send(Cmd::Heal(heal(2)));
         r.send(Cmd::Heal(heal(3)));
         let Ev::Text(t) = s.next() else { panic!() };
-        let (from, mut got) = wire::parse(&t).unwrap();
-        assert_eq!(from, ":a.1");
+        let b = wire::parse(&t).unwrap();
+        assert_eq!(b.from, ":a.1");
+        let mut got = b.heals;
         if got.len() < 2 {
             let Ev::Text(t) = s.next() else { panic!() };
-            got.extend(wire::parse(&t).unwrap().1);
+            got.extend(wire::parse(&t).unwrap().heals);
         }
         assert_eq!(got, vec![heal(2), heal(3)]);
         r.send(Cmd::Stop);
         assert_eq!(s.next(), Ev::Closed);
+    }
+
+    // The POV's combat goes out on its own, and its latest state again after a reconnect.
+    #[test]
+    fn sends_combat_and_repeats_the_latest_on_connect() {
+        let s = Server::start();
+        let r = Relay::start_with(s.base(), fast());
+        let enter = WireCombat {
+            t_unix_ms: 5,
+            in_combat: true,
+        };
+        r.send(Cmd::Combat(enter));
+        join(&r, ROOM_A);
+        assert!(matches!(s.next(), Ev::Open(_)));
+        assert!(matches!(s.next(), Ev::Text(_))); // hello
+        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[], &[enter])));
+        r.send(Cmd::Room(Some(ROOM_B.into())));
+        assert!(matches!(s.next(), Ev::Closed));
+        assert!(matches!(s.next(), Ev::Open(_)));
+        assert!(matches!(s.next(), Ev::Text(_))); // hello
+        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[], &[enter])));
     }
 
     #[test]
@@ -615,7 +656,7 @@ mod tests {
         join(&r, ROOM_A);
         assert!(matches!(s.next(), Ev::Open(_)));
         assert!(matches!(s.next(), Ev::Text(_))); // hello
-        s.push.send(wire::batch(":b.2", &[heal(7)])).unwrap();
+        s.push.send(wire::batch(":b.2", &[heal(7)], &[])).unwrap();
         s.push.send("not json".into()).unwrap();
         let end = Instant::now() + WAIT;
         let mut got = Vec::new();
@@ -623,7 +664,14 @@ mod tests {
             got = r.try_recv();
             thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(got, vec![(":b.2".to_string(), vec![heal(7)])]);
+        assert_eq!(
+            got,
+            vec![Batch {
+                from: ":b.2".to_string(),
+                heals: vec![heal(7)],
+                combat: vec![]
+            }]
+        );
         thread::sleep(Duration::from_millis(100));
         assert!(r.try_recv().is_empty());
     }
@@ -700,7 +748,7 @@ mod tests {
         assert_eq!(ev, Ev::Open(format!("/v1/room/{ROOM_B}")));
         assert_eq!(s.next(), Ev::Text(wire::hello(":a.1", CLIENT)));
         r.send(Cmd::Heal(heal(2)));
-        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[heal(2)])));
+        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[heal(2)], &[])));
     }
 
     #[test]
@@ -712,7 +760,7 @@ mod tests {
         r.send(Cmd::Account(":a.1".into()));
         assert_eq!(s.next(), Ev::Open(format!("/v1/room/{ROOM_A}")));
         assert_eq!(s.next(), Ev::Text(wire::hello(":a.1", CLIENT)));
-        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[heal(1)])));
+        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[heal(1)], &[])));
     }
 
     #[test]
@@ -736,7 +784,7 @@ mod tests {
         assert!(matches!(s.next(), Ev::Open(_)));
         assert!(matches!(s.next(), Ev::Text(_)));
         let want: Vec<WireHeal> = (0..1000).map(|t| heal(1_700_000_000_000 + t)).collect();
-        assert!(wire::batch(":a.1", &want).len() > MAX_MESSAGE);
+        assert!(wire::batch(":a.1", &want, &[]).len() > MAX_MESSAGE);
         for h in &want {
             r.send(Cmd::Heal(h.clone()));
         }
@@ -745,7 +793,7 @@ mod tests {
         while got.len() < want.len() {
             let Ev::Text(t) = s.next() else { panic!() };
             assert!(t.len() <= MAX_MESSAGE);
-            got.extend(wire::parse(&t).unwrap().1);
+            got.extend(wire::parse(&t).unwrap().heals);
             msgs += 1;
         }
         assert_eq!(got, want);

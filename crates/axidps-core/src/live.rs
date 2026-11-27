@@ -154,6 +154,9 @@ struct OwnCombat {
     end: Option<u64>,
     /// A copy of its own heals has arrived (the POV, or a player sharing its heals).
     shared: bool,
+    /// Its own client sends its combat changes over the relay: those set `start` and `end`,
+    /// and the local game's view of this player's combat is ignored.
+    relayed: bool,
     /// Given by target and received by source, by owner.
     out: BTreeMap<u32, HealSum>,
     inc: BTreeMap<u32, HealSum>,
@@ -602,6 +605,21 @@ impl LiveStats {
     fn own_event(&mut self, t: u64, ev: &Event) {
         self.clock = self.clock.max(t);
         match *ev {
+            Event::RelayCombat { sender, in_combat } if self.pov != Some(sender) => {
+                let c = self.combats.entry(sender).or_default();
+                c.relayed = true;
+                c.shared = true;
+                if in_combat && !c.in_combat() {
+                    c.start = Some(t);
+                    c.end = None;
+                    c.out.clear();
+                    c.inc.clear();
+                } else if !in_combat && c.in_combat() {
+                    c.end = Some(t);
+                }
+                self.generation += 1;
+            }
+            Event::Combat { id, .. } if self.combats.get(&id).is_some_and(|c| c.relayed) => {}
             Event::Combat { id, in_combat } => {
                 let c = self.combats.entry(id).or_default();
                 if in_combat && !c.in_combat() {
@@ -1810,6 +1828,44 @@ mod tests {
         assert_eq!(p4["heal_full"], true);
         // 500 over 2.5 s of its combat.
         assert_eq!(p4["hps"], 200.0);
+    }
+
+    /// A sharer's combat comes from its own client when it sends it: the game here may never
+    /// report that player entering combat (out of range, or another agent id), and then its
+    /// relayed heals were all dropped. Once it sends its own, this client's view is ignored.
+    #[test]
+    fn sharer_combat_from_its_own_client() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.set_pov(1);
+        let own = |in_combat| Event::RelayCombat {
+            sender: 4,
+            in_combat,
+        };
+        l.begin(1_000, 38);
+        feed(
+            &mut l,
+            &r,
+            &[
+                (1_100, own(true)),
+                (1_200, relay(4, 4, 1, 300)),
+                // This client's view of Char 4 no longer ends its combat.
+                (
+                    1_300,
+                    Event::Combat {
+                        id: 4,
+                        in_combat: false,
+                    },
+                ),
+                (1_400, relay(4, 4, 6, 200)),
+                (2_000, own(false)),
+                (2_100, relay(4, 4, 6, 777)), // after its own exit: not counted
+            ],
+        );
+        let v = l.snapshot(&r, 0);
+        let p4 = player(&v, "Char 4").unwrap();
+        assert_eq!(p4["healing"], 500);
+        assert_eq!(p4["heal_full"], true);
     }
 
     fn relay(sender: u32, src: u32, dst: u32, value: i32) -> Event {

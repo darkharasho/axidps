@@ -451,6 +451,7 @@ impl Registry {
             | Event::Reward { .. }
             | Event::WvwTeam { .. }
             | Event::GroupKey { .. }
+            | Event::RelayCombat { .. }
             | Event::WvwWorld { .. } => {}
         }
     }
