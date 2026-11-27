@@ -74,6 +74,188 @@ pub fn axiam_gw2_path(axiam_config_json: &str) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
+/// Where AxiOM keeps its config: Electron's userData for the app name `axiom` (the Linux
+/// folder may carry the product name instead).
+pub fn axiom_config_paths(home: &Path, windows: bool) -> Vec<PathBuf> {
+    if windows {
+        let base = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Roaming"));
+        vec![base.join("axiom").join("config.json")]
+    } else {
+        let base = home.join(".config");
+        vec![
+            base.join("axiom").join("config.json"),
+            base.join("AxiOM").join("config.json"),
+        ]
+    }
+}
+
+/// The game folder the user set in AxiOM (`arcdps.gw2PathOverride`), from its config text.
+pub fn axiom_gw2_path(axiom_config_json: &str) -> Option<PathBuf> {
+    let value: serde_json::Value = serde_json::from_str(axiom_config_json).ok()?;
+    let path = value
+        .get("arcdps")?
+        .get("gw2PathOverride")?
+        .as_str()?
+        .trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// The folder a registry value names: a folder, or an exe path (possibly quoted, possibly
+/// with an icon index `,0` after it), whose folder is meant.
+pub fn folder_from_registry_value(value: &str) -> Option<PathBuf> {
+    let mut v = value.trim().trim_matches('\0');
+    if let Some((path, index)) = v.rsplit_once(',')
+        && index.trim().parse::<i32>().is_ok()
+    {
+        v = path;
+    }
+    let v = v.trim().trim_matches('"').trim();
+    if v.is_empty() {
+        return None;
+    }
+    let p = PathBuf::from(v);
+    let is_exe = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("exe"));
+    if is_exe {
+        // `PathBuf` on Linux (tests) does not split on `\`.
+        let cut = v.rfind(['\\', '/'])?;
+        return Some(PathBuf::from(&v[..cut]));
+    }
+    Some(p)
+}
+
+/// The game folder as Windows records it: the ArenaNet installer's key and the uninstall
+/// entries of the standalone and Steam installs. Empty off Windows.
+pub fn registry_candidates() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        win::registry_values()
+            .iter()
+            .filter_map(|v| folder_from_registry_value(v))
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+mod win {
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+        RegGetValueW,
+    };
+    use windows::core::PCWSTR;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn read(root: HKEY, key: &str, name: &str) -> Option<String> {
+        let (key, name) = (wide(key), wide(name));
+        let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+        let mut size = 0u32;
+        // SAFETY: plain registry reads; the buffer is as large as the size passed, and both
+        // strings are NUL-terminated and outlive the calls.
+        unsafe {
+            let probe = RegGetValueW(
+                root,
+                PCWSTR(key.as_ptr()),
+                PCWSTR(name.as_ptr()),
+                flags,
+                None,
+                None,
+                Some(&mut size),
+            );
+            if probe.is_err() || size == 0 {
+                return None;
+            }
+            let mut buf = vec![0u16; (size as usize).div_ceil(2)];
+            let got = RegGetValueW(
+                root,
+                PCWSTR(key.as_ptr()),
+                PCWSTR(name.as_ptr()),
+                flags,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut size),
+            );
+            if got.is_err() {
+                return None;
+            }
+            let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            Some(String::from_utf16_lossy(&buf[..len]))
+        }
+    }
+
+    pub fn registry_values() -> Vec<String> {
+        const UNINSTALL: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+        const UNINSTALL32: &str =
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
+        let lookups: [(HKEY, String, &str); 10] = [
+            (
+                HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\ArenaNet\Guild Wars 2".into(),
+                "Path",
+            ),
+            (
+                HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\WOW6432Node\ArenaNet\Guild Wars 2".into(),
+                "Path",
+            ),
+            (
+                HKEY_CURRENT_USER,
+                r"SOFTWARE\ArenaNet\Guild Wars 2".into(),
+                "Path",
+            ),
+            (
+                HKEY_LOCAL_MACHINE,
+                format!(r"{UNINSTALL}\Guild Wars 2"),
+                "InstallLocation",
+            ),
+            (
+                HKEY_LOCAL_MACHINE,
+                format!(r"{UNINSTALL}\Guild Wars 2"),
+                "DisplayIcon",
+            ),
+            (
+                HKEY_LOCAL_MACHINE,
+                format!(r"{UNINSTALL32}\Guild Wars 2"),
+                "InstallLocation",
+            ),
+            (
+                HKEY_LOCAL_MACHINE,
+                format!(r"{UNINSTALL32}\Guild Wars 2"),
+                "DisplayIcon",
+            ),
+            (
+                HKEY_CURRENT_USER,
+                format!(r"{UNINSTALL}\Guild Wars 2"),
+                "InstallLocation",
+            ),
+            (
+                HKEY_CURRENT_USER,
+                format!(r"{UNINSTALL}\Guild Wars 2"),
+                "DisplayIcon",
+            ),
+            (
+                HKEY_LOCAL_MACHINE,
+                format!(r"{UNINSTALL}\Steam App 1284210"),
+                "InstallLocation",
+            ),
+        ];
+        lookups
+            .iter()
+            .filter_map(|(root, key, name)| read(*root, key, name))
+            .collect()
+    }
+}
+
 /// Places the game is usually installed, then every Steam library's `Guild Wars 2` folder.
 pub fn candidates(home: &Path, windows: bool) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
@@ -86,6 +268,17 @@ pub fn candidates(home: &Path, windows: bool) -> Vec<PathBuf> {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
         out.push(pf.join("Guild Wars 2"));
+        // Folders people pick for games, on every drive.
+        for drive in 'C'..='Z' {
+            for sub in [
+                r"Guild Wars 2",
+                r"Games\Guild Wars 2",
+                r"Program Files\Guild Wars 2",
+                r"SteamLibrary\steamapps\common\Guild Wars 2",
+            ] {
+                out.push(PathBuf::from(format!(r"{drive}:\{sub}")));
+            }
+        }
         steam_roots = vec![PathBuf::from(r"C:\Program Files (x86)\Steam")];
     } else {
         let common = |root: &Path| root.join("steamapps").join("common").join("Guild Wars 2");
@@ -140,21 +333,17 @@ const GW2_APP_ID: &str = "1284210";
 /// (`<library>/steamapps/common/<game>`), that library's Proton prefix for GW2.
 #[cfg_attr(windows, allow(dead_code))]
 fn wine_prefix(game: &Path) -> Option<PathBuf> {
-    if let Some(drive_c) = game
-        .ancestors()
-        .find(|a| a.file_name().is_some_and(|n| n.eq_ignore_ascii_case("drive_c")))
-    {
+    if let Some(drive_c) = game.ancestors().find(|a| {
+        a.file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("drive_c"))
+    }) {
         return drive_c.parent().map(Path::to_path_buf);
     }
     let common = game.parent()?;
     let steamapps = common.parent()?;
     let named = |p: &Path, n: &str| p.file_name().is_some_and(|f| f == n);
-    (named(common, "common") && named(steamapps, "steamapps")).then(|| {
-        steamapps
-            .join("compatdata")
-            .join(GW2_APP_ID)
-            .join("pfx")
-    })
+    (named(common, "common") && named(steamapps, "steamapps"))
+        .then(|| steamapps.join("compatdata").join(GW2_APP_ID).join("pfx"))
 }
 
 /// The arcdps log folder inside the Wine prefix the game in `game` runs from, for core's
@@ -240,7 +429,10 @@ mod tests {
         let root = tmp.path().join("gw2");
         fs::create_dir_all(root.join("bin64")).unwrap();
         fs::write(root.join("GW2-64.EXE"), b"exe").unwrap();
-        assert_eq!(resolve(Some(&root.join("bin64")), None, &[]), Some(root.clone()));
+        assert_eq!(
+            resolve(Some(&root.join("bin64")), None, &[]),
+            Some(root.clone())
+        );
         assert_eq!(resolve(Some(&root), None, &[]), Some(root));
     }
 
@@ -269,6 +461,36 @@ mod tests {
     }
 
     #[test]
+    fn registry_values_name_the_game_folder() {
+        let f = |v| folder_from_registry_value(v);
+        assert_eq!(
+            f(r"C:\Games\Guild Wars 2"),
+            Some(PathBuf::from(r"C:\Games\Guild Wars 2"))
+        );
+        assert_eq!(
+            f(r"C:\Games\Guild Wars 2\Gw2-64.exe"),
+            Some(PathBuf::from(r"C:\Games\Guild Wars 2"))
+        );
+        assert_eq!(
+            f(r#""D:\GW2\Gw2-64.EXE",0"#),
+            Some(PathBuf::from(r"D:\GW2"))
+        );
+        assert_eq!(f("  "), None);
+    }
+
+    #[test]
+    fn axiom_override_parsed() {
+        let cfg = r#"{"arcdps":{"gw2PathOverride":"C:\\Games\\Guild Wars 2","plugins":{}}}"#;
+        assert_eq!(
+            axiom_gw2_path(cfg),
+            Some(PathBuf::from(r"C:\Games\Guild Wars 2"))
+        );
+        assert_eq!(axiom_gw2_path(r#"{"arcdps":{"gw2PathOverride":""}}"#), None);
+        assert_eq!(axiom_gw2_path(r#"{"arcdps":{}}"#), None);
+        assert_eq!(axiom_gw2_path("not json"), None);
+    }
+
+    #[test]
     fn axiam_path_parsed() {
         assert_eq!(
             axiam_gw2_path(r#"{"gw2Path":"/g/gw2"}"#),
@@ -293,7 +515,10 @@ mod tests {
         let own = default.join("steamapps/common/Guild Wars 2");
         assert_eq!(c.iter().filter(|p| **p == own).count(), 1);
         assert_eq!(c[0], own);
-        assert_eq!(c.last().unwrap(), &PathBuf::from("/mnt/lib/steamapps/common/Guild Wars 2"));
+        assert_eq!(
+            c.last().unwrap(),
+            &PathBuf::from("/mnt/lib/steamapps/common/Guild Wars 2")
+        );
     }
 
     fn logs(docs: &Path) -> PathBuf {
@@ -314,7 +539,10 @@ mod tests {
         fs::create_dir_all(pfx.join("drive_c/users/Public/Documents")).unwrap();
         assert_eq!(prefix_log_dir(&game, &home, Some("me")), Some(logs(&docs)));
         // The user name is only a preference: another user's Documents is found too.
-        assert_eq!(prefix_log_dir(&game, &home, Some("other")), Some(logs(&docs)));
+        assert_eq!(
+            prefix_log_dir(&game, &home, Some("other")),
+            Some(logs(&docs))
+        );
         assert_eq!(prefix_log_dir(&game, &home, None), Some(logs(&docs)));
     }
 
@@ -348,8 +576,11 @@ mod tests {
         let game = pfx.join("drive_c/Guild Wars 2");
         fs::create_dir_all(&game).unwrap();
         fs::create_dir_all(pfx.join("drive_c/users/me")).unwrap();
-        std::os::unix::fs::symlink(home.join("Documents"), pfx.join("drive_c/users/me/Documents"))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            home.join("Documents"),
+            pfx.join("drive_c/users/me/Documents"),
+        )
+        .unwrap();
         assert_eq!(prefix_log_dir(&game, &home, Some("me")), None);
     }
 }

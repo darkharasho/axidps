@@ -67,15 +67,23 @@ pub(crate) fn home() -> PathBuf {
         .unwrap_or_default()
 }
 
-/// The game folder: the saved path, then AxiAM's, then the usual places. A newly found path is
-/// saved in the config.
+/// The game folder: the saved path, then AxiAM's, AxiOM's, the registry's, then the usual
+/// places. A newly found path is saved in the config.
 fn resolve_game(store: &Store) -> Option<PathBuf> {
     let mut cfg = store.load_config();
     let home = home();
     let axiam = std::fs::read_to_string(gw2path::axiam_config_path(&home, cfg!(windows)))
         .ok()
         .and_then(|text| gw2path::axiam_gw2_path(&text));
-    let candidates = gw2path::candidates(&home, cfg!(windows));
+    // AxiOM's own game folder setting, then where Windows recorded the install, then the
+    // usual places.
+    let mut candidates: Vec<PathBuf> = gw2path::axiom_config_paths(&home, cfg!(windows))
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .filter_map(|text| gw2path::axiom_gw2_path(&text))
+        .collect();
+    candidates.extend(gw2path::registry_candidates());
+    candidates.extend(gw2path::candidates(&home, cfg!(windows)));
     let found = gw2path::resolve(cfg.gw2_path.as_deref(), axiam, &candidates)?;
     if cfg.gw2_path.as_deref() != Some(found.as_path()) {
         cfg.gw2_path = Some(found.clone());
