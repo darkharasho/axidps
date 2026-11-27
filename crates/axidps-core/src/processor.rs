@@ -457,6 +457,16 @@ impl Processor {
     }
 
     /// The agent registry as it is now.
+    /// The buff stacks as of now (in and out of fights).
+    pub fn buff_stacks(&self) -> &Stacks {
+        &self.buffs
+    }
+
+    /// The condition model's formulas and stats as of now.
+    pub fn condi_known(&self) -> &Known {
+        &self.condi
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
     }

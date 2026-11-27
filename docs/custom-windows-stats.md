@@ -26,6 +26,8 @@ Each stat is one number per player. A window can list players, show a single tot
 
 Heal stats for other players are dimmed. The game reports only what passed between them and you.
 
+Condition damage (`condi`, and the `damage` and `dps` that include it) is dimmed for a player when part of it is estimated. The game reports exact condition ticks only for you; squadmates running axidps share theirs. For everyone else axidps estimates each tick from their stacks and gear, without their traits, so the estimate usually reads low.
+
 ## Boons
 
 Each player also carries `boons`: `{"<boon id>": [up, self, group, squad]}`, integer milliseconds since the fight started, as of the feed's `duration_ms`. Only boons with a nonzero value appear, and the key is left out when there are none. The values mostly grow, but can go down a little: when the fight ends, the numbers are cut back to its last activity, and `group` and `squad` are averages that drop when a new target joins. A window over a span (last N seconds, session) counts a drop as 0. The measures:

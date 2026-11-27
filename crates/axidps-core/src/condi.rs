@@ -656,7 +656,7 @@ impl HealthCheck {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const BLEEDING: u32 = 736;
@@ -694,7 +694,7 @@ mod tests {
 
     /// Poison names the damage kind; Bleeding is 2 + 0.25·L + 0.06·CD per stack (made-up
     /// numbers in the game's shape), plus a non-damage modifier.
-    fn known() -> Known {
+    pub(crate) fn known() -> Known {
         let mut k = Known::default();
         let mut evs = formula(POISON, &[(9, 6, 0.0, 0.0, 0.0), (DMG, 1, 8.0, 0.4, 0.06)]);
         evs.extend(formula(BLEEDING, &[(DMG, 1, 2.0, 0.25, 0.06), (9, 6, 1.0, 0.0, 0.0)]));

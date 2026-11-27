@@ -505,6 +505,9 @@ const sumOf = (ps, k) => ps.reduce((s, p) => s + (p[k] || 0), 0);
 // tip, width (px); count: whole numbers. heal: the game reports heals only for you, so anyone
 // else's value is just what passed between you.
 const STATS = axidpsCustom.STATS;
+// A player's value of catalog stat `st` is incomplete (shown dimmed): heals the game reports only
+// for you, or condition damage the model estimated (nobody shares this player's exact ticks).
+const partial = (st, p) => !!st && ((st.heal && !p.heal_full) || (st.condi && (p.condi_est || 0) > 0));
 // A table cell's text for a catalog stat's value.
 const statText = (k, v) => (STATS[k].count ? int : fmt)(v);
 // The columns a table shows: the player's choice from the old Tables tab (cfg.cols; the hub can
@@ -580,7 +583,7 @@ function tableWindow(def) {
       w.body.querySelector("tbody").innerHTML = shown.map((p, i) => {
         const frac = (typeof p[k] === "number" ? Math.max(0, p[k]) / top * 100 : 0).toFixed(1);
         return `<tr class="p${p.me ? " me" : ""}" data-acct="${esc(p.account)}"><td>${w.offset + i + 1}</td>${nameCell(p, frac)}` +
-          cols.map(cc => `<td${cc.heal && !p.heal_full ? ' class="part"' : ""}>${statText(cc.k, p[cc.k])}</td>`)
+          cols.map(cc => `<td${partial(STATS[cc.k], p) ? ' class="part"' : ""}>${statText(cc.k, p[cc.k])}</td>`)
             .join("") + `</tr>`;
       }).join("");
       const empty = w.body.querySelector(".empty");
@@ -1014,7 +1017,7 @@ function renderCustom(w) {
   let top = 1;
   for (const r of rows) if ((r.values[bi] || 0) > top) top = r.values[bi];
   const frac = r => (Math.max(0, r.values[bi] || 0) / top * 100).toFixed(1);
-  const part = (s, p) => STATS[s.key].heal && !p.heal_full;
+  const part = (s, p) => partial(STATS[s.key], p);
   if (spec.look === "bars") {
     const s = spec.stats[0];
     w.body.querySelector(".cbars").innerHTML = shown.map(r => {

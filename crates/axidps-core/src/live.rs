@@ -15,6 +15,8 @@ use crate::buffs::{
     self, BUFF_APPLY, BUFF_DURATION, BUFF_INITIAL, BUFF_REMOVE_ALL, BUFF_REMOVE_ONE, STACK_ACTIVE,
     STACK_RESET,
 };
+use crate::condi::GameMode;
+use crate::live_condi::Estimator;
 use crate::processor::{FightOutcome, Processor};
 use crate::registry::Registry;
 use crate::replay::Step;
@@ -294,6 +296,15 @@ pub struct LiveStats {
     boon_targets: BTreeMap<u32, (u8, bool)>,
     /// Game time of the tracker's last tick.
     boon_tick: Option<u64>,
+    /// The condition model estimating this fight's ticks nobody reports exactly.
+    estimator: Option<Estimator>,
+    /// Estimated condition damage this fight per owner: total, per bucket and per skill. Shown
+    /// only for players without exact ticks (see [`LiveStats::estimated`]).
+    est_condi: BTreeMap<u32, u64>,
+    est_series: BTreeMap<u32, Vec<u64>>,
+    est_skills: BTreeMap<u32, BySkill>,
+    /// Peers who relayed their own exact condition ticks this fight.
+    exact_condi: BTreeSet<u32>,
 }
 
 impl Default for LiveStats {
@@ -348,6 +359,11 @@ impl LiveStats {
             boon_active: BTreeSet::new(),
             boon_targets: BTreeMap::new(),
             boon_tick: None,
+            estimator: None,
+            est_condi: BTreeMap::new(),
+            est_series: BTreeMap::new(),
+            est_skills: BTreeMap::new(),
+            exact_condi: BTreeSet::new(),
         }
     }
 
@@ -359,16 +375,20 @@ impl LiveStats {
     /// The counting settings leave `ev` out: a strike or condition tick on a WvW gadget or
     /// NPC that is switched off.
     fn skips(&self, reg: &Registry, ev: &Event) -> bool {
+        match *ev {
+            Event::Strike { dst, .. }
+            | Event::BuffDamage { dst, .. }
+            | Event::RelayBuffDamage { dst, .. } => self.skips_target(reg, dst),
+            _ => false,
+        }
+    }
+
+    /// Damage to `dst` is left out by the counting settings (see [`LiveStats::skips`]).
+    fn skips_target(&self, reg: &Registry, dst: u32) -> bool {
         let c = self.counting;
         if !self.wvw || (c.wvw_gadgets && c.wvw_npcs) {
             return false;
         }
-        let dst = match *ev {
-            Event::Strike { dst, .. }
-            | Event::BuffDamage { dst, .. }
-            | Event::RelayBuffDamage { dst, .. } => dst,
-            _ => return false,
-        };
         if self.owner(dst) != dst {
             return false; // a player's pet or clone
         }
@@ -491,6 +511,11 @@ impl LiveStats {
         self.boon_active.clear();
         self.boon_targets.clear();
         self.boon_tick = None;
+        self.estimator = None;
+        self.est_condi.clear();
+        self.est_series.clear();
+        self.est_skills.clear();
+        self.exact_condi.clear();
         // The stacks held at the start are the fight's first rows.
         let initial = self.buff_stacks.initial(start_ms);
         self.feed_boons(start_ms, initial);
@@ -524,6 +549,8 @@ impl LiveStats {
         self.received.clear();
         self.state = LiveState::Last;
         // The series and skills stay for the details window until the next fight.
+        self.estimator = None;
+        self.est_condi.clear();
         self.acc.clear();
         self.states.clear();
         self.clear_contrib();
@@ -624,7 +651,13 @@ impl LiveStats {
                 buff,
                 value,
                 ..
-            } if self.pov != Some(sender) => self.count_condi(t, src, dst, buff, value),
+            } if self.pov != Some(sender) => {
+                // From now on this fight shows its ticks, not the estimate.
+                if self.exact_condi.insert(sender) {
+                    self.generation += 1;
+                }
+                self.count_condi(t, src, dst, buff, value);
+            }
             // The local player's heals and barrier, given and received (kind 43).
             Event::Heal {
                 src,
@@ -1023,6 +1056,8 @@ impl LiveStats {
             _ => (None, None),
         };
         let current = p.fight_start_ms();
+        // The fight started with this step: the estimator starts from the stacks after it.
+        let mut started = false;
         // One push can end a fight (inactivity) and start the next one.
         if self.state == LiveState::Fight && (outcome.is_some() || current != Some(self.start_ms)) {
             match outcome {
@@ -1049,6 +1084,13 @@ impl LiveStats {
                     self.roster_pov = Some(id);
                 }
                 self.begin(start, p.map_id().unwrap_or(0));
+                self.estimator = Some(Estimator::new(
+                    p.buff_stacks(),
+                    p.condi_known(),
+                    reg.pov(),
+                    GameMode::from_map_type(p.map_type()),
+                ));
+                started = true;
                 // The squad at the start is in the fight, even if it leaves before a tick.
                 let squad: Vec<u32> = reg
                     .live_agents()
@@ -1101,6 +1143,20 @@ impl LiveStats {
         }
         if let Some(t) = time {
             self.advance(t);
+        }
+        // The model's estimates for the ticks nobody reports, due by this step.
+        if self.state == LiveState::Fight
+            && !started
+            && let Some(t) = time
+            && let Some(est) = self.estimator.as_mut()
+        {
+            let ticks = match ev {
+                Some(ev) => est.event(p.registry(), t, &ev),
+                None => est.advance(p.registry(), t),
+            };
+            if !ticks.is_empty() {
+                self.count_estimates(p.registry(), ticks);
+            }
         }
     }
 
@@ -1206,6 +1262,37 @@ impl LiveStats {
         }
     }
 
+    /// Whether `id`'s condition damage is estimated: no exact ticks of its own reach us (it is
+    /// not the POV and relayed none this fight).
+    fn estimated(&self, id: u32) -> bool {
+        self.pov != Some(id) && !self.exact_condi.contains(&id)
+    }
+
+    /// The estimated condition damage shown for `id`.
+    fn est_for(&self, id: u32) -> u64 {
+        if self.estimated(id) {
+            self.est_condi.get(&id).copied().unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
+    /// Count the model's estimated ticks (kept apart from exact damage).
+    fn count_estimates(&mut self, reg: &Registry, ticks: Vec<crate::condi::Tick>) {
+        for t in ticks {
+            let by = self.owner(t.src);
+            if by == self.owner(t.dst) || self.skips_target(reg, t.dst) {
+                continue;
+            }
+            let dmg = u64::from(t.damage.unsigned_abs());
+            *self.est_condi.entry(by).or_default() += dmg;
+            let i = (t.time.saturating_sub(self.start_ms) / BUCKET_MS) as usize;
+            add_at(self.est_series.entry(by).or_default(), i, dmg);
+            add_skill(&mut self.est_skills, by, t.buff, dmg);
+            self.generation += 1;
+        }
+    }
+
     /// A condition tick of `value` at game time `t`, dealt by `src` (0: no one) to `dst` (0: an
     /// agent unknown here, for a relayed tick).
     fn count_condi(&mut self, t: u64, src: u32, dst: u32, buff: u32, value: i32) {
@@ -1255,6 +1342,13 @@ impl LiveStats {
                 *o += v;
             }
         }
+        for (id, s) in &self.est_series {
+            if self.idents.contains_key(id) && self.estimated(*id) {
+                for (o, v) in out.iter_mut().zip(s) {
+                    *o += v;
+                }
+            }
+        }
         json!({"bucket_ms": BUCKET_MS, "out": out, "in": inc})
     }
 
@@ -1301,7 +1395,9 @@ impl LiveStats {
                 continue;
             };
             let n = self.acc.get(&id).copied().unwrap_or_default();
-            let damage = n.power.saturating_add(n.condi);
+            let est = self.est_for(id);
+            let condi = n.condi.saturating_add(est);
+            let damage = n.power.saturating_add(condi);
             let given = self.given.get(&id).map(CopySums::shown).unwrap_or_default();
             let received = self
                 .received
@@ -1337,7 +1433,9 @@ impl LiveStats {
                     "me": who.me,
                     "damage": damage,
                     "power": n.power,
-                    "condi": n.condi,
+                    "condi": condi,
+                    // The part of `condi` the model estimated (no exact ticks for this player).
+                    "condi_est": est,
                     "dps": dps,
                     "downs": n.downs,
                     "kills": n.kills,
@@ -1411,6 +1509,16 @@ impl LiveStats {
             ] {
                 for (&skill, &(d, h)) in from.get(id).into_iter().flatten() {
                     let e = to.entry(skill).or_default();
+                    e.0 += d;
+                    e.1 += h;
+                }
+            }
+            if self.estimated(*id) {
+                for (o, v) in out.iter_mut().zip(self.est_series.get(id).into_iter().flatten()) {
+                    *o += v;
+                }
+                for (&skill, &(d, h)) in self.est_skills.get(id).into_iter().flatten() {
+                    let e = by_out.entry(skill).or_default();
                     e.0 += d;
                     e.1 += h;
                 }
@@ -2282,6 +2390,43 @@ mod tests {
         assert_eq!(player(&v, "Char 1").unwrap()["condi"], 0);
     }
 
+    /// Estimated ticks show in `condi` (and `condi_est`) for a player nobody reports exactly;
+    /// once it relays its own, the estimate goes, including what came before.
+    #[test]
+    fn estimates_give_way_to_relayed_ticks() {
+        let r = relay_world();
+        let mut l = LiveStats::new();
+        l.set_pov(1);
+        l.begin(0, 38);
+        let est = |time, src, damage| crate::condi::Tick {
+            time,
+            src,
+            dst: ENEMY,
+            buff: 736,
+            damage,
+            stacks: 1,
+        };
+        l.count_estimates(&r, vec![est(1_000, 6, 120), est(2_000, 6, 80)]);
+        l.advance(3_000);
+        let v = l.snapshot(&r, 0);
+        let p = player(&v, "Char 6").unwrap();
+        assert_eq!((p["condi"].as_u64(), p["condi_est"].as_u64()), (Some(200), Some(200)));
+        assert_eq!(v["timeline"]["out"][1], 120);
+        let relayed = Event::RelayBuffDamage {
+            sender: 6,
+            src: 6,
+            dst: ENEMY,
+            buff: 736,
+            value: 300,
+            barrier: 0,
+        };
+        feed(&mut l, &r, &[(3_000, relayed)]);
+        let v = l.snapshot(&r, 0);
+        let p = player(&v, "Char 6").unwrap();
+        assert_eq!((p["condi"].as_u64(), p["condi_est"].as_u64()), (Some(300), Some(0)));
+        assert_eq!(v["timeline"]["out"][1], 0);
+    }
+
     #[test]
     fn only_squad_members_are_listed() {
         let r = world();
@@ -2437,6 +2582,7 @@ mod tests {
             "healing_in",
             "barrier_in",
             "heal_full",
+            "condi_est",
         ];
         want.sort();
         assert_eq!(keys(&v["players"][0]), want);
@@ -2469,6 +2615,7 @@ mod tests {
             "group",
             "me",
             "heal_full",
+            "condi_est",
         ];
         let catalog = [
             "damage",

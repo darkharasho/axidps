@@ -2,13 +2,14 @@
 // the old fixed tables, and copying. Plain browser JS; a global in the page, module.exports in Node.
 const axidpsCustom = (() => {
   // Every stat a custom window can show: labels, tips and widths (px). The built-in tables read them too (ui.js).
-  // count: whole-number display. heal: the game reports heals only for you.
+  // count: whole-number display. heal: the game reports heals only for you. condi: includes
+  // condition damage, estimated for players whose exact ticks nobody shares (p.condi_est > 0).
   // rate: the base keys a per-second stat is computed from.
   const STATS = {
-    damage: {label: "Dmg", tip: "damage dealt", w: 62},
-    dps: {label: "DPS", tip: "damage per second", w: 52, rate: ["damage"]},
+    damage: {label: "Dmg", tip: "damage dealt (dimmed: condition damage estimated)", w: 62, condi: true},
+    dps: {label: "DPS", tip: "damage per second (dimmed: condition damage estimated)", w: 52, rate: ["damage"], condi: true},
     power: {label: "Power", tip: "strike damage dealt", w: 58},
-    condi: {label: "Condi", tip: "condition damage dealt", w: 52},
+    condi: {label: "Condi", tip: "condition damage dealt (dimmed: estimated, for players not running axidps)", w: 52, condi: true},
     down_contrib: {label: "DnC", tip: "down contribution: damage that led to enemy downs", w: 52},
     downs: {label: "Dn", tip: "enemies downed", w: 30, count: true},
     kills: {label: "K", tip: "enemies killed", w: 30, count: true},
@@ -226,7 +227,9 @@ const axidpsCustom = (() => {
 
   function totalPlayer(list) {
     // Heal stats are full only if every player's are.
-    const t = {name: "Total", account: "", prof: 0, heal_full: list.length > 0 && list.every(p => p.heal_full)};
+    // Condition damage is estimated in part if anyone's is.
+    const t = {name: "Total", account: "", prof: 0, heal_full: list.length > 0 && list.every(p => p.heal_full),
+      condi_est: list.reduce((a, p) => a + (Number(p.condi_est) || 0), 0)};
     for (const k of Object.keys(STATS)) if (!isBoon(k)) t[k] = list.reduce((a, p) => a + (Number(p[k]) || 0), 0);
     return t;
   }
@@ -316,7 +319,7 @@ const axidpsCustom = (() => {
   // Worst case, 50 players with every boon: about 62 x 50 x (15 x 8 + 52 x 4) bytes = 1 MB of
   // ring, plus charts tracking at most CHART_KEYS base keys at once (12 keys x 50 players x
   // 3600 s x 4 bytes = 8.6 MB): under 10 MB.
-  const IDENT = ["name", "account", "prof", "elite", "spec", "group", "me", "heal_full"];
+  const IDENT = ["name", "account", "prof", "elite", "spec", "group", "me", "heal_full", "condi_est"];
   const RING_MS = 60000, SERIES_CAP = 3600, NK = BASE_KEYS.length, NF = FIGHT_KEYS.length, CHART_KEYS = 12;
   const NB = NK - NF;
   const val = (e, i) => i < NF ? e.v[i] : e.b ? e.b[i - NF] : 0;
