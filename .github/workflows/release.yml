@@ -436,6 +436,9 @@ jobs:
   tests:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/ci.yml
+    # ci.yml's dll-check reads the release environment's PRIVATE_DEPLOY_KEY and
+    # PUBLIC_CHECK_PATTERNS; a called workflow gets them only with inherit.
+    secrets: inherit
 
   # Needs the tests too: a tag whose tests fail leaves its draft unpublished.
   publish:
