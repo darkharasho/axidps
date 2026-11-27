@@ -25,3 +25,6 @@ rm -f "$SIDE/sdk/.gitkeep" "$SIDE/plugins/.gitkeep" "$SIDE/sdk/"*.test.js
 echo "window.AXIDPS_BUILD = \"$VERSION\";" > "$DEST/version.js"
 [ -d "$ICONS" ] || (cd "$ROOT" && npm install --no-audit --no-fund >/dev/null)
 cp "$ICONS/"*.png "$DEST/icons/"
+# The same icons for plugins, at /_sdk/icons/ (axidps.specIcon).
+mkdir -p "$SIDE/sdk/icons"
+cp "$ICONS/"*.png "$SIDE/sdk/icons/"

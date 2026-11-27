@@ -13,11 +13,9 @@
   const MAX_SETTINGS = 16384;
   const PING_MS = 2000, STALL_MS = 5000;
   const DEFAULT_SIZE = [240, 120];
-  // The bundled windows that keep the names the DLL and saved layouts already know.
-  const BUNDLED_ALIAS = {"axidps.fight/fight": "fight", "axidps.timeline/timeline": "timeline",
+  // Fight, Timeline and Healing were bundled plugins for a while; they are built in again.
+  const MIGRATE = {"axidps.fight/fight": "fight", "axidps.timeline/timeline": "timeline",
     "axidps.healing/healing": "healing"};
-  // Saved keys of the windows that were built in before they became bundled plugins.
-  const MIGRATE = {fight: "axidps.fight/fight", timeline: "axidps.timeline/timeline", healing: "axidps.healing/healing"};
   const ICONS = ["chart", "users", "shield", "swords", "activity", "x", "grid", "layers", "sliders", "plug",
     "download", "columns", "plus"];
   const PERMISSION_TEXT = {fight: "Reads your fight data", world: "Draws over the game world",
@@ -42,7 +40,7 @@
         const fullId = p.id + "/" + win.id;
         if (seen.has(fullId)) continue;
         seen.add(fullId);
-        const alias = (p.bundled === true && BUNDLED_ALIAS[fullId]) || "p" + ++n;
+        const alias = "p" + ++n;
         if (on) out.push({plugin: p, win, fullId, alias});
       }
     }
@@ -97,17 +95,18 @@
     };
   }
 
-  // Copy the saved pos/open/cfg of the windows that used to be built in (fight, timeline,
-  // healing) to their full plugin ids, unless those exist already. The old keys stay, so an older
-  // build (which reads them) still finds its windows where they were; nothing here reads them.
-  // Safe to run again: the full-id key, once there, wins.
+  // Move the saved position and open state of Fight, Timeline and Healing from their plugin ids
+  // back to the built-in windows' ids (the plugin ids were the newer ones, so they win), and drop
+  // the plugin keys so this happens once. Their plugin settings don't fit the built-in windows.
   function migrateSaved(saved) {
     if (!saved || typeof saved !== "object") return saved;
     for (const m of ["pos", "open", "cfg"]) {
       const o = saved[m];
       if (!o || typeof o !== "object") continue;
-      for (const [old, full] of Object.entries(MIGRATE)) {
-        if (own(o, old) && !own(o, full)) o[full] = o[old];
+      for (const [full, id] of Object.entries(MIGRATE)) {
+        if (!own(o, full)) continue;
+        if (m !== "cfg") o[id] = o[full];
+        delete o[full];
       }
     }
     return saved;

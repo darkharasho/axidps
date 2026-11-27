@@ -7,26 +7,18 @@ const win = (id, extra) => Object.assign({ id, title: id, entry: id + ".html", d
 const plugin = (id, extra) => Object.assign({ id, name: id, version: "1.0.0", author: "a", api: 1,
   permissions: ["fight"], network: [], windows: [win("w")], bundled: false }, extra);
 
-test("aliases: bundled fight/timeline/healing keep theirs, others get p1, p2 in order", () => {
+test("aliases: windows get p1, p2 in order, bundled or not", () => {
   const list = [
-    plugin("axidps.fight", { bundled: true, windows: [win("fight")] }),
+    plugin("axidps.perf", { bundled: true, windows: [win("perf")] }),
     plugin("someone.long-plugin-name-for-testing", { windows: [win("a-window-with-a-long-id"), win("b")] }),
-    plugin("axidps.timeline", { bundled: true, windows: [win("timeline", { place: "below-meter" })] }),
-    plugin("axidps.healing", { bundled: true, windows: [win("healing")] }),
   ];
   const ws = ph.validManifestWindows(list);
-  assert.deepStrictEqual(ws.map(w => w.alias), ["fight", "p1", "p2", "timeline", "healing"]);
-  assert.deepStrictEqual(ws.map(w => w.fullId), ["axidps.fight/fight",
-    "someone.long-plugin-name-for-testing/a-window-with-a-long-id", "someone.long-plugin-name-for-testing/b",
-    "axidps.timeline/timeline", "axidps.healing/healing"]);
+  assert.deepStrictEqual(ws.map(w => w.alias), ["p1", "p2", "p3"]);
+  assert.deepStrictEqual(ws.map(w => w.fullId), ["axidps.perf/perf",
+    "someone.long-plugin-name-for-testing/a-window-with-a-long-id", "someone.long-plugin-name-for-testing/b"]);
   for (const w of ws) assert.ok(Buffer.byteLength(w.alias) <= 16, w.alias);
   assert.strictEqual(ws[1].plugin.id, "someone.long-plugin-name-for-testing");
   assert.strictEqual(ws[1].win.id, "a-window-with-a-long-id");
-});
-
-test("aliases: a player plugin named like a bundled one gets no bundled alias", () => {
-  const ws = ph.validManifestWindows([plugin("axidps.fight", { windows: [win("fight")] })]);
-  assert.deepStrictEqual(ws.map(w => w.alias), ["p1"]);
 });
 
 test("validManifestWindows skips plugins with errors and disabled ones, aliases stay put", () => {
@@ -65,22 +57,15 @@ test("grantsOf and permissionLines", () => {
       "Reads your squad and party", "Reads enemy players seen in combat"]);
 });
 
-test("migrateSaved copies the bundled windows' keys, once, and keeps the old ones for a downgrade", () => {
-  const s = { pos: { fight: [1, 2], meter: [3, 4] }, open: { healing: true }, cfg: { timeline: { a: 1 } } };
-  const want = { pos: { fight: [1, 2], "axidps.fight/fight": [1, 2], meter: [3, 4] },
-    open: { healing: true, "axidps.healing/healing": true },
-    cfg: { timeline: { a: 1 }, "axidps.timeline/timeline": { a: 1 } } };
+test("migrateSaved moves the plugin windows' position and open state back to the built-in ids, once", () => {
+  const s = { pos: { fight: [1, 2], "axidps.fight/fight": [5, 6], meter: [3, 4] },
+    open: { "axidps.healing/healing": true }, cfg: { "axidps.timeline/timeline": { a: 1 }, timeline: { b: 2 } } };
+  const want = { pos: { fight: [5, 6], meter: [3, 4] }, open: { healing: true }, cfg: { timeline: { b: 2 } } };
   const once = ph.migrateSaved(s);
   assert.deepStrictEqual(once, want);
-  assert.deepStrictEqual(ph.migrateSaved(JSON.parse(JSON.stringify(once))), want);
-  // Moved after the upgrade, then migrated again: the full-id key (the newer one) wins.
-  once.pos["axidps.fight/fight"] = [9, 9];
-  assert.deepStrictEqual(ph.migrateSaved(once).pos["axidps.fight/fight"], [9, 9]);
-});
-
-test("migrateSaved keeps a new key that is already there and copes with missing maps", () => {
-  const s = ph.migrateSaved({ pos: { fight: [1, 2], "axidps.fight/fight": [5, 6] } });
-  assert.deepStrictEqual(s.pos, { fight: [1, 2], "axidps.fight/fight": [5, 6] });
+  // Nothing left to move: a window moved since stays where it is.
+  once.pos.fight = [9, 9];
+  assert.deepStrictEqual(ph.migrateSaved(once).pos.fight, [9, 9]);
   assert.deepStrictEqual(ph.migrateSaved({}), {});
 });
 

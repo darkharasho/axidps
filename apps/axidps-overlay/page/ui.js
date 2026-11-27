@@ -518,7 +518,8 @@ function nameCell(p, frac) {
 
 // What a table's layout depends on: its columns and compact mode.
 const tableKey = w => colsOf(w).join() + (saved.compact ? "/c" : "");
-// def: {cols: default column keys, nameW: name column width, sum(ps): footer}; the rank and
+// def: {cols: default column keys, nameW: name column width, sum(ps): footer, rows(ps): which
+// players it lists (default all)}; the rank and
 // name columns are added automatically. "My subgroup only" (cfg.groupOnly) was set in the old
 // Tables tab; the hub's Defaults clears it.
 function tableWindow(def) {
@@ -550,7 +551,7 @@ function tableWindow(def) {
       const c = w.cfg;
       const k = c.sortKey === "name" || cols.some(x => x.k === c.sortKey) ? c.sortKey : cols[0].k;
       fightState(w);
-      let ps = players();
+      let ps = def.rows ? def.rows(players()) : players();
       const me = ps.find(p => p.me);
       if (c.groupOnly && me) ps = ps.filter(p => p.group === me.group);
       ps = ps.slice().sort((a, b) => {
@@ -605,6 +606,101 @@ tableWindow({
   },
   cols: ["taken", "downed", "deaths"],
   sum: ps => `${fmt(sumOf(ps, "taken"))} taken · ${sumOf(ps, "downed")} downs · ${sumOf(ps, "deaths")} deaths`,
+});
+
+// Healing: you and squadmates sharing their heals, per fight like damage. For anyone else only
+// what passed between you is known, so they are left out.
+tableWindow({
+  id: "healing", blurb: ["Healing", "healing and barrier by player", "plus"], title: "Healing", nameW: 170,
+  cfg: {sortKey: "healing", sortAsc: false, groupOnly: false},
+  at: () => besideMeter(["support", "fight"], 0),
+  cols: ["healing", "barrier", "hps"],
+  rows: ps => ps.filter(p => p.heal_full && (p.me || (p.healing || 0) + (p.barrier || 0) > 0)),
+  sum: ps => `${fmt(sumOf(ps, "healing"))} healing · ${fmt(sumOf(ps, "barrier"))} barrier · ${ps.length} player${ps.length === 1 ? "" : "s"}`,
+});
+
+// Fight: squad totals for the current fight.
+defineWindow({
+  id: "fight", blurb: ["Fight", "squad totals", "swords"], title: "Fight",
+  at: () => besideMeter(["support"], 0),
+  mount(w) { w.body.innerHTML = `<div class="fcard"></div>`; },
+  render(w) {
+    fightState(w);
+    const ps = players();
+    const dur = ui.live && !ui.cleared && ui.live.fight ? ui.live.fight.duration_ms : 0;
+    const me = ps.find(p => p.me) || {};
+    const rows = [["Duration", axidpsKit.clock(dur)], ["Squad", ps.length],
+      ["Damage", fmt(sumOf(ps, "damage"))], ["Squad DPS", fmt(sumOf(ps, "dps"))],
+      ["Down contribution", fmt(sumOf(ps, "down_contrib"))],
+      ["Enemies downed", sumOf(ps, "downs")], ["Kills", sumOf(ps, "kills")],
+      ["Strips", sumOf(ps, "strips")], ["Cleanses", sumOf(ps, "cleanses")],
+      ["Your healing", fmt((me.healing || 0) + (me.barrier || 0))],
+      ["Damage taken", fmt(sumOf(ps, "taken"))], ["Downed", sumOf(ps, "downed")],
+      ["Deaths", sumOf(ps, "deaths")]];
+    w.body.firstChild.innerHTML = rows.map(([k, v]) => `<span>${esc(k)}</span><b>${esc(String(v))}</b>`).join("");
+  },
+});
+
+// Timeline: squad damage per second over the fight, dealt and taken, as a 5 s rolling average.
+defineWindow({
+  id: "timeline", blurb: ["Timeline", "damage over time", "activity"], title: "Timeline",
+  // Under the meter.
+  at: ([sw, sh]) => {
+    const m = wins.find(v => v.id === "meter"), [mx, my] = posOf(m);
+    return [Math.max(0, Math.min(mx, sw - 430)), Math.max(0, Math.min(my + m.el.offsetHeight + 6, sh - 200))];
+  },
+  mount(w) {
+    const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
+    w.body.innerHTML = `<canvas class="chart" width="${px(420)}" height="${px(150)}"></canvas>` +
+      `<div class="foot"><span><b class="good">dealt</b> · <b class="bad">taken</b> per second</span><span class="peak"></span></div>`;
+    w.compact = saved.compact;
+  },
+  render(w) {
+    if (w.compact !== saved.compact) w.def.mount(w);
+    fightState(w);
+    const tl = ui.live && !ui.cleared ? ui.live.timeline : null;
+    const key = `${JSON.stringify(tl)}|${theme.id}|${theme.s.font}|${saved.compact}|${ui.cleared}`;
+    if (w.drawn === key) return;
+    w.drawn = key;
+    const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
+    const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 6, padR = 6;
+    g.clearRect(0, 0, W, H);
+    const bucket = (tl && tl.bucket_ms) || 1000;
+    const smooth = a => a.map((_, i) => {
+      const s = a.slice(Math.max(0, i - 4), i + 1);
+      return s.reduce((x, y) => x + y, 0) / s.length * 1000 / bucket;
+    });
+    const out = smooth((tl && tl.out) || []), inc = smooth((tl && tl.in) || []);
+    const n = Math.max(out.length, inc.length);
+    const top = Math.max(1, ...out, ...inc);
+    const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
+    const y = v => H - padB - v / top * (H - padB - padT);
+    g.strokeStyle = T("line"); g.lineWidth = 1;
+    g.font = "10px " + theme.s.font; g.fillStyle = T("faint");
+    for (const f of [0, 0.5, 1]) {
+      const yy = Math.round(y(top * f)) + 0.5;
+      g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
+      if (n > 1) g.fillText(fmt(top * f), 2, yy + 3);
+    }
+    if (n > 1) {
+      g.fillText("0:00", padL, H - 3);
+      const end = axidpsKit.clock(n * bucket);
+      g.fillText(end, W - padR - g.measureText(end).width, H - 3);
+    }
+    const line = (a, col) => {
+      if (a.length < 2) return;
+      g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath();
+      a.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
+      g.stroke();
+    };
+    line(inc, T("bad"));
+    line(out, T("good"));
+    if (n < 2) {
+      g.fillStyle = T("dim"); g.textAlign = "center";
+      g.fillText(emptyText(), W / 2, H / 2); g.textAlign = "start";
+    }
+    w.body.querySelector(".peak").textContent = n > 1 ? `peak ${fmt(Math.max(...out))} dealt` : "";
+  },
 });
 
 // ---- custom windows (saved.custom: the player's specs; see custom.js) ------------------------
@@ -904,9 +1000,6 @@ function trackCharts() {
   }
   spanHistory.track(keys);
 }
-
-// Fight, Timeline and Healing are bundled plugins (plugins/axidps.fight, axidps.timeline,
-// axidps.healing), on the same API as anyone's.
 
 // Shown only in edit mode; interactive there (the DLL drags every other window by any point).
 defineWindow({
@@ -1489,7 +1582,7 @@ window.axidps = {
   restore(s) {
     let migrated = false;
     if (s && s.v === 1) {
-      // Fight, Timeline and Healing were built in: their saved keys move to the plugins' full ids.
+      // Fight, Timeline and Healing were bundled plugins: their saved keys move back to these ids.
       const before = JSON.stringify(s);
       pluginHost.migrateSaved(s);
       migrated = JSON.stringify(s) !== before;
@@ -1579,7 +1672,7 @@ if (DEMO.includes("demo")) {
   if (DEMO.includes("hub")) ui.session.hub = true;
   const tb = /tab=(\w+)/.exec(DEMO);
   if (tb) hub.tab = tb[1];
-  for (const k of ["support", "defense", "axidps.fight/fight", "axidps.timeline/timeline", "axidps.healing/healing"]) {
+  for (const k of ["support", "defense", "fight", "timeline", "healing"]) {
     saved.open[k] = true;
   }
   // ?demo&custom: three custom windows (a table, bars and a chart); custom=many: eight of them, all

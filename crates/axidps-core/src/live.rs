@@ -142,45 +142,6 @@ impl CopySums {
     }
 }
 
-/// One player's healing the way the arcdps healing addon counts it (its own window and its
-/// "peers outgoing"): everything the player gives and gets from its own combat entry until its
-/// combat exit, kept until it next enters combat, whatever fights core splits that time into.
-/// Counted from the player's own copies only (the POV's events, a sharer's relayed ones).
-#[derive(Debug, Clone, Default)]
-struct OwnCombat {
-    /// Game time the player last entered combat (None until it first does).
-    start: Option<u64>,
-    /// Game time it left that combat (None while still in it).
-    end: Option<u64>,
-    /// A copy of its own heals has arrived (the POV, or a player sharing its heals).
-    shared: bool,
-    /// Its own client sends its combat changes over the relay: those set `start` and `end`,
-    /// and the local game's view of this player's combat is ignored.
-    relayed: bool,
-    /// Given by target and received by source, by owner.
-    out: BTreeMap<u32, HealSum>,
-    inc: BTreeMap<u32, HealSum>,
-}
-
-impl OwnCombat {
-    fn in_combat(&self) -> bool {
-        self.start.is_some() && self.end.is_none()
-    }
-
-    fn total(m: &BTreeMap<u32, HealSum>) -> HealSum {
-        m.values().fold(HealSum::default(), |a, h| HealSum {
-            healing: a.healing.saturating_add(h.healing),
-            barrier: a.barrier.saturating_add(h.barrier),
-        })
-    }
-
-    /// Combat time up to game time `now`, in ms.
-    fn duration_ms(&self, now: u64) -> u64 {
-        self.start
-            .map_or(0, |s| self.end.unwrap_or(now).saturating_sub(s))
-    }
-}
-
 /// Boons (Elite Insights' list): stripping one from someone else is a strip.
 const BOONS: &[u32] = &[
     717, 718, 719, 725, 726, 740, 743, 873, 1122, 1187, 26980, 30328,
@@ -265,12 +226,6 @@ pub struct LiveStats {
     received: BTreeMap<u32, CopySums>,
     /// The ended fight's healing breakdown, kept with its rows.
     last_healing: Value,
-    /// Each player's healing over its own combat (the healing addon's numbers), by player;
-    /// shown instead of the per-fight numbers for the POV and sharers once their combat state
-    /// is known.
-    combats: BTreeMap<u32, OwnCombat>,
-    /// Latest game time seen by [`LiveStats::event`].
-    clock: u64,
     /// Live buff instances (tracked in and out of fights): instance -> (target, buff).
     stacks: BTreeMap<u32, (u32, u32)>,
     /// Squad members as last seen in the registry this fight.
@@ -346,8 +301,6 @@ impl LiveStats {
             given: BTreeMap::new(),
             received: BTreeMap::new(),
             last_healing: Value::Null,
-            combats: BTreeMap::new(),
-            clock: 0,
             stacks: BTreeMap::new(),
             idents: BTreeMap::new(),
             series: BTreeMap::new(),
@@ -446,52 +399,6 @@ impl LiveStats {
             .collect();
         v.sort_by_key(|r| std::cmp::Reverse(r.0));
         v.into_iter().map(|(_, v)| v).collect()
-    }
-
-    /// Put each player's own-combat healing into its row (the POV and sharers), and the POV's
-    /// into the healing breakdown.
-    fn apply_own(&self, players: &mut [Value], healing: &mut Value, reg: &Registry) {
-        for (&id, c) in &self.combats {
-            let me = self.pov == Some(id);
-            if c.start.is_none() || !(me || c.shared) {
-                continue;
-            }
-            let (out, inc) = (OwnCombat::total(&c.out), OwnCombat::total(&c.inc));
-            let ms = c.duration_ms(self.clock);
-            let hps = if ms == 0 {
-                0.0
-            } else {
-                (out.healing.saturating_add(out.barrier) as f64 * 10_000.0 / ms as f64).round()
-                    / 10.0
-            };
-            let who = self.idents.get(&id);
-            let row = players.iter_mut().find(|p| {
-                if me {
-                    return p["me"] == true;
-                }
-                who.is_some_and(|w| {
-                    if w.account.is_empty() {
-                        p["name"] == w.name.as_str()
-                    } else {
-                        p["account"] == w.account.as_str()
-                    }
-                })
-            });
-            if let Some(p) = row {
-                p["healing"] = json!(out.healing);
-                p["barrier"] = json!(out.barrier);
-                p["hps"] = json!(hps);
-                p["healing_in"] = json!(inc.healing);
-                p["barrier_in"] = json!(inc.barrier);
-                p["heal_full"] = json!(true);
-            }
-            if me {
-                *healing = json!({
-                    "out": self.heal_list(&c.out, reg),
-                    "in": self.heal_list(&c.inc, reg),
-                });
-            }
-        }
     }
 
     /// Count `minion`'s strikes toward `master`. Live core sets it from the poll's
@@ -601,102 +508,6 @@ impl LiveStats {
         }
     }
 
-    /// Follow every player's own combat and count its own heals in it (in and out of fights).
-    fn own_event(&mut self, t: u64, ev: &Event) {
-        self.clock = self.clock.max(t);
-        match *ev {
-            Event::RelayCombat { sender, in_combat } if self.pov != Some(sender) => {
-                let c = self.combats.entry(sender).or_default();
-                c.relayed = true;
-                c.shared = true;
-                if in_combat && !c.in_combat() {
-                    c.start = Some(t);
-                    c.end = None;
-                    c.out.clear();
-                    c.inc.clear();
-                } else if !in_combat && c.in_combat() {
-                    c.end = Some(t);
-                }
-                self.generation += 1;
-            }
-            Event::Combat { id, .. } if self.combats.get(&id).is_some_and(|c| c.relayed) => {}
-            Event::Combat { id, in_combat } => {
-                let c = self.combats.entry(id).or_default();
-                if in_combat && !c.in_combat() {
-                    // A new combat: the addon starts over.
-                    c.start = Some(t);
-                    c.end = None;
-                    c.out.clear();
-                    c.inc.clear();
-                    self.generation += 1;
-                } else if !in_combat && c.in_combat() {
-                    c.end = Some(t);
-                    self.generation += 1;
-                }
-                // Enemies and players who share nothing are not kept once out of combat.
-                if !in_combat && !c.shared && self.pov != Some(id) {
-                    self.combats.remove(&id);
-                }
-            }
-            Event::AgentRemove { id }
-                if self.pov != Some(id) && self.combats.get(&id).is_some_and(|c| !c.shared) =>
-            {
-                self.combats.remove(&id);
-            }
-            Event::Heal {
-                src,
-                dst,
-                value,
-                barrier,
-                ..
-            } => {
-                if let Some(pov) = self.pov {
-                    self.own_heal(pov, src, dst, value, barrier);
-                }
-            }
-            Event::RelayHeal {
-                sender,
-                src,
-                dst,
-                value,
-                barrier,
-                ..
-            } if self.pov != Some(sender) => self.own_heal(sender, src, dst, value, barrier),
-            _ => {}
-        }
-    }
-
-    /// One heal as reported by `sender`: it counts for the giver if `sender` gave it and for
-    /// the receiver if `sender` got it, each in its own combat.
-    fn own_heal(&mut self, sender: u32, src: u32, dst: u32, value: i32, barrier: u32) {
-        if src == 0 || value <= 0 {
-            return;
-        }
-        let total = u64::from(value.unsigned_abs());
-        let bar = u64::from(barrier).min(total);
-        let sum = HealSum {
-            healing: total - bar,
-            barrier: bar,
-        };
-        let (by, to) = (self.owner(src), self.owner(dst));
-        if sender == by
-            && let Some(c) = self.combats.get_mut(&by)
-            && c.in_combat()
-        {
-            add_heal(&mut c.out, to, sum);
-            c.shared = true;
-            self.generation += 1;
-        }
-        if sender == to
-            && let Some(c) = self.combats.get_mut(&to)
-            && c.in_combat()
-        {
-            add_heal(&mut c.inc, by, sum);
-            c.shared = true;
-            self.generation += 1;
-        }
-    }
-
     /// Count one live event at game time `t`. Ignored outside a fight.
     pub fn event(&mut self, t: u64, ev: &Event) {
         self.track_masters(ev);
@@ -710,7 +521,6 @@ impl LiveStats {
             // Out of combat the feed lists the squad: a join, leave or name is a change.
             self.generation += 1;
         }
-        self.own_event(t, ev);
         if self.state != LiveState::Fight {
             return;
         }
@@ -1487,7 +1297,7 @@ impl LiveStats {
     /// The schema v1 value at wall time `unix_ms`. `reg` is the registry now (used while a
     /// fight is recording; an ended fight shows its players as of its end).
     pub fn snapshot(&mut self, reg: &Registry, unix_ms: u64) -> Value {
-        let (state, mut players, timeline, mut healing) = match self.state {
+        let (state, players, timeline, healing) = match self.state {
             // Before the first fight: the squad (or party) as it is, every number zero.
             LiveState::Idle => ("idle", self.rows(reg), Value::Null, Value::Null),
             LiveState::Fight => {
@@ -1501,7 +1311,6 @@ impl LiveStats {
                 self.last_healing.clone(),
             ),
         };
-        self.apply_own(&mut players, &mut healing, reg);
         let map = if self.state == LiveState::Idle {
             0
         } else {
@@ -1739,132 +1548,21 @@ mod tests {
         assert_eq!(l.snapshot(&r, 0)["healing"]["out"][0]["healing"], 500);
     }
 
-    /// The POV's healing follows its own combat like the healing addon: heals before and
-    /// after core's fight count, heals out of combat don't, a new combat starts from zero.
+    /// Healing starts over with each fight, like damage: the POV's and a sharer's.
     #[test]
-    fn pov_healing_follows_own_combat() {
+    fn healing_resets_each_fight() {
         let r = world();
         let mut l = LiveStats::new();
         l.set_pov(1);
-        let heal = |src, dst, value, barrier| Event::Heal {
-            src,
-            dst,
-            skill: 9,
-            value,
-            barrier,
-            buff: false,
-        };
-        let combat = |in_combat| Event::Combat { id: 1, in_combat };
-        feed(
-            &mut l,
-            &r,
-            &[
-                (100, heal(1, 4, 999, 0)), // out of combat: not counted
-                (500, combat(true)),
-                (600, heal(1, 4, 300, 0)), // before core's fight
-                (700, heal(4, 1, 80, 0)),  // received
-            ],
-        );
         l.begin(1_000, 38);
-        feed(&mut l, &r, &[(1_500, heal(1, 1, 200, 50))]);
+        feed(&mut l, &r, &[(1_500, local_heal(1, 4, 300)), (1_600, relay(4, 4, 1, 900))]);
         l.end(2_000, &r);
-        feed(
-            &mut l,
-            &r,
-            &[
-                (2_500, heal(1, 4, 100, 0)), // after the fight, still in combat
-                (3_000, combat(false)),
-                (3_500, heal(1, 4, 777, 0)), // out of combat again
-            ],
-        );
+        l.begin(5_000, 38);
+        feed(&mut l, &r, &[(5_500, local_heal(1, 4, 40)), (5_600, relay(4, 4, 1, 70))]);
         let v = l.snapshot(&r, 0);
-        let me = player(&v, "Char 1").unwrap();
-        assert_eq!(me["healing"], 550);
-        assert_eq!(me["barrier"], 50);
-        assert_eq!(me["healing_in"], 230);
-        // 600 over 2.5 s of combat.
-        assert_eq!(me["hps"], 240.0);
-        let out = v["healing"]["out"].as_array().unwrap();
-        assert_eq!(out[0]["name"], "Char 4");
-        assert_eq!(out[0]["healing"], 400);
-        // A new combat starts over.
-        feed(&mut l, &r, &[(4_000, combat(true))]);
-        let v = l.snapshot(&r, 0);
-        assert_eq!(player(&v, "Char 1").unwrap()["healing"], 0);
-    }
-
-    /// A sharer's healing follows its own combat (the addon's "peers outgoing"): counted from
-    /// its own copies between its combat entry and exit, across core's fight boundaries.
-    #[test]
-    fn sharer_healing_follows_its_own_combat() {
-        let r = world();
-        let mut l = LiveStats::new();
-        l.set_pov(1);
-        let combat = |id, in_combat| Event::Combat { id, in_combat };
-        feed(
-            &mut l,
-            &r,
-            &[
-                (100, relay(4, 4, 1, 999)), // out of combat: not counted
-                (500, combat(4, true)),
-                (600, relay(4, 4, 1, 300)), // before core's fight
-                (650, relay(6, 4, 6, 50)),  // Char 6's copy: not Char 4's own
-            ],
-        );
-        l.begin(1_000, 38);
-        feed(&mut l, &r, &[(1_500, relay(4, 4, 6, 200))]);
-        l.end(2_000, &r);
-        feed(
-            &mut l,
-            &r,
-            &[
-                (3_000, combat(4, false)),
-                (3_500, relay(4, 4, 6, 777)), // out of combat again
-            ],
-        );
-        let v = l.snapshot(&r, 0);
+        assert_eq!(player(&v, "Char 1").unwrap()["healing"], 40);
         let p4 = player(&v, "Char 4").unwrap();
-        assert_eq!(p4["healing"], 500);
-        assert_eq!(p4["heal_full"], true);
-        // 500 over 2.5 s of its combat.
-        assert_eq!(p4["hps"], 200.0);
-    }
-
-    /// A sharer's combat comes from its own client when it sends it: the game here may never
-    /// report that player entering combat (out of range, or another agent id), and then its
-    /// relayed heals were all dropped. Once it sends its own, this client's view is ignored.
-    #[test]
-    fn sharer_combat_from_its_own_client() {
-        let r = world();
-        let mut l = LiveStats::new();
-        l.set_pov(1);
-        let own = |in_combat| Event::RelayCombat {
-            sender: 4,
-            in_combat,
-        };
-        l.begin(1_000, 38);
-        feed(
-            &mut l,
-            &r,
-            &[
-                (1_100, own(true)),
-                (1_200, relay(4, 4, 1, 300)),
-                // This client's view of Char 4 no longer ends its combat.
-                (
-                    1_300,
-                    Event::Combat {
-                        id: 4,
-                        in_combat: false,
-                    },
-                ),
-                (1_400, relay(4, 4, 6, 200)),
-                (2_000, own(false)),
-                (2_100, relay(4, 4, 6, 777)), // after its own exit: not counted
-            ],
-        );
-        let v = l.snapshot(&r, 0);
-        let p4 = player(&v, "Char 4").unwrap();
-        assert_eq!(p4["healing"], 500);
+        assert_eq!(p4["healing"], 70);
         assert_eq!(p4["heal_full"], true);
     }
 
