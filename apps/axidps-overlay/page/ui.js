@@ -944,7 +944,8 @@ function detailView(view, by, d, p) {
     rows.push({icon: b, name: STATS[`boon:${b}:up`].label, v: vals[0], keys: vals,
       cells: vals.map((v, i) => C.formatBoon(`boon:${b}:${["up", "self", "group", "squad"][i]}`, v))});
   }
-  return {series: null, col: T("accent"), head: ["Uptime", "Self", "Group", "Squad"], nameHead: "Boon", rows,
+  // The chart: the picked boon's uptime each second (render fills it in once the core sends it).
+  return {series: [], perSecond: false, pick: "boon", col: T("accent"), head: ["Uptime", "Self", "Group", "Squad"], nameHead: "Boon", rows,
     sum: "generation per player of the subgroup and squad", empty: "No boons this fight"};
 }
 
@@ -982,10 +983,12 @@ defineWindow({
     // The skill panel (right) also opens; clicking the same row again closes both.
     const tbody = w.body.querySelector("tbody"), side = w.body.querySelector(".dside");
     tbody.onclick = e => {
-      const tr = e.target.closest("tr[data-panel]");
+      const tr = e.target.closest("tr[data-panel], tr[data-skill]");
       if (!tr) return;
-      const id = Number(tr.dataset.panel);
-      if (tr.dataset.skill) pickSkill(saved.detail_skill === id ? 0 : id);
+      const id = Number(tr.dataset.panel || tr.dataset.skill);
+      // A boon stays charted (clicking it again keeps it).
+      if (w.cfg.view === "boons") pickSkill(id);
+      else if (tr.dataset.skill) pickSkill(saved.detail_skill === id ? 0 : id);
       else w.pin = w.pin === id ? 0 : id;
       w.hover = 0;
       w.drawn = ""; w.drawnTable = ""; w.def.render(w);
@@ -1045,7 +1048,15 @@ defineWindow({
       return so.asc ? d : -d;
     });
     w.body.querySelectorAll("th[data-col]").forEach(th => th.classList.toggle("sort", !!so && Number(th.dataset.col) === so.col));
-    const pick = v.pick && rows.some(r => r.icon === saved.detail_skill) ? saved.detail_skill : 0;
+    let pick = v.pick && rows.some(r => r.icon === saved.detail_skill) ? saved.detail_skill : 0;
+    // Boons always chart one: the first until another is clicked.
+    if (v.pick === "boon" && !pick && rows.length) { pick = rows[0].icon; pickSkill(pick); }
+    const boonUp = v.pick === "boon" && d && d.boon && d.boon.id === pick ? d.boon.up || [] : null;
+    if (v.pick === "boon") {
+      // Uptime in % per second; Might and Stability as average stacks.
+      const stacks = [740, 1122].includes(pick), bucket = (d && d.bucket_ms) || 1000;
+      v.series = boonUp ? boonUp.map(ms => stacks ? ms / 1000 : Math.min(100, ms / bucket * 100)) : [];
+    }
     w.offset = Math.max(0, Math.min(w.offset, rows.length - DETAIL_ROWS));
     const shown = rows.slice(w.offset, w.offset + DETAIL_ROWS);
     const top = Math.max(1, ...rows.map(r => r.v));
@@ -1055,7 +1066,7 @@ defineWindow({
       const lead = r.icon !== undefined ? iconImg(r.icon)
         : r.spec ? `<img class="sk" src="icons/${encodeURIComponent(r.spec)}.png" alt="">` : "";
       const sel = v.pick && r.icon !== undefined;
-      const on = r.panel && r.icon === (v.pick ? pick : w.pin);
+      const on = v.pick ? sel && r.icon === pick : r.panel && r.icon === w.pin;
       return `<tr class="p${on ? " sel" : ""}"${sel ? ` data-skill="${r.icon}"` : ""}${r.panel ? ` data-panel="${r.icon}"` : ""}>` +
         `<td class="l name" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
         `${lead}${esc(r.name)}</td>` + r.cells.map(c => `<td>${esc(c)}</td>`).join("") + `</tr>`;
@@ -1067,7 +1078,9 @@ defineWindow({
       ? emptyText() : "Loading…") : v.empty;
     const pickRow = pick && rows.find(r => r.icon === pick);
     const nCasts = pick && d && Array.isArray(d.casts) ? d.casts.filter(c => c[1] === pick).length : 0;
-    w.body.querySelector(".sum").textContent = !d ? "" : pickRow
+    w.body.querySelector(".sum").textContent = !d ? "" : v.pick === "boon"
+      ? (pickRow ? `${pickRow.name}: ${[740, 1122].includes(pick) ? "average stacks" : "uptime %"} per second · click a boon to chart it` : v.sum)
+      : pickRow
       ? `${pickRow.name}: ${nCasts ? `${int(nCasts)} cast${nCasts === 1 ? "" : "s"}` : "no casts (it comes from another skill or a trait)"}`
       : v.sum + (v.pick ? " · click a skill for its casts" : "");
     w.body.querySelector(".scroll").textContent = v.rows.length > DETAIL_ROWS
@@ -1090,7 +1103,8 @@ defineWindow({
     }
     const cv = w.body.querySelector("canvas");
     cv.style.display = v.series ? "block" : "none";
-    if (v.series) drawDetail(w, d, v.series, v.col, view, v.perSecond !== false, pick ? {id: pick, of: v.pick} : null);
+    if (v.series) drawDetail(w, d, v.series, v.col, view, v.perSecond !== false,
+      pick && v.pick !== "boon" ? {id: pick, of: v.pick} : null);
   },
 });
 // The Details skill panel for row `r`: its header and its scrolling stats, split by a NUL.
@@ -2305,6 +2319,9 @@ if (DEMO.includes("demo")) {
       skill: saved.detail_skill ? {id: saved.detail_skill,
         out: tl.out.map((_, i) => (i % 6) < 2 ? Math.round(9000 + 4000 * Math.sin(i)) : 0),
         heal: tl.out.map((_, i) => (i % 5) < 2 ? 1500 : 0)} : null,
+      boon: axidpsCustom.SQUAD_BOONS.includes(saved.detail_skill) ? {id: saved.detail_skill,
+        up: tl.out.map((_, i) => [740, 1122].includes(saved.detail_skill)
+          ? Math.round(1000 * (12 + 10 * Math.sin(i / 7))) : (i % 40) < 28 ? 1000 : (i % 40) < 31 ? 500 : 0)} : null,
       strip_series: tl.out.map((_, i) => (i * 7) % 5 === 0 ? 3 : i % 4 === 0 ? 1 : 0),
       cleanse_series: tl.out.map((_, i) => (i * 3) % 7 === 0 ? 4 : i % 5 === 0 ? 2 : 0)};
     axidps.update({v: 1, t: Date.now(), state: "fight", fight: {duration_ms: ms, map: 38}, players: ps,

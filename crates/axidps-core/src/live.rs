@@ -424,6 +424,9 @@ pub struct LiveStats {
     boon_targets: BTreeMap<u32, (u8, bool)>,
     /// Game time of the tracker's last tick.
     boon_tick: Option<u64>,
+    /// Per tracker id and boon: its uptime total (ms, stack-ms for Might and Stability) at the
+    /// end of each bucket, as sampled at the tracker's ticks (the details chart's boon line).
+    boon_hist: BTreeMap<u32, BTreeMap<u32, Vec<u64>>>,
     /// The condition model estimating this fight's ticks nobody reports exactly.
     estimator: Option<Estimator>,
     /// Estimated condition damage this fight per owner: total, per bucket and per skill. Shown
@@ -495,6 +498,7 @@ impl LiveStats {
             boon_active: BTreeSet::new(),
             boon_targets: BTreeMap::new(),
             boon_tick: None,
+            boon_hist: BTreeMap::new(),
             estimator: None,
             est_condi: BTreeMap::new(),
             est_series: BTreeMap::new(),
@@ -674,6 +678,7 @@ impl LiveStats {
         self.boon_active.clear();
         self.boon_targets.clear();
         self.boon_tick = None;
+        self.boon_hist.clear();
         self.estimator = None;
         self.est_condi.clear();
         self.est_series.clear();
@@ -1177,6 +1182,42 @@ impl LiveStats {
         // writer leave at 0 for every player: 0 is what axilog sees on both logs.
         self.boons.tick(now, &groups, &squad, &target, &|_| 0);
         self.boon_targets = targets;
+        if self.state == LiveState::Fight {
+            self.sample_boons(now);
+        }
+    }
+
+    /// Note each squad player's boon uptime totals at game time `t` (its bucket). Buckets the
+    /// ticks skipped are filled in a straight line from the last sample.
+    fn sample_boons(&mut self, t: u64) {
+        // The totals at `t` close the bucket that ends there.
+        let i = self.bucket(t.saturating_sub(1).max(self.start_ms));
+        if i >= MAX_BUCKETS {
+            return;
+        }
+        for &c in &self.boon_squad {
+            let Some(totals) = self.boons.totals(c) else {
+                continue;
+            };
+            let hist = self.boon_hist.entry(c).or_default();
+            for (&b, v) in totals {
+                let cum = hist.entry(b).or_default();
+                let (from, last) = cum.last().map_or((0, 0), |&l| (cum.len(), l));
+                let now = v[0].max(last);
+                if i < from {
+                    // Still the last sample's bucket: it moves up.
+                    if let Some(l) = cum.last_mut() {
+                        *l = now;
+                    }
+                    continue;
+                }
+                let span = (i + 1 - from) as u64;
+                for k in from..=i {
+                    let done = (k + 1 - from) as u64;
+                    cum.push(last + (now - last) * done / span);
+                }
+            }
+        }
     }
 
     /// A tracker total with group and squad as per-target averages, as axilog's rollup takes
@@ -1877,6 +1918,17 @@ impl LiveStats {
             "states": states,
             "casts": casts,
             "skill": self.detail_skill.map_or(Value::Null, |id| json!({"id": id, "out": sel_out, "heal": sel_heal})),
+            // A selected boon: its uptime per bucket (ms; stack-ms for Might and Stability).
+            "boon": self.detail_skill.filter(|b| SQUAD_BOONS.contains(b)).map_or(Value::Null, |b| {
+                let c = self.boon_id(ids[0], account);
+                let cum = self.boon_hist.get(&c).and_then(|h| h.get(&b)).map_or(&[][..], Vec::as_slice);
+                let up: Vec<u64> = cum.iter().scan(0u64, |prev, &v| {
+                    let d = v.saturating_sub(*prev);
+                    *prev = v;
+                    Some(d)
+                }).collect();
+                json!({"id": b, "up": up})
+            }),
             "out_condi": out_condi,
             "heal_full": heal_full,
             "heal_out": heal_s,
@@ -3276,6 +3328,32 @@ mod tests {
             player(&v, "Char 4").unwrap()["boons"],
             json!({"717": [0, 0, 0, 2000]})
         );
+    }
+
+    /// A boon picked in the details window: its uptime per second.
+    #[test]
+    fn detail_carries_a_picked_boons_uptime() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.begin(0, 38);
+        l.event(1000, &boon_apply(4, 1, PROTECTION, 900, 2000));
+        let account = player(&l.snapshot(&r, 1), "Char 4").unwrap()["account"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        l.set_detail(Some(account));
+        l.set_detail_skill(Some(PROTECTION));
+        for t in [1000, 2000, 3000, 4000, 5000] {
+            l.advance(t);
+            l.snapshot(&r, 1);
+        }
+        let v = l.snapshot(&r, 1);
+        assert_eq!(
+            v["detail"]["boon"],
+            json!({"id": PROTECTION, "up": [0, 1000, 1000, 0, 0]})
+        );
+        l.set_detail_skill(Some(5));
+        assert!(l.snapshot(&r, 1)["detail"]["boon"].is_null());
     }
 
     #[test]
