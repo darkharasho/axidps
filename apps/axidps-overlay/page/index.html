@@ -286,7 +286,12 @@
   .dhead .who img { width: 18px; height: 18px; }
   .dhead .who b { color: var(--title); }
   .dhead .who small { color: var(--faint); }
-  .dhead .seg { width: 230px; }
+  .dhead .seg { width: 170px; }
+  .win[data-id="details"] .seg.views { margin: 0 12px 6px; }
+  .win[data-id="details"] .seg.views button { padding: 3px 0; }
+  /* Skill and buff icons in the Details window (an empty slot until the icon is known). */
+  .win[data-id="details"] .sk { display: inline-block; width: 16px; height: 16px; margin-right: 6px; vertical-align: -3px;
+    border-radius: 2px; }
   .win[data-id="details"] canvas.chart { display: block; }
   .win[data-id="details"] tr.p td:first-child { color: var(--text); font-size: inherit; }
 </style>

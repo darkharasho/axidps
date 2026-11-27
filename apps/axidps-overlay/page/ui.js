@@ -552,7 +552,7 @@ function tableWindow(def) {
     // A click on a player opens their breakdown beside this window (again: closes it).
     w.body.querySelector("tbody").onclick = e => {
       const tr = e.target.closest("tr[data-acct]");
-      if (tr && !ui.editing) openDetails(tr.dataset.acct, w);
+      if (tr && !ui.editing) openDetails(tr.dataset.acct, w, statOfClick(e, w));
     };
     w.body.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
       const c = w.cfg, key = th.dataset.k;
@@ -584,7 +584,7 @@ function tableWindow(def) {
       w.body.querySelector("tbody").innerHTML = shown.map((p, i) => {
         const frac = (typeof p[k] === "number" ? Math.max(0, p[k]) / top * 100 : 0).toFixed(1);
         return `<tr class="p${p.me ? " me" : ""}" data-acct="${esc(p.account)}"><td>${w.offset + i + 1}</td>${nameCell(p, frac)}` +
-          cols.map(cc => `<td${partial(STATS[cc.k], p) ? ' class="part"' : ""}>${statText(cc.k, p[cc.k])}</td>`)
+          cols.map(cc => `<td data-k="${cc.k}"${partial(STATS[cc.k], p) ? ' class="part"' : ""}>${statText(cc.k, p[cc.k])}</td>`)
             .join("") + `</tr>`;
       }).join("");
       const empty = w.body.querySelector(".empty");
@@ -723,18 +723,43 @@ defineWindow({
 
 // ---- details: one player's breakdown, opened by clicking a row ------------------------------
 
-// Not a window of its own: a click on a player in any window opens it beside that window, a click
-// on the same player there again (or its ✕) closes it. It is never saved open and has no hub card.
-// The core adds the breakdown of saved.detail (an account) to the feed; it reads the choice from
-// ui.json, so the first numbers follow a second or two after the click.
-function openDetails(account, from) {
+// Not a window of its own: a click on a player's number in any window opens the breakdown of that
+// stat (damage, healing, strips, boons, ...) beside that window; the same click again, or its ✕,
+// closes it. It is never saved open and has no hub card. The core adds the breakdown of
+// saved.detail (an account) to the feed; it reads the choice from ui.json, so the first numbers
+// follow a second or two after the click.
+const DETAIL_VIEWS = [
+  ["damage", "Damage"], ["power", "Power"], ["condi", "Condi"], ["taken", "Taken"],
+  ["healing", "Healing"], ["healing_in", "Heal in"], ["strips", "Strips"], ["cleanses", "Cleanses"], ["boons", "Boons"],
+];
+// Which view a stat opens (boon stats: "boons"; anything else: damage).
+const STAT_VIEW = {damage: "damage", dps: "damage", down_contrib: "damage", downs: "damage", kills: "damage",
+  power: "power", condi: "condi", taken: "taken", deaths: "taken", downed: "taken",
+  healing: "healing", barrier: "healing", hps: "healing", healing_in: "healing_in", barrier_in: "healing_in",
+  strips: "strips", cleanses: "cleanses"};
+function viewOfStat(k) {
+  if (STAT_VIEW[k]) return STAT_VIEW[k];
+  const st = STATS[k];
+  return st && (st.kind === "boon" || st.kind === "boons") ? "boons" : "damage";
+}
+// The stat a click names: the cell's data-k, else the window's sort or first column.
+function statOfClick(e, w) {
+  const c = e.target.closest("[data-k]");
+  if (c && c.dataset.k) return c.dataset.k;
+  if (w.def.spec) return w.def.spec.sort && STATS[w.def.spec.sort.key] ? w.def.spec.sort.key : w.def.spec.stats[0].key;
+  return (w.cfg.sortKey && STATS[w.cfg.sortKey]) ? w.cfg.sortKey : (w.def.cols || ["damage"])[0];
+}
+function openDetails(account, from, stat) {
   const w = wins.find(v => v.id === "details");
   if (!account) return;
-  if (isOpen(w) && saved.detail === account && ui.detailFrom === (from && from.id)) {
+  const view = viewOfStat(stat || "damage");
+  if (isOpen(w) && saved.detail === account && ui.detailFrom === (from && from.id) && w.cfg.view === view) {
     closeDetails();
     return;
   }
   ui.detailFrom = from ? from.id : "";
+  w.cfg.view = view;
+  w.cfg.by = "skill";
   saved.detail = account;
   saveNow();
   w.offset = 0;
@@ -759,11 +784,148 @@ function besideSource([sw, sh], el) {
   const nx = right + dw <= sw || left < 0 ? right : left;
   return [Math.max(0, Math.min(Math.round(nx), sw - dw)), Math.max(0, Math.min(Math.round(y), sh - dh))];
 }
-const DETAIL_TABS = [["in", "Damage taken"], ["out", "Damage dealt"]];
+
+// Skill and buff icons, from ArenaNet's API (the host lets the page reach only api.guildwars2.com
+// for this, and render.guildwars2.com for the images). Conditions and boons are not skills there:
+// their icons are listed here (as the API's skill facts give them).
+const RENDER = "https://render.guildwars2.com/file/";
+const BUFF_ICONS = {
+  720: "09770136BB76FD0DBE1CC4267DEED54774CB20F6/102837.png", 721: "070325E519C178D502A8160523766070D30C0C19/102838.png",
+  722: "28C4EC547A3516AF0242E826772DA43A5EAC3DF3/102839.png", 723: "559B0AF9FB5E1243D2649FAAE660CCB338AACC19/102840.png",
+  727: "397A613651BFCA2832B6469CE34735580A2C120E/102844.png", 736: "79FF0046A5F9ADA3B4C4EC19ADB4CB124D5F0021/102848.png",
+  737: "B47BF5803FED2718D7474EAF9617629AD068EE10/102849.png", 738: "3A394C1A0A3257EB27A44842DDEEF0DF000E1241/102850.png",
+  742: "6CB0E64AF9AA292E332A38C1770CE577E2CDE0E8/102853.png", 791: "30307A6E766D74B6EB09EDA12A4A2DE50E4D76F4/102869.png",
+  861: "289AA0A4644F0E044DED3D3F39CED958E1DDFF53/102880.png", 19426: "10BABF2708CA3575730AC662A2E72EC292565B08/598887.png",
+  26766: "F60D1EF5271D7B9319610855676D320CD25F01C6/961397.png", 27705: "02EED459AD65FAF7DF32A260E479C625070841B9/1228472.png",
+  740: "2FA9DF9D6BC17839BBEA14723F1C53D645DDB5E1/102852.png", 725: "96D90DF84CAFE008233DD1C2606A12C1A0E68048/102842.png",
+  1187: "D4AB6401A6D6917C3D4F230764452BCCE1035B0D/1012835.png", 30328: "4FDAC2113B500104121753EF7E026E45C141E94D/1938787.png",
+  717: "CD77D1FAB7B270223538A8F8ECDA1CFB044D65F4/102834.png", 718: "F69996772B9E18FD18AD0AABAB25D7E3FC42F261/102835.png",
+  726: "58E92EBAF0DB4DA7C4AC04D9B22BCA5ECF0100DE/102843.png", 743: "DFB4D1B50AE4D6A275B349E15B179261EE3EB0AF/102854.png",
+  1122: "3D3A1C2D6D791C05179AB871902D28782C65C244/415959.png", 719: "20CFC14967E67F7A3FD4A4B8722B4CF5B8565E11/102836.png",
+  26980: "50BAC1B8E10CFAB9E749A5D910D4A9DCF29EBB7C/961398.png", 873: "D104A6B9344A2E2096424A3C300E46BC2926E4D7/2440718.png",
+  5974: "E04392C3D8ED985125973AEB99D8460C483263F9/103458.png",
+};
+// id -> icon URL, or "" (none known); missing: not asked yet. Asked in batches.
+const skillIcons = new Map(Object.entries(BUFF_ICONS).map(([id, f]) => [Number(id), RENDER + f]));
+const iconWanted = new Set();
+let iconTimer = 0, iconFails = 0;
+function skillIcon(id) {
+  id = Number(id);
+  if (!(id > 0)) return "";
+  if (skillIcons.has(id)) return skillIcons.get(id);
+  if (iconFails < 3) {
+    iconWanted.add(id);
+    if (!iconTimer) iconTimer = setTimeout(fetchIcons, 150);
+  }
+  return "";
+}
+async function fetchIcons() {
+  iconTimer = 0;
+  const ids = [...iconWanted].slice(0, 200);
+  for (const id of ids) iconWanted.delete(id);
+  if (!ids.length) return;
+  try {
+    const r = await fetch(`https://api.guildwars2.com/v2/skills?ids=${ids.join(",")}`);
+    const list = r.ok || r.status === 206 ? await r.json() : r.status === 404 ? [] : null;
+    if (!Array.isArray(list)) throw new Error(`status ${r.status}`);
+    for (const id of ids) skillIcons.set(id, "");
+    for (const s of list) {
+      if (s && Number(s.id) > 0 && typeof s.icon === "string" && s.icon.startsWith(RENDER)) skillIcons.set(Number(s.id), s.icon);
+    }
+    iconFails = 0;
+  } catch (e) {
+    // Offline or refused: ask again later, up to three times in a row.
+    iconFails += 1;
+    for (const id of ids) iconWanted.add(id);
+  }
+  const w = wins.find(v => v.id === "details");
+  if (w && isOpen(w)) { w.drawnTable = ""; w.def.render(w); }
+  if (iconWanted.size && iconFails < 3) iconTimer = setTimeout(fetchIcons, iconFails ? 5000 : 150);
+}
+const iconImg = id => {
+  const u = skillIcon(id);
+  return u ? `<img class="sk" src="${esc(u)}" alt="">` : `<i class="sk"></i>`;
+};
+
+// One view of the feed's breakdown: the chart's series and colour, the table's columns and rows,
+// the footer, and the empty text. p: the player's row (boons come from it).
+function detailView(view, by, d, p) {
+  const sum = a => a.reduce((n, v) => n + (Number(v) || 0), 0);
+  const share = (v, t) => t ? (v / t * 100).toFixed(1) + "%" : "–";
+  const dmgRows = list => {
+    const total = sum(list.map(s => s.damage));
+    return {total, rows: list.map(s => ({icon: s.id, name: s.name || `Skill ${s.id}`, v: s.damage,
+      cells: [fmt(s.damage), share(s.damage, total), int(s.hits), fmt(s.hits ? s.damage / s.hits : 0)]}))};
+  };
+  const dmgHead = ["Damage", "Share", "Hits", "Per hit"];
+  const minus = (a, b) => a.map((v, i) => Math.max(0, v - (b[i] || 0)));
+  if (view === "damage" || view === "power" || view === "condi") {
+    const all = d ? d.skills_out : [];
+    const list = view === "damage" ? all : all.filter(s => !!s.condi === (view === "condi"));
+    const {total, rows} = dmgRows(list);
+    const series = !d ? [] : view === "damage" ? d.out : view === "condi" ? (d.out_condi || []) : minus(d.out, d.out_condi || []);
+    const est = view !== "power" && p && (p.condi_est || 0) > 0;
+    return {series, col: T("good"), head: dmgHead, rows, sum: `${fmt(total)} ${view === "damage" ? "" : view + " "}dealt` +
+      (est ? " · condition damage estimated" : ""), empty: `No ${view === "damage" ? "damage" : view + " damage"} dealt this fight`};
+  }
+  if (view === "taken") {
+    const {total, rows} = dmgRows(d ? d.skills_in : []);
+    const downs = d ? d.states.filter(s => s[1] === "down").length : 0;
+    const deaths = d ? d.states.filter(s => s[1] === "dead").length : 0;
+    return {series: d ? d.in : [], col: T("bad"), head: dmgHead, rows,
+      sum: `${fmt(total)} taken · ${downs} down${downs === 1 ? "" : "s"} · ${deaths} death${deaths === 1 ? "" : "s"}`,
+      empty: "No damage taken this fight"};
+  }
+  if (view === "healing" || view === "healing_in") {
+    const out = view === "healing";
+    const partial = d && out && !d.heal_full;
+    if (by === "player") {
+      const list = d ? (out ? d.heal_targets : d.heal_sources) || [] : [];
+      const total = sum(list.map(h => h.healing + h.barrier));
+      return {series: d ? (out ? d.heal_out : d.heal_in) || [] : [], col: T("accent"), byToggle: true,
+        head: ["Healing", "Barrier", "Share"], nameHead: out ? "Healed" : "Healed by",
+        rows: list.map(h => ({prof: h.prof, name: h.name || h.account || "Unknown", v: h.healing + h.barrier,
+          cells: [fmt(h.healing), fmt(h.barrier), share(h.healing + h.barrier, total)]})),
+        sum: `${fmt(total)} ${out ? "given" : "received"}` + (partial ? " · only what passed between you" : ""),
+        empty: out ? "No healing given this fight" : "No healing received this fight"};
+    }
+    const list = d ? (out ? d.heals : d.heals_in) || [] : [];
+    const total = sum(list.map(h => h.healing + h.barrier));
+    return {series: d ? (out ? d.heal_out : d.heal_in) || [] : [], col: T("accent"), byToggle: true,
+      head: ["Healing", "Barrier", "Share", "Hits"],
+      rows: list.map(h => ({icon: h.id, name: h.name || `Skill ${h.id}`, v: h.healing + h.barrier,
+        cells: [fmt(h.healing), fmt(h.barrier), share(h.healing + h.barrier, total), int(h.hits)]})),
+      sum: `${fmt(total)} ${out ? "given" : "received"}` + (partial ? " · only what passed between you" : ""),
+      empty: out ? "No healing given this fight" : "No healing received this fight"};
+  }
+  if (view === "strips" || view === "cleanses") {
+    const strips = view === "strips";
+    const list = d ? (strips ? d.strips : d.cleanses) || [] : [];
+    const total = sum(list.map(x => x.count));
+    return {series: d ? (strips ? d.strip_series : d.cleanse_series) || [] : [], col: T("accent"), perSecond: false,
+      head: ["Stacks", "Share"], nameHead: strips ? "Boon" : "Condition",
+      rows: list.map(x => ({icon: x.id, name: x.name || `Buff ${x.id}`, v: x.count, cells: [int(x.count), share(x.count, total)]})),
+      sum: `${int(total)} stack${total === 1 ? "" : "s"} ${strips ? "stripped" : "cleansed"}`,
+      empty: strips ? "No boons stripped this fight" : "No conditions cleansed this fight"};
+  }
+  // Boons: the row's uptime and generation, per boon.
+  const C = axidpsCustom, f = ui.live && ui.live.fight, span = f ? Number(f.duration_ms) || 0 : 0;
+  const rows = [];
+  for (const b of C.SQUAD_BOONS) {
+    const ms = p && p.boons && p.boons[b];
+    if (!Array.isArray(ms) || !ms.some(v => v > 0)) continue;
+    const vals = ["up", "self", "group", "squad"].map((m, i) => C.boonRate(`boon:${b}:${m}`, ms[i], span));
+    rows.push({icon: b, name: STATS[`boon:${b}:up`].label, v: vals[0],
+      cells: vals.map((v, i) => C.formatBoon(`boon:${b}:${["up", "self", "group", "squad"][i]}`, v))});
+  }
+  return {series: null, col: T("accent"), head: ["Uptime", "Self", "Group", "Squad"], nameHead: "Boon", rows,
+    sum: "generation per player of the subgroup and squad", empty: "No boons this fight"};
+}
+
 const DETAIL_ROWS = 12;
 defineWindow({
   id: "details", title: "Details", session: true, fixed: true,
-  cfg: {tab: "in"},
+  cfg: {view: "damage", by: "skill"},
   tools: [{id: "close", tip: "Close", label: "✕"}],
   tool(w, id) {
     if (id === "close") closeDetails();
@@ -771,62 +933,72 @@ defineWindow({
   at: besideSource,
   mount(w) {
     const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
-    w.body.style.width = px(600) + "px";
-    w.body.innerHTML = `<div class="dhead"><span class="who"></span><div class="seg">` +
-      DETAIL_TABS.map(([k, label]) => `<button data-tab="${k}">${label}</button>`).join("") + `</div></div>` +
-      `<canvas class="chart" width="${px(600)}" height="${px(150)}"></canvas>` +
-      `<table><colgroup><col><col style="width:${px(90)}px"><col style="width:${px(56)}px">` +
-      `<col style="width:${px(56)}px"><col style="width:${px(70)}px"></colgroup><thead><tr>` +
-      `<th class="l">Skill</th><th>Damage</th><th>Share</th><th>Hits</th><th>Per hit</th>` +
-      `</tr></thead><tbody></tbody></table><div class="empty"></div>` +
+    w.body.style.width = px(620) + "px";
+    w.body.innerHTML = `<div class="dhead"><span class="who"></span><div class="seg by">` +
+      `<button data-by="skill">By skill</button><button data-by="player">By player</button></div></div>` +
+      `<div class="seg views">` + DETAIL_VIEWS.map(([k, label]) => `<button data-view="${k}">${label}</button>`).join("") + `</div>` +
+      `<canvas class="chart" width="${px(620)}" height="${px(140)}"></canvas>` +
+      `<table><colgroup></colgroup><thead><tr></tr></thead><tbody></tbody></table><div class="empty"></div>` +
       `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
-    w.body.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => {
-      w.cfg.tab = b.dataset.tab; w.offset = 0; w.drawn = ""; save(); w.def.render(w);
+    w.body.querySelectorAll("[data-view]").forEach(b => b.onclick = () => {
+      w.cfg.view = b.dataset.view; w.offset = 0; w.drawn = ""; w.drawnTable = ""; save(); w.def.render(w);
+    });
+    w.body.querySelectorAll("[data-by]").forEach(b => b.onclick = () => {
+      w.cfg.by = b.dataset.by; w.offset = 0; w.drawnTable = ""; save(); w.def.render(w);
     });
     w.compact = saved.compact;
   },
   render(w) {
     if (w.compact !== saved.compact) w.def.mount(w);
     fightState(w);
+    const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
     const want = saved.detail || "";
     const d = ui.live && !ui.cleared && ui.live.detail && ui.live.detail.account === want ? ui.live.detail : null;
-    const tab = DETAIL_TABS.some(([k]) => k === w.cfg.tab) ? w.cfg.tab : "in";
-    w.body.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+    const view = DETAIL_VIEWS.some(([k]) => k === w.cfg.view) ? w.cfg.view : "damage";
+    const by = w.cfg.by === "player" ? "player" : "skill";
+    w.body.querySelectorAll("[data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === view));
+    w.body.querySelectorAll("[data-by]").forEach(b => b.classList.toggle("on", b.dataset.by === by));
     const p = players().find(x => x.account === want);
     const name = d ? d.name : p ? p.name : want;
     const spec = d ? d.spec : p && p.spec;
     w.body.querySelector(".who").innerHTML = (spec ? `<img src="icons/${encodeURIComponent(spec)}.png" alt="">` : "") +
       `<b>${esc(name)}</b><small>${esc(want)}</small>`;
-    const skills = d ? (tab === "in" ? d.skills_in : d.skills_out) : [];
-    const total = skills.reduce((n, s) => n + s.damage, 0);
-    w.offset = Math.max(0, Math.min(w.offset, skills.length - DETAIL_ROWS));
-    const shown = skills.slice(w.offset, w.offset + DETAIL_ROWS);
-    const top = Math.max(1, ...skills.map(s => s.damage));
-    const col = tab === "in" ? T("bad") : T("good");
-    w.body.querySelector("tbody").innerHTML = shown.map(s => {
-      const frac = (s.damage / top * 100).toFixed(1);
+    const v = detailView(view, by, d, p);
+    w.body.querySelector(".seg.by").style.visibility = v.byToggle ? "visible" : "hidden";
+    // The table: columns per view (rebuilt when the view changes).
+    const layout = `${view}|${by}|${saved.compact}`;
+    if (w.layoutKey !== layout) {
+      w.layoutKey = layout;
+      w.body.querySelector("colgroup").innerHTML = `<col>` + v.head.map(() => `<col style="width:${px(78)}px">`).join("");
+      w.body.querySelector("thead tr").innerHTML = `<th class="l">${esc(v.nameHead || "Skill")}</th>` +
+        v.head.map(h => `<th>${esc(h)}</th>`).join("");
+    }
+    w.offset = Math.max(0, Math.min(w.offset, v.rows.length - DETAIL_ROWS));
+    const shown = v.rows.slice(w.offset, w.offset + DETAIL_ROWS);
+    const top = Math.max(1, ...v.rows.map(r => r.v));
+    const html = shown.map(r => {
+      const frac = (Math.max(0, r.v) / top * 100).toFixed(1);
+      const col = r.prof !== undefined ? PROF[r.prof] || PROF[0] : v.col;
+      const lead = r.icon !== undefined ? iconImg(r.icon) : "";
       return `<tr class="p"><td class="l name" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
-        `${esc(s.name || "Skill " + s.id)}</td><td>${fmt(s.damage)}</td>` +
-        `<td>${total ? (s.damage / total * 100).toFixed(1) + "%" : "–"}</td><td>${int(s.hits)}</td>` +
-        `<td>${fmt(s.hits ? s.damage / s.hits : 0)}</td></tr>`;
+        `${lead}${esc(r.name)}</td>` + r.cells.map(c => `<td>${esc(c)}</td>`).join("") + `</tr>`;
     }).join("");
+    if (w.drawnTable !== html) { w.drawnTable = html; w.body.querySelector("tbody").innerHTML = html; }
     const empty = w.body.querySelector(".empty");
     empty.style.display = shown.length ? "none" : "block";
-    empty.textContent = !want ? "Click a player in a table" : !d ? (ui.live && ui.live.state === "idle"
-      ? emptyText() : "Loading…") : tab === "in" ? "No damage taken this fight" : "No damage dealt this fight";
-    const downs = d ? d.states.filter(s => s[1] === "down").length : 0;
-    const deaths = d ? d.states.filter(s => s[1] === "dead").length : 0;
-    w.body.querySelector(".sum").textContent = d ? `${fmt(total)} ${tab === "in" ? "taken" : "dealt"}` +
-      (tab === "in" ? ` · ${downs} down${downs === 1 ? "" : "s"} · ${deaths} death${deaths === 1 ? "" : "s"}` : "") : "";
-    w.body.querySelector(".scroll").textContent = skills.length > DETAIL_ROWS
-      ? `${w.offset + 1}-${Math.min(skills.length, w.offset + DETAIL_ROWS)} of ${skills.length} (wheel)` : "";
-    drawDetail(w, d, tab, col);
+    empty.textContent = !want ? "Click a player's number in a window" : !d ? (ui.live && ui.live.state === "idle"
+      ? emptyText() : "Loading…") : v.empty;
+    w.body.querySelector(".sum").textContent = d ? v.sum : "";
+    w.body.querySelector(".scroll").textContent = v.rows.length > DETAIL_ROWS
+      ? `${w.offset + 1}-${Math.min(v.rows.length, w.offset + DETAIL_ROWS)} of ${v.rows.length} (wheel)` : "";
+    const cv = w.body.querySelector("canvas");
+    cv.style.display = v.series ? "block" : "none";
+    if (v.series) drawDetail(w, d, v.series, v.col, view, v.perSecond !== false);
   },
 });
-// The chart: the tab's damage per second (3 s rolling average), downs and deaths marked.
-function drawDetail(w, d, tab, col) {
-  const series = d ? d[tab] : [];
-  const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${tab}|${theme.id}|${theme.s.font}|${saved.compact}`;
+// The chart: the view's amount per second (3 s rolling average), downs and deaths marked.
+function drawDetail(w, d, series, col, view, perSecond) {
+  const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${view}|${theme.id}|${theme.s.font}|${saved.compact}`;
   if (w.drawn === key) return;
   w.drawn = key;
   const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
@@ -835,7 +1007,8 @@ function drawDetail(w, d, tab, col) {
   const bucket = (d && d.bucket_ms) || 1000;
   const a = series.map((_, i) => {
     const s = series.slice(Math.max(0, i - 2), i + 1);
-    return s.reduce((x, y) => x + y, 0) / s.length * 1000 / bucket;
+    const avg = s.reduce((x, y) => x + y, 0) / s.length;
+    return perSecond ? avg * 1000 / bucket : avg;
   });
   const n = a.length, top = Math.max(1, ...a);
   const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
@@ -845,7 +1018,7 @@ function drawDetail(w, d, tab, col) {
   for (const f of [0, 0.5, 1]) {
     const yy = Math.round(y(top * f)) + 0.5;
     g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
-    if (n > 1) g.fillText(fmt(top * f), 2, yy + 3);
+    if (n > 1) g.fillText(perSecond ? fmt(top * f) : (top * f).toFixed(top < 10 ? 1 : 0), 2, yy + 3);
   }
   if (n < 2) {
     g.fillStyle = T("dim"); g.textAlign = "center";
@@ -985,7 +1158,7 @@ function buildCustom(w) {
   // A click on a player (not the Total row) opens their breakdown beside this window.
   w.body.onclick = e => {
     const r = e.target.closest("[data-acct]");
-    if (r && r.dataset.acct && !ui.editing) openDetails(r.dataset.acct, w);
+    if (r && r.dataset.acct && !ui.editing) openDetails(r.dataset.acct, w, statOfClick(e, w));
   };
   const k = saved.compact ? 0.8 : 1, px = n => Math.round(n * k);
   w.layout = JSON.stringify(spec) + (saved.compact ? "/c" : "");
@@ -1064,7 +1237,7 @@ function renderCustom(w) {
           spec.stats.map((s, j) => `<td>${esc(customText(s, r.values[j], r.keys[j]))}</td>`).join("") + `</tr>`;
       }
       return `<tr class="p${p.me ? " me" : ""}" data-acct="${esc(p.account)}"><td>${w.offset + i + 1}</td>${nameCell(p, frac(r))}` +
-        spec.stats.map((s, j) => `<td${part(s, p) ? ' class="part"' : ""}>${esc(customText(s, r.values[j]))}</td>`).join("") +
+        spec.stats.map((s, j) => `<td data-k="${esc(s.key)}"${part(s, p) ? ' class="part"' : ""}>${esc(customText(s, r.values[j]))}</td>`).join("") +
         `</tr>`;
     }).join("");
     w.body.querySelectorAll("th[data-k]").forEach(th => th.classList.toggle("sort", th.dataset.k === spec.sort.key));
@@ -1948,15 +2121,30 @@ if (DEMO.includes("demo")) {
     tl.in[k] = (tl.in[k] || 0) + Math.round(40000 * (1 + Math.cos(k / 13)) * (0.6 + Math.random() * 0.8));
     // The Details window's player (the core sends only the one asked for).
     const dp = ps.find(p => p.account === saved.detail);
-    const sk = (names, scale) => names.map((n, i) => ({id: 9000 + i, name: n,
+    // Real skill ids, so the icons show; ids under 1000 and Torment are conditions.
+    const sk = (list, scale) => list.map(([id, n], i) => ({id, name: n, condi: [736, 737, 723, 861, 19426].includes(id),
       damage: Math.round(scale * ms / (i + 1.5)), hits: Math.round(ms / 900 / (i + 1))}));
+    const hl = list => list.map(([id, n], i) => ({id, name: n, healing: Math.round(3 * ms / (i + 1.5)),
+      barrier: i % 3 ? 0 : Math.round(ms / (i + 2)), hits: Math.round(ms / 1500 / (i + 1))}));
+    const peers = ps.slice(0, 8).map((p, i) => ({name: p.name, account: p.account, prof: p.prof,
+      healing: Math.round(2 * ms / (i + 1.5)), barrier: Math.round(ms / (i + 3))}));
     const detail = dp && {account: dp.account, name: dp.name, prof: dp.prof, spec: dp.spec, bucket_ms: 1000,
       out: tl.out.map(v => Math.round((v || 0) / 9)), in: tl.in.map(v => Math.round((v || 0) / 14)),
-      skills_out: sk(["Mighty Blow", "Burning", "Whirlwind Attack", "Bleeding", "Earthshaker", "Hammer Swing",
-        "Backbreaker", "Fierce Blow", "Staggering Blow", "Signet of Rage", "Bull's Charge", "Torment", "Rampage", "Arc Divider"], 5),
-      skills_in: sk(["Meteor Shower", "Burning", "Lava Font", "Bleeding", "Grenade Barrage", "Poisoned",
-        "Unload", "Confusion", "Dragon's Tooth", "Torment", "Mind Wrack", "Phase Smash", "Flame Grab"], 3),
-      states: [[42000, "down"], [47000, "up"], [96000, "down"], [99000, "dead"]]};
+      out_condi: tl.out.map(v => Math.round((v || 0) / 30)),
+      skills_out: sk([[5690, "Earthquake"], [737, "Burning"], [5671, "Static Field"], [736, "Bleeding"], [5681, "Geyser"],
+        [5675, "Phoenix"], [5683, "Unsteady Ground"], [19426, "Torment"], [5661, "Murky Water"], [5687, "Updraft"]], 5),
+      skills_in: sk([[10545, "Well of Corruption"], [737, "Burning"], [9140, "Holy Strike"], [736, "Bleeding"],
+        [723, "Poisoned"], [861, "Confusion"]], 3),
+      states: [[42000, "down"], [47000, "up"], [96000, "down"], [99000, "dead"]],
+      heal_full: true, heal_out: tl.out.map(v => Math.round((v || 0) / 20)), heal_in: tl.in.map(v => Math.round((v || 0) / 25)),
+      heals: hl([[9083, "\"Receive the Light!\""], [718, "Regeneration"], [9158, "Signet of Resolve"], [10213, "Mantra of Recovery"]]),
+      heals_in: hl([[718, "Regeneration"], [10176, "Ether Feast"]]),
+      heal_targets: peers, heal_sources: peers.slice(2, 6),
+      strips: [{id: 740, name: "Might", count: 41}, {id: 1187, name: "Quickness", count: 17}, {id: 717, name: "Protection", count: 12},
+        {id: 1122, name: "Stability", count: 9}],
+      cleanses: [{id: 736, name: "Bleeding", count: 55}, {id: 737, name: "Burning", count: 23}, {id: 721, name: "Crippled", count: 7}],
+      strip_series: tl.out.map((_, i) => (i * 7) % 5 === 0 ? 3 : i % 4 === 0 ? 1 : 0),
+      cleanse_series: tl.out.map((_, i) => (i * 3) % 7 === 0 ? 4 : i % 5 === 0 ? 2 : 0)};
     axidps.update({v: 1, t: Date.now(), state: "fight", fight: {duration_ms: ms, map: 38}, players: ps,
       timeline: {bucket_ms: 1000, out: tl.out.map(v => v || 0), in: tl.in.map(v => v || 0)}, healing: heal,
       detail: detail || null});
