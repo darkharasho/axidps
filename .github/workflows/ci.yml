@@ -133,7 +133,7 @@ jobs:
           key: cargo-registry-dll-${{ hashFiles('Cargo.lock', 'private/Cargo.lock') }}
           restore-keys: cargo-registry-dll-
 
-      - run: tools/quiet-build "$RUNNER_TEMP/dll-check.log" -- cargo check --manifest-path private/Cargo.toml -p axidps-dll --target x86_64-pc-windows-gnu --features arcdps-chainload,overlay
+      - run: tools/quiet-build "$RUNNER_TEMP/dll-check.log" -- cargo check --manifest-path private/Cargo.toml -p axidps-dll --target x86_64-pc-windows-gnu --features arcdps-chainload,overlay,outline
 
   # The overlay host (Servo) is its own Cargo workspace. Servo build deps come from
   # python/servo/platform/{linux_packages/apt,windows}* at servo rev 75d20deef.
