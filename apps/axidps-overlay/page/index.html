@@ -110,6 +110,23 @@
   body.editing .win:not(.ed) .edit { display: flex; }
   body.editing .win.bare .edit b, body.editing .win.bare .edit small { display: none; }
   .lay { padding: 10px 14px 12px; }
+  /* ---- merged windows: the members' tables in a grid, each member's bar its header ---- */
+  .win.group > .bar { height: calc(var(--bh) * .75); }
+  .win.group > .bar b { font-size: .92em; color: var(--dim); }
+  .mgrid { display: grid; align-items: stretch; justify-items: stretch; }
+  .mgrid > .win.cell { border: 0; border-radius: 0; box-shadow: inset 1px 1px 0 var(--line); }
+  .mgrid > .win.cell .bar { background: transparent; }
+  .mgrid > .ghost { border: 1px dashed var(--accent-line); background: var(--accent-soft); box-sizing: border-box; }
+  .mgrid > .ghost.e-l { border-left: 2px solid var(--accent); }
+  .mgrid > .ghost.e-r { border-right: 2px solid var(--accent); }
+  .mgrid > .ghost.e-t { border-top: 2px solid var(--accent); }
+  .mgrid > .ghost.e-b { border-bottom: 2px solid var(--accent); }
+  .mgrid > .ghost[class*=" e-"] { animation: glow .9s infinite alternate; }
+  @keyframes glow { from { box-shadow: 0 0 0 0 var(--accent-soft); } to { box-shadow: 0 0 10px 1px var(--accent-line); } }
+  body.editing .win.group > .edit { bottom: auto; height: calc(var(--bh) * .75); flex-direction: row; }
+  body.editing .win.group > .edit small { display: none; }
+  body.editing .mgrid > .win.cell .edit { border-radius: 0; }
+  .win.docking { opacity: .55; }
   .lay p { margin: 0 0 10px; color: var(--dim); }
   .lay label { display: flex; align-items: center; gap: 10px; height: 26px; }
   .lay label small { color: var(--faint); margin-left: auto; font-variant-numeric: tabular-nums; }
