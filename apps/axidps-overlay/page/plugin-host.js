@@ -297,9 +297,14 @@
         {installed: "0.9.0", version: "0.9.0"}),
     ]};
   }
-  // The plugin list entries sampleStore's rows imply (Loot Counter was revoked).
+  // The plugin list entries sampleStore's rows imply (Fight Log and Tag Colours installed, Loot
+  // Counter installed and then revoked).
   function sampleStoreList() {
-    return [{id: "zed.loot", name: "Loot Counter", version: "0.9.0", author: "zed", api: 1, permissions: ["fight"],
+    return [{id: "jo.dps-log", name: "Fight Log", version: "1.0.0", author: "jo", api: 1, permissions: ["fight"],
+      network: ["dps.report"], windows: [], bundled: false, trust: "verified"},
+    {id: "mo.tag-colors", name: "Tag Colours", version: "2.0.1", author: "mo", api: 1, permissions: ["textures"],
+      network: [], windows: [], bundled: false, trust: "verified"},
+    {id: "zed.loot", name: "Loot Counter", version: "0.9.0", author: "zed", api: 1, permissions: ["fight"],
       network: [], windows: [], bundled: false, trust: "revoked", reason: "sent your account name to a third party",
       error: "Revoked: sent your account name to a third party"}];
   }

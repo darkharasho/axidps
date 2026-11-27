@@ -127,3 +127,67 @@ test("an offline store does not mark installed plugins local", () => {
   assert.strictEqual(rows[0].store, null);
   assert.strictEqual(H.pluginRows([], [inst("a.b")], "all", "", true).rows[0].local, true);
 });
+
+test("installed counts plugins that can't be turned on", () => {
+  // A local plugin that needs verification, and a revoked store install with no plugin entry.
+  const local = inst("mine", false, {action: null, reason: "Needs verification"});
+  const r = H.pluginRows([sc("bad", "revoked"), sc("new", "install")], [local], "all", "");
+  assert.deepStrictEqual(r.counts, {all: 3, installed: 2, updates: 0});
+  assert.deepStrictEqual(r.rows.map(x => [x.id, x.installed]), [["bad", true], ["new", false], ["mine", true]]);
+  assert.deepStrictEqual(H.pluginRows([sc("bad", "revoked"), sc("new", "install")], [local], "installed", "").rows
+    .map(x => x.id), ["bad", "mine"]);
+  // A revoked store install whose plugin entry carries the error: installed, no toggle.
+  const rv = H.pluginRows([sc("zed", "revoked")], [inst("zed", false, {action: null, reason: "Revoked"})], "installed", "");
+  assert.deepStrictEqual(rv.rows.map(x => [x.id, x.installed, x.toggle]), [["zed", true, null]]);
+});
+
+test("notice says why windows are held back, and clears with its cause", () => {
+  const cap = "axidps can show 14 windows at once. Hide one first.";
+  assert.strictEqual(H.notice({overCap: 1, overAtlas: false, refused: false, cap: 14}), cap);
+  assert.strictEqual(H.notice({overCap: 0, overAtlas: false, refused: true, cap: 14}), cap);
+  assert.strictEqual(H.notice({overCap: 0, overAtlas: true, refused: false, cap: 14}), "No room for more windows; close one first");
+  assert.strictEqual(H.notice({overCap: 0, overAtlas: false, refused: false, cap: 14}), "");
+});
+
+test("groupHead is the lowest row, then the lowest column", () => {
+  assert.deepStrictEqual(H.groupHead([{k: "b", r: 0, c: 1}, {k: "c", r: 1, c: 0}, {k: "a", r: 0, c: 0}]), {k: "a", r: 0, c: 0});
+  assert.deepStrictEqual(H.groupHead([{k: "b", r: 1, c: 1}, {k: "c", r: 1, c: 0}]), {k: "c", r: 1, c: 0});
+  assert.strictEqual(H.groupHead([]), null);
+});
+
+test("hubFit shrinks the hub to the room left in the atlas", () => {
+  assert.deepStrictEqual(H.hubFit([1040, 680], 2000), [1040, 680]);
+  assert.deepStrictEqual(H.hubFit([1040, 680], 500), [1040, 500]);
+  // Never below the hub's smallest height; then the atlas has to drop a window instead.
+  assert.deepStrictEqual(H.hubFit([1040, 680], 100), [1040, 360]);
+  assert.deepStrictEqual(H.hubFit([944, 520], 1000), [944, 520]);
+});
+
+test("scrollThumb: none when it all fits, else at least 40px and in proportion", () => {
+  assert.strictEqual(H.scrollThumb({view: 400, content: 400, top: 0, track: 400}), null);
+  assert.strictEqual(H.scrollThumb({view: 400, content: 300, top: 0, track: 400}), null);
+  assert.deepStrictEqual(H.scrollThumb({view: 400, content: 800, top: 0, track: 400}), {size: 200, pos: 0});
+  assert.deepStrictEqual(H.scrollThumb({view: 400, content: 800, top: 400, track: 400}), {size: 200, pos: 200});
+  assert.deepStrictEqual(H.scrollThumb({view: 400, content: 800, top: 200, track: 400}), {size: 200, pos: 100});
+  // Very long content: the thumb stays grabbable.
+  const t = H.scrollThumb({view: 100, content: 10000, top: 9900, track: 100});
+  assert.deepStrictEqual(t, {size: 40, pos: 60});
+  // Out-of-range scroll positions stay on the track.
+  assert.deepStrictEqual(H.scrollThumb({view: 400, content: 800, top: 999, track: 400}), {size: 200, pos: 200});
+});
+
+test("scrollForThumb maps a dragged thumb back to a scroll position", () => {
+  assert.strictEqual(H.scrollForThumb({view: 400, content: 800, track: 400, size: 200, pos: 100}), 200);
+  assert.strictEqual(H.scrollForThumb({view: 400, content: 800, track: 400, size: 200, pos: -50}), 0);
+  assert.strictEqual(H.scrollForThumb({view: 400, content: 800, track: 400, size: 200, pos: 500}), 400);
+  assert.strictEqual(H.scrollForThumb({view: 100, content: 10000, track: 100, size: 40, pos: 30}), 4950);
+});
+
+test("pageScroll moves one page toward a click on the track", () => {
+  const thumb = {size: 100, pos: 100};
+  assert.strictEqual(H.pageScroll({view: 400, content: 1600, top: 400, at: 50, thumb}), 40);
+  assert.strictEqual(H.pageScroll({view: 400, content: 1600, top: 400, at: 300, thumb}), 760);
+  assert.strictEqual(H.pageScroll({view: 400, content: 1600, top: 400, at: 150, thumb}), 400);
+  assert.strictEqual(H.pageScroll({view: 400, content: 1600, top: 1100, at: 390, thumb}), 1200);
+  assert.strictEqual(H.pageScroll({view: 400, content: 1600, top: 100, at: 10, thumb}), 0);
+});

@@ -226,6 +226,7 @@ const ui = {
   update: null,        // the launcher's self-update status (host, from update-status.json)
   zones: [],           // the game's own UI (host, from MumbleLink): [{id, label, x, y, w, h}]
   notice: "",          // the hub's Windows tab note (a window that could not open)
+  capRefused: false,   // a Show was turned down at the cap (the note stays until there is room)
   text: null,          // the hub's focused name field: {id, value, caret, orig}; keys come from the DLL
 };
 // Persisted by the host in ~/.config/axidps/ui.json.
@@ -291,7 +292,7 @@ function defineWindow(def) {
   el.innerHTML = (def.bare ? "" : `<div class="bar"><b>${esc(def.title)}</b><span class="state"></span>` +
     `<div class="tools">${tools}</div></div>`) + `<div class="body"></div><div class="tip"></div>` +
     `<div class="edit"><b>${esc(def.blurb ? def.blurb[0] : def.title)}</b><small>drag to move</small></div>`;
-  document.getElementById("atlas").appendChild(el);
+  toAtlas(el);
   const w = {def, el, id: def.id, key: def.key || def.id, bar: el.querySelector(".bar"), tools: el.querySelector(".tools"),
     state: el.querySelector(".state"), body: el.querySelector(".body"), tip: el.querySelector(".tip"),
     offset: 0};
@@ -305,10 +306,17 @@ function defineWindow(def) {
   wins.push(w);
   return w;
 }
+// Into the atlas, before the hub: the hub packs last, so opening it never pushes a window out of
+// the atlas (it shrinks to the room left instead, `hubFitH`).
+function toAtlas(el) {
+  const atlas = document.getElementById("atlas");
+  atlas.insertBefore(el, [...atlas.children].find(c => c !== el && c.classList.contains("modal")) || null);
+}
 function removeWindow(w) {
   w.el.remove();
   const i = wins.indexOf(w);
   if (i >= 0) wins.splice(i, 1);
+  if (!w.def.group) refit(); // the room it took is free: windows left out of the atlas get another try
 }
 
 // Open by the player's choice or the window's default, before the window cap.
@@ -323,14 +331,16 @@ function isOpen(w) { return wantsOpen(w) && !w.overCap && !w.overAtlas; }
 // are never refused, so the player can always reach the hub); every other window shares the rest.
 const MAX_OPEN = 16;
 const CAP = MAX_OPEN - 2;
-const CAP_NOTE = `${MAX_OPEN} windows are open; close one first`;
 const capped = w => !w.def.session && !w.def.editOnly && !w.inGroup;
 // Windows open without a setOpen (defaults, a restored layout, plugin windows) past the cap count
-// as closed, the later ones first, and the hub says so.
+// as closed, the later ones first, and the hub says so. The line is worked out again on every
+// render, so it goes once nothing is held back (a window removed, a plugin off, a rescan).
 function applyCap() {
   const over = pluginHost.overCap(wins.filter(capped), w => wantsOpen(w) && !w.overAtlas, CAP);
   for (const w of wins) w.overCap = over.includes(w);
-  if (over.length) ui.notice = CAP_NOTE;
+  if (ui.capRefused && wins.filter(x => capped(x) && isOpen(x)).length < CAP) ui.capRefused = false;
+  ui.notice = axidpsHub.notice({overCap: over.length, overAtlas: wins.some(w => w.overAtlas && wantsOpen(w)),
+    refused: !!ui.capRefused, cap: CAP});
 }
 // The atlas (2048x2048, the shared frame's size) holds every open window side by side; a window
 // that doesn't fit there can't be shown. Like the cap: the first window that falls outside counts
@@ -338,24 +348,35 @@ function applyCap() {
 // layout (`report`), and again from scratch when the player opens or closes a window or the plugin
 // list changes.
 const ATLAS = 2048;
-const ATLAS_NOTE = "No room for more windows; close one first";
 function refit() {
   for (const w of wins) w.overAtlas = false;
 }
+const outside = w => {
+  const r = w.el.getBoundingClientRect();
+  return Math.floor(r.left) + Math.ceil(r.width) > ATLAS || Math.floor(r.top) + Math.ceil(r.height) > ATLAS;
+};
 function overflowing() {
-  return wins.find(w => {
-    if (!isOpen(w) || !capped(w)) return false;
-    const r = w.el.getBoundingClientRect();
-    return Math.floor(r.left) + Math.ceil(r.width) > ATLAS || Math.floor(r.top) + Math.ceil(r.height) > ATLAS;
-  });
+  const shown = wins.filter(w => isOpen(w) && capped(w));
+  const out = shown.find(outside);
+  if (out || !isOpen(hub) || !outside(hub)) return out;
+  // The hub is at its smallest and still doesn't fit below the rest: the last window gives way.
+  const at = w => { const r = w.el.getBoundingClientRect(); return [r.top, r.left]; };
+  return shown.sort((a, b) => at(b)[0] - at(a)[0] || at(b)[1] - at(a)[1])[0];
 }
+// The height the hub's page can take where it lands in the atlas (its border aside).
+let hubFitH = 0;
+function hubRoom() {
+  const page = hub.el.querySelector(".hub");
+  return ATLAS - Math.floor(hub.el.getBoundingClientRect().top) - (hub.el.offsetHeight - page.offsetHeight);
+}
+const hubSizeNow = sc => { const [w, h] = axidpsHub.hubSize(sc); return [w, hubFitH ? Math.min(h, hubFitH) : h]; };
 function setOpen(w, on) {
   if (on && capped(w) && !isOpen(w) && wins.filter(x => capped(x) && isOpen(x)).length >= CAP) {
-    ui.notice = CAP_NOTE;
+    ui.capRefused = true;
     renderAll();
     return;
   }
-  ui.notice = "";
+  ui.capRefused = false;
   refit();
   if (w.def.session) ui.session[w.id] = on;
   else { saved.open[w.key] = on; save(); }
@@ -470,10 +491,13 @@ function scheduleReport() {
 // Tell the host which windows exist, where they are in the atlas and on screen.
 function report() {
   reportTimer = 0;
+  if (isOpen(hub)) {
+    const fit = axidpsHub.hubFit(axidpsHub.hubSize(ui.screen), hubRoom())[1];
+    if (fit !== hubFitH) { hubFitH = fit; renderAll(); return; }
+  }
   const over = overflowing();
   if (over) {
     over.overAtlas = true;
-    ui.notice = ATLAS_NOTE;
     renderAll(); // lays out again and reports (or finds the next one that doesn't fit)
     return;
   }
@@ -594,7 +618,7 @@ function release(el) {
   el.style.gridArea = "";
   const s = el.querySelector(".edit small");
   if (s) s.textContent = "drag to move";
-  document.getElementById("atlas").appendChild(el);
+  toAtlas(el);
   if (m) m.inGroup = 0;
 }
 // A member's screen position: its group's, plus where it sits in the group.
@@ -771,8 +795,10 @@ function onDragging(name, x, y, gx, gy) {
   const r0 = Math.min(...ghosts.map(c => c.r)), c0 = Math.min(...ghosts.map(c => c.c));
   const cells = plan.filter(c => !c.ghost).concat([{k: "ghost", ghost: true, r: r0, c: c0, w: bw.width, h: bw.height,
     rs: Math.max(...ghosts.map(c => c.r)) - r0 + 1, cs: Math.max(...ghosts.map(c => c.c)) - c0 + 1}]);
-  const first = real[0] && memberWin(real[0].k);
-  mdrag = {name, key, d, gid: g.gid, temp, plan, block, title: first ? first.def.title : ""};
+  // The hint names the group's head as the hub's list does (its name, not its title bar's text).
+  const hc = axidpsHub.groupHead(real), head = hc && memberWin(hc.k);
+  const title = head ? String((head.def.blurb && head.def.blurb[0]) || head.def.title || "") : "";
+  mdrag = {name, key, d, gid: g.gid, temp, plan, block, title};
   clearJoinMark();
   g.el.classList.add("jointarget");
   const before = rectsIn(g.el), box = g.el.getBoundingClientRect();
@@ -2281,10 +2307,12 @@ function windowItems() {
   });
 }
 const winById = id => wins.find(x => x.id === id);
+// A toggle row; with `tip` (why it can't be switched on) it is drawn disabled and the tip says why.
 const toggleHtml = (attrs, label, note, on, tip) =>
-  `<div class="opt" ${attrs}${tip ? ` data-tip="${esc(tip)}"` : ""}><div>${esc(label)}${note ? `<small>${esc(note)}</small>` : ""}</div>` +
+  `<div class="opt${tip ? " dis" : ""}" ${attrs}${tip ? ` data-tip="${esc(tip)}"` : ""}><div>${esc(label)}${note ? `<small>${esc(note)}</small>` : ""}</div>` +
   `<span class="tog${on ? " on" : ""}"><i></i></span></div>`;
 const winIcon = open => `<span class="ic">${open ? '<i style="width:90%"></i><i style="width:62%"></i><i style="width:42%"></i>' : ""}</span>`;
+const ADD_TIP = "a blank window, or a copy of one you have";
 // A pass over the page: the list, the selected window's settings and the bottom bar. Each part is
 // drawn again only when its markup changes (the feed redraws the hub many times a second).
 function renderWindows(w) {
@@ -2312,7 +2340,7 @@ function renderWindows(w) {
     `<p class="note win-note"${ui.notice ? "" : ' style="display:none"'}>${esc(ui.notice)}</p>`);
   const add = q('[data-act="addtable"]');
   add.disabled = full;
-  if (full) add.dataset.tip = `You can have ${C.MAX_CUSTOM} of your own windows. Remove one first.`; else delete add.dataset.tip;
+  add.dataset.tip = full ? `You can have ${C.MAX_CUSTOM} of your own windows. Remove one first.` : ADD_TIP;
   add.classList.toggle("on", !!w.addMenu);
   const tables = wins.filter(v => v.def.table);
   put(q(".addmenu"), w.addMenu ? `<button data-cact="addblank">Blank</button>` +
@@ -2499,7 +2527,7 @@ function renderPlugins(w) {
     return `<div class="srow ${PLUGIN_TRUST[r.trust] || "u"}" data-s="${esc(r.id)}" data-p="${esc(r.id)}"><div class="rtop">` +
       `<span class="nm"><b>${esc(r.title)}</b>${r.trust ? `<span class="trust">${esc(r.trust)}</span>` : ""}` +
       `${who ? `<span class="au">${esc(who)}</span>` : ""}</span>` +
-      `<span class="ver${r.store === "update" ? " up" : ""}">${r.version ? esc(r.version) : ""}${r.toggle ? ` <span class="have">Installed</span>` : ""}</span>` +
+      `<span class="ver${r.store === "update" ? " up" : ""}">${r.version ? esc(r.version) : ""}${r.installed ? ` <span class="have">Installed</span>` : ""}</span>` +
       `<span class="sa">${acts.join("")}</span></div>` +
       `${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}` +
       `${uses ? `<div class="uses">${uses}</div>` : ""}` +
@@ -2509,12 +2537,89 @@ function renderPlugins(w) {
   return nUpdates;
 }
 
+// ---- the hub's scroll bars, drawn here: the overlay's engine (Servo) paints none --------------
+//
+// Each scrolling area gets a bar beside it (in its parent, so a list inside a scrolling pane scrolls
+// and clips with it): a 12px track, shown whenever the content is taller than the area, and a thumb
+// of at least 40px (axidpsHub.scrollThumb). Drag the thumb to scroll; press the track to move a
+// page. The wheel scrolls the area as before; the bar follows its scroll events.
+const SCROLLERS = ".wl .lst, .ws .grid, .cw .plist, .pfilters, .pmain, .hub section[data-tab=\"options\"]";
+const SB_W = 12;
+function placeBar(sc) {
+  const bar = sc._sb;
+  if (!bar) return;
+  // The bar is 3px inside the area's edges; the thumb runs inside its 1px border.
+  const h = Math.max(0, sc.clientHeight - 6);
+  const t = sc.offsetParent && axidpsHub.scrollThumb({view: sc.clientHeight, content: sc.scrollHeight, top: sc.scrollTop,
+    track: Math.max(0, h - 2)});
+  const key = t ? [sc.offsetLeft + sc.offsetWidth - SB_W - 3, sc.offsetTop + 3, h, t.size, t.pos].join() : "";
+  if (bar._key === key) return;
+  bar._key = key;
+  bar.style.display = t ? "" : "none";
+  if (!t) return;
+  const [x, y] = key.split(",").map(Number);
+  bar.style.left = x + "px"; bar.style.top = y + "px"; bar.style.height = h + "px";
+  const th = bar.firstChild;
+  th.style.top = t.pos + "px"; th.style.height = t.size + "px";
+}
+function scrollBars(root) {
+  for (const sc of root.querySelectorAll(SCROLLERS)) {
+    const parent = sc.parentNode;
+    if (!sc._sb || sc._sb.parentNode !== parent) {
+      const bar = document.createElement("div");
+      bar.className = "sb";
+      bar.innerHTML = "<i></i>";
+      bar._sc = sc;
+      sc._sb = bar;
+      sc.classList.add("sbs");
+      parent.classList.add("sbp");
+      parent.appendChild(bar);
+    }
+    placeBar(sc);
+  }
+}
+function scrollBarEvents(root) {
+  root.addEventListener("scroll", e => { if (e.target && e.target._sb) placeBar(e.target); }, true);
+  // The engine scrolls after the wheel event; catch up in case its scroll event comes late.
+  root.addEventListener("wheel", () => setTimeout(() => scrollBars(root), 30), {passive: true});
+  root.addEventListener("pointerdown", e => {
+    const bar = e.target.closest && e.target.closest(".sb");
+    if (!bar || e.button || !bar._sc) return;
+    e.preventDefault();
+    const sc = bar._sc, H = axidpsHub;
+    const dims = () => ({view: sc.clientHeight, content: sc.scrollHeight, track: bar.clientHeight});
+    const t = H.scrollThumb(Object.assign(dims(), {top: sc.scrollTop}));
+    if (!t) return;
+    const top0 = bar.getBoundingClientRect().top + bar.clientTop, at = e.clientY - top0;
+    if (e.target !== bar.firstChild) {
+      sc.scrollTop = H.pageScroll(Object.assign(dims(), {top: sc.scrollTop, at, thumb: t}));
+      placeBar(sc);
+      return;
+    }
+    const grab = at - t.pos;
+    bar.classList.add("drag");
+    const move = ev => {
+      sc.scrollTop = H.scrollForThumb(Object.assign(dims(), {size: t.size, pos: ev.clientY - top0 - grab}));
+      placeBar(sc);
+    };
+    const end = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", end);
+      document.removeEventListener("pointercancel", end);
+      bar.classList.remove("drag");
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", end);
+    document.addEventListener("pointercancel", end);
+  });
+}
+
 // Everything in one place: a full window over the dimmed game, centred, closed by a click
 // outside it or Esc.
 const hub = defineWindow({
   id: "hub", title: "axidps", session: true, bare: true, modal: true, fixed: true,
   at: sc => {
-    const [hw, hh] = axidpsHub.hubSize(sc);
+    const [hw, hh] = hubSizeNow(sc);
     return [Math.max(0, Math.round((sc[0] - hw) / 2)), Math.max(0, Math.round((sc[1] - hh) / 2))];
   },
   mount(w) {
@@ -2529,7 +2634,7 @@ const hub = defineWindow({
       // Windows: the list on the left, the selected window's settings and the bottom bar on the right
       `<section data-tab="windows" class="wsec"><div class="wl"><div class="lst"></div><div class="foot">` +
       `<button data-act="layout" class="move" data-tip="move windows (Esc or Done to finish)">${icon("maximize-2", 12, "text")}Move windows on screen</button>` +
-      `<button data-act="addtable" class="primary" data-tip="a blank window, or a copy of one you have">+ New window</button>` +
+      `<button data-act="addtable" class="primary" data-tip="${ADD_TIP}">+ New window</button>` +
       `<div class="addmenu"></div></div></div>` +
       `<div class="wr"><div class="ws"><div class="head"></div><div class="grid"></div></div>` +
       `<div class="bottom"><button data-act="clear" class="quiet" data-tip="blank every window until the next fight">Clear this fight</button>` +
@@ -2576,6 +2681,7 @@ const hub = defineWindow({
       `<button data-ask="yes" class="primary"></button></div></div></div>` +
       `</main></div>`;
     const q = sel => w.body.querySelector(sel);
+    scrollBarEvents(w.body);
     // A click anywhere in the hub but the focused name field ends the typing (keeps it) first.
     w.body.addEventListener("click", e => {
       const f = ui.text && e.target.closest && e.target.closest('[data-cact="name"]');
@@ -2617,7 +2723,7 @@ const hub = defineWindow({
       const c = b.closest("[data-s]");
       if (c) pluginHost.storeAct(c.dataset.s, b.dataset.sact);
     };
-    q('[data-act="layout"]').onclick = () => { ui.session.hub = false; ui.fromHub = true; requestEdit(true); renderAll(); };
+    q('[data-act="layout"]').onclick = () => { ui.session.hub = false; ui.fromHub = true; refit(); requestEdit(true); renderAll(); };
     q('[data-act="close"]').onclick = () => setOpen(w, false);
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
@@ -2635,10 +2741,10 @@ const hub = defineWindow({
         const r = el && el.closest && el.closest(".crw");
         return r && r.parentNode === list ? r : null;
       };
+      // Off the list, nothing is marked and a release there moves nothing.
       const move = ev => {
         const r = rowAt(ev);
-        if (!r) return;
-        to = Number(r.dataset.i);
+        to = r ? Number(r.dataset.i) : from;
         for (const c of list.children) c.classList.toggle("over", c === r && to !== from);
       };
       const end = ev => {
@@ -2647,7 +2753,9 @@ const hub = defineWindow({
         document.removeEventListener("pointercancel", end);
         row.classList.remove("drag"); list.classList.remove("dragging");
         for (const c of list.children) c.classList.remove("over");
-        if (ev.type === "pointerup" && to !== from) {
+        const r = ev.type === "pointerup" ? rowAt(ev) : null;
+        to = r ? Number(r.dataset.i) : from;
+        if (to !== from) {
           builderAct(w, {dataset: {cact: "move", from: String(from), to: String(to)}, closest: sel => grip.closest(sel)});
         }
       };
@@ -2717,7 +2825,7 @@ const hub = defineWindow({
     };
   },
   render(w) {
-    const [hw, hh] = axidpsHub.hubSize(ui.screen);
+    const [hw, hh] = hubSizeNow(ui.screen);
     const hubEl = w.body.querySelector(".hub");
     hubEl.style.width = hw + "px";
     hubEl.style.height = hh + "px";
@@ -2757,6 +2865,7 @@ const hub = defineWindow({
     w.body.querySelector(".upd-text").textContent = ut;
     w.body.querySelector(".upd-label").style.display = w.body.querySelector(".upd-text").style.display = ut ? "" : "none";
     w.body.querySelector(".core-state").textContent = ui.live ? "running" : "not connected";
+    scrollBars(w.body);
   },
 });
 
