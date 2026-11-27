@@ -450,3 +450,70 @@ test("textures: only plugins with the permission reach the host, and their rules
   h.drop(styler);
   assert.deepStrictEqual(JSON.parse(sent[2]), { textures: [] });
 });
+
+const T = (key, extra) => Object.assign({ key, type: "toggle", label: key }, extra);
+const N = (key, extra) => Object.assign({ key, type: "number", label: key, min: 1, max: 20 }, extra);
+const C = (key, extra) => Object.assign({ key, type: "choice", label: key, options: ["ms", "s"] }, extra);
+
+test("settingsModel drops bad entries, fills defaults, caps at 16", () => {
+  const bad = [
+    T("Big"), T("dup"), T("dup"), T("e", { label: "" }), T("long", { label: "x".repeat(61) }),
+    { key: "t", type: "text", label: "t" }, { key: "nt", label: "nt" },
+    C("c0", { options: [] }), C("c13", { options: Array.from({ length: 13 }, (_, i) => "o" + i) }),
+    C("c41", { options: ["o".repeat(41)] }), C("cd", { default: "h" }), T("ty", { default: "yes" }),
+    N("mm", { min: 5, max: 1 }), N("nd", { default: 30 }), N("st", { step: 0 }), "junk", null,
+  ];
+  const m = ph.settingsModel({ settings: bad.concat([T("ok")]) });
+  // the first "dup" is kept; its twin is dropped
+  assert.deepStrictEqual(m.map(f => f.key), ["dup", "ok"]);
+  assert.deepStrictEqual(m[1], { key: "ok", type: "toggle", label: "ok", default: false });
+  const many = Array.from({ length: 20 }, (_, i) => T("k" + i));
+  assert.strictEqual(ph.settingsModel({ settings: many }).length, 16);
+  assert.deepStrictEqual(ph.settingsModel({}), []);
+  assert.deepStrictEqual(ph.settingsModel({ settings: "x" }), []);
+  const [c, n] = ph.settingsModel({ settings: [C("u"), N("r")] });
+  assert.strictEqual(c.default, "ms");
+  assert.deepStrictEqual([n.min, n.max, n.step, n.default], [1, 20, 1, 1]);
+});
+
+test("settingValues uses stored values that fit, defaults otherwise", () => {
+  const m = ph.settingsModel({ settings: [T("big"), N("rows"), C("unit")] });
+  assert.deepStrictEqual(ph.settingValues(m, { big: "yes", rows: 50, unit: "s", old: 1 }),
+    { big: false, rows: 1, unit: "s" });
+  assert.deepStrictEqual(ph.settingValues(m, { big: true, rows: 7 }), { big: true, rows: 7, unit: "ms" });
+  assert.deepStrictEqual(ph.settingValues(m, null), { big: false, rows: 1, unit: "ms" });
+});
+
+test("windowOpts defaults and reads pwin", () => {
+  assert.deepStrictEqual(ph.windowOpts({}, "x.y/a"), { bar: true, clear: false });
+  assert.deepStrictEqual(ph.windowOpts({ pwin: { "x.y/a": { bar: false } } }, "x.y/a"), { bar: false, clear: false });
+  assert.deepStrictEqual(ph.windowOpts({ pwin: { "x.y/a": { bar: 0, clear: "yes" } } }, "x.y/a"), { bar: true, clear: false });
+  assert.deepStrictEqual(ph.windowOpts({ pwin: { "x.y/a": { clear: true } } }, "x.y/a"), { bar: true, clear: true });
+  assert.deepStrictEqual(ph.windowOpts({ pwin: {} }, "constructor"), { bar: true, clear: false });
+});
+
+test("panelModel: one section per window, values filled", () => {
+  const p = plugin("x.y", { windows: [win("a", { title: "A".repeat(90) }), win("b", { settings: [T("big")] })] });
+  const saved = { cfg: { "x.y/b": { big: true } }, pwin: { "x.y/a": { clear: true } } };
+  const pm = ph.panelModel(p, saved);
+  assert.strictEqual(pm.length, 2);
+  assert.deepStrictEqual(pm.map(s => s.fullId), ["x.y/a", "x.y/b"]);
+  assert.strictEqual(pm[0].title.length, 80);
+  assert.deepStrictEqual(pm[0].opts, { bar: true, clear: true });
+  assert.deepStrictEqual(pm[0].fields, []);
+  assert.deepStrictEqual(pm[1].fields, [{ key: "big", type: "toggle", label: "big", default: false, value: true }]);
+});
+
+test("fitSetting snaps and clamps numbers, refuses the wrong type", () => {
+  const [n] = ph.settingsModel({ settings: [N("r", { step: 2 })] });
+  assert.deepStrictEqual(ph.fitSetting(n, 4.2), { ok: true, value: 5 });
+  assert.deepStrictEqual(ph.fitSetting(n, 99), { ok: true, value: 19 });
+  assert.deepStrictEqual(ph.fitSetting(n, -3), { ok: true, value: 1 });
+  assert.strictEqual(ph.fitSetting(n, NaN).ok, false);
+  assert.strictEqual(ph.fitSetting(n, "3").ok, false);
+  const [t, c] = ph.settingsModel({ settings: [T("t"), C("c")] });
+  assert.strictEqual(ph.fitSetting(t, "x").ok, false);
+  assert.deepStrictEqual(ph.fitSetting(t, true), { ok: true, value: true });
+  assert.deepStrictEqual(ph.fitSetting(c, "s"), { ok: true, value: "s" });
+  assert.strictEqual(ph.fitSetting(c, "h").ok, false);
+});

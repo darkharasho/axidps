@@ -49,6 +49,86 @@
     return out;
   }
 
+  // The hub's form for one plugin window: the window's declared settings, checked again (the
+  // browser demo serves the list too, so it's untrusted). A bad entry is dropped, not fatal.
+  const MAX_WIN_SETTINGS = 16, MAX_LABEL = 60, MAX_OPTION = 40, MAX_OPTIONS = 12;
+  const finite = x => typeof x === "number" && Number.isFinite(x);
+  function settingsModel(win) {
+    const list = win && Array.isArray(win.settings) ? win.settings : [];
+    const out = [], keys = new Set();
+    for (const s of list) {
+      if (out.length >= MAX_WIN_SETTINGS) break;
+      if (!s || typeof s !== "object" || typeof s.key !== "string" || !WINDOW_ID.test(s.key) || keys.has(s.key)
+        || typeof s.label !== "string" || !s.label || s.label.length > MAX_LABEL) continue;
+      const f = {key: s.key, type: s.type, label: s.label};
+      if (s.type === "toggle") {
+        if (s.default !== undefined && typeof s.default !== "boolean") continue;
+        f.default = s.default === true;
+      } else if (s.type === "choice") {
+        const o = s.options;
+        if (!Array.isArray(o) || o.length < 1 || o.length > MAX_OPTIONS
+          || !o.every(x => typeof x === "string" && x && x.length <= MAX_OPTION)) continue;
+        if (s.default !== undefined && !o.includes(s.default)) continue;
+        f.options = o.slice();
+        f.default = s.default === undefined ? o[0] : s.default;
+      } else if (s.type === "number") {
+        if (!finite(s.min) || !finite(s.max) || s.min > s.max) continue;
+        if (s.step !== undefined && !(finite(s.step) && s.step > 0)) continue;
+        if (s.default !== undefined && !(finite(s.default) && s.default >= s.min && s.default <= s.max)) continue;
+        Object.assign(f, {min: s.min, max: s.max, step: s.step === undefined ? 1 : s.step,
+          default: s.default === undefined ? s.min : s.default});
+      } else continue;
+      keys.add(s.key);
+      out.push(f);
+    }
+    return out;
+  }
+
+  // `value` made to fit `field`: numbers snap to the step grid from min and stay in range;
+  // anything of the wrong type is refused.
+  function fitSetting(field, value) {
+    if (field.type === "toggle") return typeof value === "boolean" ? {ok: true, value} : {ok: false};
+    if (field.type === "choice") return field.options.includes(value) ? {ok: true, value} : {ok: false};
+    if (field.type !== "number" || !finite(value)) return {ok: false};
+    const {min, max, step} = field;
+    const v = Math.min(Math.max(value, min), max);
+    let k = Math.round((v - min) / step);
+    if (min + k * step > max + 1e-9) k -= 1;
+    return {ok: true, value: Number((min + k * step).toFixed(10))};
+  }
+
+  // What the form shows: a stored value that fits its setting, otherwise the default. Keys the
+  // manifest no longer declares stay in the store but aren't shown.
+  function settingValues(model, cfg) {
+    const out = {};
+    for (const f of model) {
+      const v = own(cfg, f.key) ? cfg[f.key] : undefined;
+      const fits = f.type === "toggle" ? typeof v === "boolean"
+        : f.type === "choice" ? f.options.includes(v)
+        : finite(v) && v >= f.min && v <= f.max;
+      out[f.key] = fits ? v : f.default;
+    }
+    return out;
+  }
+
+  // The host's own options for a plugin window (never seen by the frame).
+  function windowOpts(saved, fullId) {
+    const o = own(saved && saved.pwin, fullId) ? saved.pwin[fullId] : null;
+    return {bar: o && typeof o.bar === "boolean" ? o.bar : true,
+      clear: o && typeof o.clear === "boolean" ? o.clear : false};
+  }
+
+  // The hub's settings panel for plugin `p`: one section per valid window.
+  function panelModel(p, saved) {
+    const cfg = saved && saved.cfg;
+    return validManifestWindows([p]).map(({win, fullId}) => {
+      const model = settingsModel(win);
+      const vals = settingValues(model, own(cfg, fullId) ? cfg[fullId] : null);
+      return {fullId, title: String(win.title || win.id).slice(0, MAX_TEXT), opts: windowOpts(saved, fullId),
+        fields: model.map(f => Object.assign({}, f, {value: vals[f.key]}))};
+    });
+  }
+
   // What the player grants a plugin by enabling it: its permissions and one "net:<host>" per
   // network entry.
   function grantsOf(p) {
@@ -621,7 +701,8 @@
   };
 
   const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, migrateSaved, clampSize, accept,
-    logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, MAX_OPEN};
+    logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, settingsModel, settingValues, windowOpts,
+    panelModel, fitSetting, MAX_OPEN};
   Object.assign(host, pure);
   if (typeof window !== "undefined") window.pluginHost = host;
   if (typeof module !== "undefined" && module.exports) module.exports = Object.assign({host}, pure);
