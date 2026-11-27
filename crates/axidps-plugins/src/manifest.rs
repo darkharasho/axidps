@@ -54,13 +54,17 @@ pub struct Manifest {
 pub enum Level {
     Basic,
     Deeper,
+    /// Only for built-in plugins: never granted to a player plugin, whatever it is approved for.
+    Privileged,
 }
 
-/// The permission table: `fight` is basic; the rest need verification.
+/// The permission table: `fight` is basic; most of the rest need verification; `outline` is
+/// privileged (built-in plugins only).
 pub fn level(name: &str) -> Option<Level> {
     match name {
         "fight" => Some(Level::Basic),
         "world" | "position" | "squad" | "enemies" | "textures" => Some(Level::Deeper),
+        "outline" => Some(Level::Privileged),
         _ => None,
     }
 }
@@ -71,6 +75,15 @@ impl Manifest {
         self.permissions
             .iter()
             .filter(|p| level(p) == Some(Level::Deeper))
+            .cloned()
+            .collect()
+    }
+
+    /// The privileged permissions this plugin names, in manifest order.
+    pub fn privileged(&self) -> Vec<String> {
+        self.permissions
+            .iter()
+            .filter(|p| level(p) == Some(Level::Privileged))
             .cloned()
             .collect()
     }
@@ -555,6 +568,21 @@ mod tests {
         (0..n)
             .map(|i| serde_json::json!({"id": format!("w{i}"), "title": "t", "entry": "a.html"}))
             .collect()
+    }
+
+    #[test]
+    fn outline_is_privileged_and_never_deeper() {
+        assert_eq!(level("outline"), Some(Level::Privileged));
+        let mut m = problems(
+            br#"{"id":"a.b","name":"n","version":"1.0.0","api":1,"permissions":["outline","textures"],"windows":[{"id":"w","title":"t","entry":"a.html"}]}"#,
+            Path::new("/nonexistent"),
+        )
+        .unwrap();
+        assert_eq!(m.privileged(), vec!["outline".to_string()]);
+        // trust::decide grants from deeper() only: a privileged permission must never be in it.
+        assert_eq!(m.deeper(), vec!["textures".to_string()]);
+        m.permissions = vec!["outline".into()];
+        assert!(m.deeper().is_empty());
     }
 
     #[test]

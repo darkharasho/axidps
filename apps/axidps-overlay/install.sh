@@ -19,6 +19,7 @@ cp -r "$HERE/sdk/." "$DEST/sdk/"
 cp "$HERE/page/fonts/"* "$DEST/sdk/fonts/"
 cp -r "$HERE/plugins/." "$DEST/plugins/"
 rm -f "$DEST/sdk/.gitkeep" "$DEST/plugins/.gitkeep" "$DEST/sdk/"*.test.js
+rm -f "$DEST/plugins/"*/*.test.js
 # The build the hub shows (Updates).
 echo "window.AXIDPS_BUILD = \"${AXIDPS_VERSION:-$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo dev)}\";" > "$DEST/page/version.js"
 # Class icons from the gw2-class-icons npm package (a root dependency), named by spec.

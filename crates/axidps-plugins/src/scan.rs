@@ -175,16 +175,22 @@ pub fn read_manifest(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Valid, a supported `api`, not revoked, and every deeper permission granted by its trust:
-/// the host serves only these.
+/// Valid, a supported `api`, not revoked, every deeper permission granted by its trust, and no
+/// privileged one unless built in: the host serves only these.
 pub fn loadable(p: &Plugin) -> bool {
     p.error.is_none()
         && p.trust.level != Trust::Revoked
-        && p.manifest.as_ref().is_some_and(|m| m.api == SUPPORTED_API && deeper_granted(p, m))
+        && p.manifest.as_ref().is_some_and(|m| {
+            m.api == SUPPORTED_API && deeper_granted(p, m) && privileged_allowed(p, m)
+        })
 }
 
 fn deeper_granted(p: &Plugin, m: &Manifest) -> bool {
     m.deeper().iter().all(|d| p.trust.granted.contains(d))
+}
+
+fn privileged_allowed(p: &Plugin, m: &Manifest) -> bool {
+    p.bundled || m.privileged().is_empty()
 }
 
 /// What the player grants a plugin by enabling it: its permissions and one `net:<host>` per
@@ -254,6 +260,7 @@ fn one(p: &Plugin) -> Value {
             p.trust.reason.as_deref().unwrap_or("no reason given")
         )),
         (None, Some(m)) if m.api != SUPPORTED_API => Some("needs a newer axidps".into()),
+        (None, Some(m)) if !privileged_allowed(p, m) => Some("only for built-in plugins".into()),
         (None, Some(m)) if !deeper_granted(p, m) => Some("needs verification".into()),
         _ => None,
     };
@@ -488,6 +495,28 @@ mod tests {
             assert!(!loadable(&r[0]));
             assert!(log.iter().any(|l| l.contains("can't hash")), "{log:?}");
         }
+    }
+
+    #[test]
+    fn bundled_outline_plugin_scans() {
+        let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/axidps-overlay/plugins"));
+        let (plugins, log) = scan_logged(dir, Path::new("/nonexistent-player-dir"));
+        let p = plugins.iter().find(|p| p.manifest.as_ref().is_some_and(|m| m.id == "axidps.outline")).unwrap_or_else(|| panic!("not scanned: {log:?}"));
+        assert!(p.bundled && loadable(p));
+        assert!(log.iter().all(|l| !l.contains("outline")), "{log:?}");
+    }
+
+    #[test]
+    fn privileged_only_loads_bundled() {
+        let b = plugin("axidps.outline", true, &["outline"], &[]);
+        assert!(loadable(&b));
+        assert!(enabled(&b, &Value::Null));
+        let p = plugin("x.outline", false, &["outline"], &[]);
+        assert!(!loadable(&p));
+        assert!(!enabled(&p, &json!({"x.outline": {"enabled": true, "granted": ["outline"]}})));
+        let page = to_page_json(&[b, p]);
+        assert!(page[0].get("error").is_none());
+        assert_eq!(page[1]["error"], "only for built-in plugins");
     }
 
     #[test]

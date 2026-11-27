@@ -267,6 +267,20 @@ b, strong { font-weight: 600; }
         },
         clear() { post("textures", {rules: []}); },
       },
+      // The player outline. Works only in plugins built into axidps (it needs the `outline`
+      // permission and a bundled plugin; the page ignores it otherwise). set(obj) sends the
+      // outline settings, clear() turns the outline off.
+      outline: {
+        set(obj) {
+          if (!obj || typeof obj !== "object" || Array.isArray(obj)) { log("error", "outline.set needs an object"); return; }
+          let copy;
+          try { copy = JSON.parse(JSON.stringify(obj)); } catch (e) {
+            log("error", "outline.set: the object can't be sent as JSON"); return;
+          }
+          post("outline", {settings: copy});
+        },
+        clear() { post("outline", {settings: null}); },
+      },
       window: {
         setTitle(text) { post("title", {text: String(text ?? "").slice(0, 80)}); },
         setStatus(text, opts) {

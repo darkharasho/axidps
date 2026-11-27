@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Character Outline: the settings window. Mouse only; every change is saved and applied at once. -->
+<html>
+<head>
+<meta charset="utf-8">
+<script src="/_sdk/axidps.js"></script>
+<style>
+  body { padding: 8px 10px; color: var(--text); min-width: 220px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; }
+  .row label { color: var(--text); }
+  .row output { color: var(--dim); font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
+  h4 { margin: 10px 0 4px; color: var(--dim); font-weight: 600; font-size: var(--fs); }
+  input[type=range] { flex: 1; accent-color: var(--accent); min-width: 80px; }
+  input[type=checkbox] { accent-color: var(--accent); }
+  .swatches { display: flex; gap: 4px; padding: 3px 0; flex-wrap: wrap; }
+  .sw { width: 20px; height: 20px; border-radius: var(--rs); border: var(--bw) solid var(--line-hi); cursor: pointer; padding: 0; }
+  .sw:hover { border-color: var(--accent-hi); }
+  .sw.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .preview { height: 6px; border-radius: 3px; margin: 2px 0 4px; border: var(--bw) solid var(--line); }
+</style>
+</head>
+<body>
+<div class="row"><label for="on">Outline on</label><input type="checkbox" id="on"></div>
+<div class="row"><label for="pve">Show in PvE</label><input type="checkbox" id="pve"></div>
+<div class="row"><label for="wvw">Show in WvW</label><input type="checkbox" id="wvw"></div>
+<div class="row"><label for="thickness">Thickness</label><input type="range" id="thickness" min="1" max="8" step="1"><output id="thickness-v"></output></div>
+<div class="row"><label for="fill">Fill</label><input type="range" id="fill" min="0" max="0.6" step="0.05"><output id="fill-v"></output></div>
+<h4>Colour</h4>
+<div class="swatches" id="color-sw"></div>
+<div class="row"><label for="color-h">Hue</label><input type="range" id="color-h" min="0" max="360" step="1"></div>
+<div class="row"><label for="color-l">Lightness</label><input type="range" id="color-l" min="0" max="1" step="0.01"></div>
+<div class="preview" id="color-p"></div>
+<h4>Fill colour</h4>
+<div class="swatches" id="fillColor-sw"></div>
+<div class="row"><label for="fillColor-h">Hue</label><input type="range" id="fillColor-h" min="0" max="360" step="1"></div>
+<div class="row"><label for="fillColor-l">Lightness</label><input type="range" id="fillColor-l" min="0" max="1" step="0.01"></div>
+<div class="preview" id="fillColor-p"></div>
+<script src="model.js"></script>
+<script src="settings.js"></script>
+</body>
+</html>

@@ -104,7 +104,7 @@ jobs:
           key: cargo-registry-dll-${{ hashFiles('Cargo.lock', 'private/Cargo.lock') }}
           restore-keys: cargo-registry-dll-
 
-      - run: tools/quiet-build "$RUNNER_TEMP/dll.log" -- cargo build --manifest-path private/Cargo.toml --release -p axidps-dll --target x86_64-pc-windows-gnu --features arcdps-chainload,overlay
+      - run: tools/quiet-build "$RUNNER_TEMP/dll.log" -- cargo build --manifest-path private/Cargo.toml --release -p axidps-dll --target x86_64-pc-windows-gnu --features arcdps-chainload,overlay,outline
 
       - name: Hand the DLL to the sign-dll job
         env:

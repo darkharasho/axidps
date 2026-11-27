@@ -159,7 +159,7 @@ The folder's name doesn't matter; the manifest's `id` does. The folder may not h
 | `version` | yes | A semantic version, like `1.0.0`. |
 | `author` | no | Shown on the hub card. |
 | `api` | yes | Must be `1`. Any other number lists the plugin as "needs a newer axidps" and it doesn't load. |
-| `permissions` | no | A list from `fight` (basic) and `world`, `position`, `squad`, `enemies`, `textures` (deeper). Any other name makes the plugin invalid. See [Permissions](#permissions). |
+| `permissions` | no | A list from `fight` (basic) and `world`, `position`, `squad`, `enemies`, `textures` (deeper), and `outline` (built in only). Any other name makes the plugin invalid. See [Permissions](#permissions). |
 | `network` | no | Host names your plugin may reach over HTTPS on port 443, like `api.example.com`, or `*.example.com` for any subdomain (not the bare domain). No scheme, port or path. Public names only: no IP addresses, no single-label names like `localhost`, no `*.com`, and nothing under `.localhost`, `.local`, `.lan`, `.internal` or `.home.arpa`. |
 | `windows` | yes | 1 to 4 windows. |
 
@@ -188,6 +188,7 @@ Text the page shows (titles, names, statuses) is cut to 80 characters.
 | `squad` | deeper | "Reads your squad and party" |
 | `enemies` | deeper | "Reads enemy players seen in combat" |
 | `textures` | deeper | "Changes how the game's icons look (commander tags, markers, targets)" |
+| `outline` | privileged | "Outlines your character" |
 
 Each `network` host adds the line "Talks to <domain>".
 
@@ -199,6 +200,8 @@ Only `fight` works today. A plugin that names a deeper permission is listed with
 "Needs verification" and is never loaded. Deeper permissions will need the axidps team's review
 of the plugin, which arrives with the plugin store in a later release. `textures` has its API
 ([`axidps.textures`](#axidpstextures)); the others don't have one yet.
+
+`outline` is reserved for plugins built into axidps; any other plugin that names it doesn't load.
 
 Every plugin you install yourself shows the label "Unverified" on its hub card and in its
 window's title-bar tooltip. Bundled plugins show no label. Verification also arrives with the
