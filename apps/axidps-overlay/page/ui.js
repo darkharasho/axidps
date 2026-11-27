@@ -1193,6 +1193,8 @@ defineWindow({
 
 // The button is a bare glyph drawn to sit with GW2's own menu icons (light, embossed, shadowed),
 // beside them at the top left by default; moved in edit mode. A click opens the hub.
+// How opaque the button's glyph is at rest (GW2's own menu icons are dimmed until hovered).
+const LAUNCHER_REST_ALPHA = 0.6;
 function paintLauncher(cv, hot, live) {
   const g = cv.getContext("2d"), W = cv.width;
   g.clearRect(0, 0, W, W);
@@ -1225,16 +1227,21 @@ function paintLauncher(cv, hot, live) {
     return grad;
   };
   const light = ink(hot ? "#fffbf0" : "#eee6d2", hot ? "#d9cfb6" : "#aaa089");
+  // At rest the glyph is as faint as the game's menu icons; hovered (or the hub open) it lights
+  // up as they do. The cut below and the live dot ignore this.
+  const glyph = hot ? 1 : LAUNCHER_REST_ALPHA;
+  g.globalAlpha = glyph;
   meter(1, 1.5); g.fillStyle = "rgba(0,0,0,.5)"; g.fill();
   meter(0, 0); g.lineWidth = 2; g.strokeStyle = "rgba(24,20,14,.85)"; g.stroke();
   g.fillStyle = light; g.fill();
   // Cut the meter away around the sword so the two read apart.
-  g.save(); g.globalCompositeOperation = "destination-out";
+  g.save(); g.globalCompositeOperation = "destination-out"; g.globalAlpha = 1;
   sword(0, 0); g.lineWidth = 5; g.lineJoin = "round"; g.stroke(); g.fill();
   g.restore();
   sword(1, 1.5); g.fillStyle = "rgba(0,0,0,.5)"; g.fill();
   sword(0, 0); g.lineWidth = 2; g.lineJoin = "miter"; g.strokeStyle = "rgba(24,20,14,.85)"; g.stroke();
   g.fillStyle = light; g.fill();
+  g.globalAlpha = 1;
   if (live) {
     g.beginPath(); g.arc(27, 6, 3.5, 0, Math.PI * 2);
     g.fillStyle = "#16130e"; g.fill();
