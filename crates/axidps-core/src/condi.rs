@@ -2,8 +2,9 @@
 //! from game data only:
 //!
 //! - **When:** a target ticks every 1000 ms once its first ticking condition lands (the phase
-//!   [`crate::buffs::Stacks`] already keeps for arcdps's overstack). Every stack active at the
-//!   tick counts in full, one per stack. Duration and expertise play no part.
+//!   [`crate::buffs::Stacks`] already keeps for arcdps's overstack). Every stack counts for the
+//!   part of the second before the tick it was on: a stack that lands or ends mid-second deals
+//!   that part of a tick (the game's damage is per second of duration; arcdps's rows match).
 //! - **How much:** the buff's damage modifier from game content (`BuffFormula`, kind 50),
 //!   evaluated as the game's own formula evaluator does, with the source's attributes from
 //!   `CoreStats` (kind 49). Minions use their master's stats.
@@ -381,7 +382,7 @@ impl Model {
         let mut out: BTreeMap<(u32, u32), (f32, u32)> = BTreeMap::new();
         let mut pov_groups: std::collections::BTreeSet<(u32, u32)> = Default::default();
         let kind = self.known.damage_kind();
-        for &(src, buff, level) in &f.stacks {
+        for &(src, buff, level, ms) in &f.stacks {
             let pov_src = self.pov == Some(src) || master(src).is_some_and(|m| self.pov == Some(m));
             if pov_src {
                 pov_groups.insert((src, buff));
@@ -393,7 +394,7 @@ impl Model {
             match dmg {
                 Some(d) => {
                     let e = out.entry((src, buff)).or_default();
-                    e.0 += d;
+                    e.0 += d * f32::from(ms) / 1000.0;
                     e.1 += 1;
                 }
                 None if mods.is_none() => self.coverage.no_formula += 1,
@@ -721,20 +722,20 @@ mod tests {
             target: 50,
             time: 3000,
             stacks: vec![
-                (10, BLEEDING, 80),
-                (10, BLEEDING, 80),
-                (11, BLEEDING, 80), // no attributes
-                (12, BLEEDING, 80), // minion of 10
-                (1, BLEEDING, 80),  // POV: self-check only
-                (10, 999, 80),      // no formula
+                (10, BLEEDING, 80, 1000),
+                (10, BLEEDING, 80, 500), // on for half the second: half a tick
+                (11, BLEEDING, 80, 1000), // no attributes
+                (12, BLEEDING, 80, 1000), // minion of 10
+                (1, BLEEDING, 80, 1000),  // POV: self-check only
+                (10, 999, 80, 1000),      // no formula
             ],
         };
         let ticks = m.tick(&f, |id| (id == 12).then_some(10), |_| vec![]);
-        // 2 + 20 + 60 = 82 per stack.
+        // 2 + 20 + 60 = 82 per stack-second: 82 + 41.
         assert_eq!(
             ticks,
             vec![
-                Tick { time: 3000, src: 10, dst: 50, buff: BLEEDING, damage: 164, stacks: 2 },
+                Tick { time: 3000, src: 10, dst: 50, buff: BLEEDING, damage: 123, stacks: 2 },
                 Tick { time: 3000, src: 12, dst: 50, buff: BLEEDING, damage: 82, stacks: 1 },
             ]
         );
@@ -781,7 +782,7 @@ mod tests {
         let f = Fired {
             target: 50,
             time: 1000,
-            stacks: vec![(10, BLEEDING, 80)],
+            stacks: vec![(10, BLEEDING, 80, 1000)],
         };
         let mut m = Model::new(k.clone(), Some(1), GameMode::Wvw);
         // (2 + 20) + (0.5 + 20)
@@ -916,7 +917,7 @@ mod tests {
         let f = Fired {
             target: 1,
             time: 1000,
-            stacks: vec![(10, BLEEDING, 80)],
+            stacks: vec![(10, BLEEDING, 80, 1000)],
         };
         assert!(m.tick(&f, |_| None, |_| vec![]).is_empty());
     }

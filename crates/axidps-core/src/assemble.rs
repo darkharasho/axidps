@@ -1803,7 +1803,7 @@ fn immune_tick_rows(
     } else {
         return None;
     };
-    let groups: BTreeSet<(u32, u32)> = fired.stacks.iter().map(|&(s, b, _)| (s, b)).collect();
+    let groups: BTreeSet<(u32, u32)> = fired.stacks.iter().map(|&(s, b, _, _)| (s, b)).collect();
     Some(
         groups
             .into_iter()
