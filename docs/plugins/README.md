@@ -282,6 +282,7 @@ changes, and the page passes it on.
 | `players` | Your squad's rows, highest damage first (below). |
 | `timeline` | `{bucket_ms, out, in}`: the squad's damage dealt (`out`) and taken (`in`) per second (`bucket_ms` is `1000`), or `null` when idle. |
 | `healing` | `{out, in}`: your healing given by target and received by source, largest first. Each entry is `{name, prof, elite, me, healing, barrier}`. `null` when idle. |
+| `detail` | The breakdown of the player open in the built-in Details window, or `null` when it is closed: `{account, name, prof, spec, bucket_ms, out, in, skills_out, skills_in, states}`. `out`/`in` are that player's damage dealt and taken per second; `skills_out`/`skills_in` list up to 40 skills each as `{id, name, damage, hits}`, largest first; `states` lists `[ms into the fight, "down" \| "dead" \| "up"]`. |
 
 Each player row:
 

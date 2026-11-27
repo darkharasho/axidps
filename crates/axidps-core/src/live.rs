@@ -172,6 +172,18 @@ struct Series {
     inc: Vec<u64>,
 }
 
+/// One agent's damage by skill, one way: skill -> (damage, hits).
+type BySkill = BTreeMap<u32, (u64, u32)>;
+
+/// Skills listed per direction in the feed's `detail`.
+const DETAIL_SKILLS: usize = 40;
+
+fn add_skill(m: &mut BTreeMap<u32, BySkill>, id: u32, skill: u32, dmg: u64) {
+    let e = m.entry(id).or_default().entry(skill).or_default();
+    e.0 = e.0.saturating_add(dmg);
+    e.1 = e.1.saturating_add(1);
+}
+
 fn add_heal(m: &mut BTreeMap<u32, HealSum>, id: u32, h: HealSum) {
     let e = m.entry(id).or_default();
     e.healing = e.healing.saturating_add(h.healing);
@@ -232,6 +244,13 @@ pub struct LiveStats {
     idents: BTreeMap<u32, Ident>,
     /// Damage dealt and taken per agent per [`BUCKET_MS`] of the fight (dealt by owner).
     series: BTreeMap<u32, Series>,
+    /// Damage dealt (by owner) and taken per agent by skill, this fight (kept after it ends).
+    skills_out: BTreeMap<u32, BySkill>,
+    skills_in: BTreeMap<u32, BySkill>,
+    /// Each agent's downs, deaths and rallies this fight: (ms into the fight, state).
+    state_log: BTreeMap<u32, Vec<(u64, AgentState)>>,
+    /// The account whose breakdown the feed carries (`detail`): the overlay's details window.
+    detail: Option<String>,
     /// The ended fight's rows and timeline, kept until the next fight starts.
     last_rows: Vec<Value>,
     last_timeline: Value,
@@ -304,6 +323,10 @@ impl LiveStats {
             stacks: BTreeMap::new(),
             idents: BTreeMap::new(),
             series: BTreeMap::new(),
+            skills_out: BTreeMap::new(),
+            skills_in: BTreeMap::new(),
+            state_log: BTreeMap::new(),
+            detail: None,
             last_rows: Vec::new(),
             last_timeline: Value::Null,
             generation: 0,
@@ -449,6 +472,9 @@ impl LiveStats {
         self.clear_contrib();
         self.idents.clear();
         self.series.clear();
+        self.skills_out.clear();
+        self.skills_in.clear();
+        self.state_log.clear();
         self.heal_out.clear();
         self.heal_in.clear();
         self.given.clear();
@@ -472,9 +498,11 @@ impl LiveStats {
     /// Forget everything: a new game run (its agent ids mean nothing to the old numbers).
     pub fn clear(&mut self) {
         let (generation, counting) = (self.generation + 1, self.counting);
+        let detail = self.detail.take();
         *self = Self::new();
         self.generation = generation;
         self.counting = counting;
+        self.detail = detail;
     }
 
     /// The fight ended at `end_ms`; `reg` is the registry as of the end. Its rows are kept.
@@ -493,7 +521,7 @@ impl LiveStats {
         self.given.clear();
         self.received.clear();
         self.state = LiveState::Last;
-        self.series.clear();
+        // The series and skills stay for the details window until the next fight.
         self.acc.clear();
         self.states.clear();
         self.clear_contrib();
@@ -545,6 +573,7 @@ impl LiveStats {
             Event::Strike {
                 src,
                 dst,
+                skill,
                 value,
                 result,
                 ..
@@ -560,6 +589,10 @@ impl LiveStats {
                     let d = self.acc.entry(dst).or_default();
                     d.taken = d.taken.saturating_add(dmg);
                     self.add_series(t, by, dst, dmg);
+                    if src != 0 {
+                        add_skill(&mut self.skills_out, by, skill, dmg);
+                    }
+                    add_skill(&mut self.skills_in, dst, skill, dmg);
                 } else if (result == STRIKE_DOWN || result == STRIKE_KILL) && src != 0 && src != dst
                 {
                     let a = self.acc.entry(by).or_default();
@@ -575,7 +608,11 @@ impl LiveStats {
             }
             // The local player's condition ticks, dealt and taken (kind 42).
             Event::BuffDamage {
-                src, dst, value, ..
+                src,
+                dst,
+                buff,
+                value,
+                ..
             } => {
                 let by = self.owner(src);
                 if value <= 0 || by == self.owner(dst) {
@@ -589,6 +626,10 @@ impl LiveStats {
                 let d = self.acc.entry(dst).or_default();
                 d.taken = d.taken.saturating_add(dmg);
                 self.add_series(t, if src != 0 { by } else { 0 }, dst, dmg);
+                if src != 0 {
+                    add_skill(&mut self.skills_out, by, buff, dmg);
+                }
+                add_skill(&mut self.skills_in, dst, buff, dmg);
                 self.generation += 1;
             }
             // The local player's heals and barrier, given and received (kind 43).
@@ -648,6 +689,11 @@ impl LiveStats {
             Event::State { id, state } => {
                 if self.states.insert(id, state) == Some(state) {
                     return;
+                }
+                let at = t.saturating_sub(self.start_ms);
+                self.state_log.entry(id).or_default().push((at, state));
+                if state == AgentState::Up {
+                    self.generation += 1;
                 }
                 let a = self.acc.entry(id).or_default();
                 match state {
@@ -1294,6 +1340,91 @@ impl LiveStats {
         rows.into_iter().map(|(_, v)| v).collect()
     }
 
+    /// Carry `account`'s breakdown in the feed (`None`: no details window open).
+    pub fn set_detail(&mut self, account: Option<String>) {
+        if self.detail != account {
+            self.detail = account;
+            self.generation += 1;
+        }
+    }
+
+    /// The selected account's breakdown this fight (or the last): damage dealt and taken per
+    /// bucket and by skill, and its downs and deaths. Every id the account had is summed (a
+    /// player that left and came back has a new one).
+    fn detail_value(&self) -> Value {
+        let Some(account) = self.detail.as_deref() else {
+            return Value::Null;
+        };
+        if self.state == LiveState::Idle {
+            return Value::Null;
+        }
+        let ids: Vec<u32> = self
+            .idents
+            .iter()
+            .filter(|(_, w)| w.account == account)
+            .map(|(&id, _)| id)
+            .collect();
+        let Some(who) = ids.first().and_then(|id| self.idents.get(id)) else {
+            return Value::Null;
+        };
+        let n = (self.duration_ms().div_ceil(BUCKET_MS) as usize).min(MAX_BUCKETS);
+        let (mut out, mut inc) = (vec![0u64; n], vec![0u64; n]);
+        let (mut by_out, mut by_in) = (BySkill::new(), BySkill::new());
+        let mut states = Vec::new();
+        for id in &ids {
+            if let Some(s) = self.series.get(id) {
+                for (o, v) in out.iter_mut().zip(&s.out) {
+                    *o += v;
+                }
+                for (o, v) in inc.iter_mut().zip(&s.inc) {
+                    *o += v;
+                }
+            }
+            for (from, to) in [(&self.skills_out, &mut by_out), (&self.skills_in, &mut by_in)] {
+                for (&skill, &(d, h)) in from.get(id).into_iter().flatten() {
+                    let e = to.entry(skill).or_default();
+                    e.0 += d;
+                    e.1 += h;
+                }
+            }
+            states.extend(self.state_log.get(id).into_iter().flatten().copied());
+        }
+        states.sort_by_key(|s| s.0);
+        let list = |m: BySkill| {
+            let mut v: Vec<(u32, (u64, u32))> = m.into_iter().collect();
+            v.sort_by_key(|&(_, (d, _))| std::cmp::Reverse(d));
+            v.truncate(DETAIL_SKILLS);
+            v.into_iter()
+                .map(|(id, (damage, hits))| {
+                    json!({"id": id, "name": crate::assemble::skill_name(id), "damage": damage, "hits": hits})
+                })
+                .collect::<Vec<_>>()
+        };
+        let states: Vec<Value> = states
+            .into_iter()
+            .map(|(at, s)| {
+                let s = match s {
+                    AgentState::Up => "up",
+                    AgentState::Down => "down",
+                    AgentState::Dead => "dead",
+                };
+                json!([at, s])
+            })
+            .collect();
+        json!({
+            "account": who.account,
+            "name": who.name,
+            "prof": who.prof,
+            "spec": crate::names::spec_name(who.prof, who.elite),
+            "bucket_ms": BUCKET_MS,
+            "out": out,
+            "in": inc,
+            "skills_out": list(by_out),
+            "skills_in": list(by_in),
+            "states": states,
+        })
+    }
+
     /// The schema v1 value at wall time `unix_ms`. `reg` is the registry now (used while a
     /// fight is recording; an ended fight shows its players as of its end).
     pub fn snapshot(&mut self, reg: &Registry, unix_ms: u64) -> Value {
@@ -1324,6 +1455,7 @@ impl LiveStats {
             "players": players,
             "timeline": timeline,
             "healing": healing,
+            "detail": self.detail_value(),
         })
     }
 }
@@ -1764,6 +1896,66 @@ mod tests {
         assert_eq!(v["players"][0]["name"], "Char 1");
     }
 
+    /// The details window's player: damage per second and by skill both ways, and its downs,
+    /// kept after the fight ends.
+    #[test]
+    fn detail_breaks_down_one_players_damage() {
+        let r = world();
+        let mut l = LiveStats::new();
+        l.begin(1000, 38);
+        let hit = |src, dst, skill, value| Event::Strike {
+            src,
+            dst,
+            skill,
+            value,
+            overstack: 0,
+            result: 0,
+        };
+        feed(
+            &mut l,
+            &r,
+            &[
+                (1100, hit(1, NPC, 5, 500)),
+                (1200, hit(1, NPC, 5, 100)),
+                (2100, hit(NPC, 1, 7, 200)),
+                (
+                    2500,
+                    Event::BuffDamage {
+                        src: NPC,
+                        dst: 1,
+                        buff: 736,
+                        value: 30,
+                        barrier: 0,
+                        stacks: 1,
+                    },
+                ),
+                (
+                    2800,
+                    Event::State {
+                        id: 1,
+                        state: AgentState::Down,
+                    },
+                ),
+            ],
+        );
+        l.advance(3000);
+        assert!(l.snapshot(&r, 0)["detail"].is_null());
+        let account = l.snapshot(&r, 0)["players"][0]["account"].as_str().unwrap().to_owned();
+        l.set_detail(Some(account.clone()));
+        let d = l.snapshot(&r, 0)["detail"].clone();
+        assert_eq!(d["account"], account);
+        assert_eq!(d["out"], json!([600, 0]));
+        assert_eq!(d["in"], json!([0, 230]));
+        assert_eq!(d["skills_out"], json!([{"id": 5, "name": "", "damage": 600, "hits": 2}]));
+        assert_eq!(d["skills_in"][0]["damage"], 200);
+        assert_eq!(d["skills_in"][1], json!({"id": 736, "name": "Bleeding", "damage": 30, "hits": 1}));
+        assert_eq!(d["states"], json!([[1800, "down"]]));
+        l.end(3000, &r);
+        assert_eq!(l.snapshot(&r, 0)["detail"]["out"], json!([600, 0]));
+        l.begin(9000, 38);
+        assert_eq!(l.snapshot(&r, 0)["detail"]["skills_out"], json!([]));
+    }
+
     #[test]
     fn timeline_sums_squad_damage_per_second() {
         let r = world();
@@ -2131,7 +2323,7 @@ mod tests {
         };
         assert_eq!(
             keys(&v),
-            ["fight", "healing", "players", "state", "t", "timeline", "v"]
+            ["detail", "fight", "healing", "players", "state", "t", "timeline", "v"]
         );
         assert_eq!(v["v"], 1);
         assert_eq!(v["t"], 1_700_000_000_123u64);

@@ -453,12 +453,21 @@ addEventListener("mouseover", e => {
   if (!el || !el.dataset.tip) { tip.style.display = "none"; return; }
   tip.textContent = el.dataset.tip;
   tip.style.display = "block";
-  const wr = winEl.getBoundingClientRect(), r = el.getBoundingClientRect();
+  placeTip(winEl, tip, e.clientX, e.clientY);
+});
+// Above the pointer, so the cursor never covers it; below only when the window has no room above.
+function placeTip(winEl, tip, mx, my) {
+  const wr = winEl.getBoundingClientRect();
   const tw = tip.offsetWidth, h = tip.offsetHeight;
-  let x = r.left - wr.left + (r.width - tw) / 2, y = r.bottom - wr.top + 2;
+  let x = mx - wr.left - tw / 2, y = my - wr.top - h - 10;
   x = Math.max(2, Math.min(x, wr.width - tw - 4));
-  if (y + h > wr.height - 2) y = r.top - wr.top - h - 2;
-  tip.style.left = x + "px"; tip.style.top = y + "px";
+  if (y < 2) y = Math.min(my - wr.top + 20, wr.height - h - 2);
+  tip.style.left = x + "px"; tip.style.top = Math.max(2, y) + "px";
+}
+addEventListener("mousemove", e => {
+  const winEl = e.target.closest && e.target.closest(".win");
+  const tip = winEl && winEl.querySelector(".tip");
+  if (tip && tip.style.display === "block") placeTip(winEl, tip, e.clientX, e.clientY);
 });
 addEventListener("wheel", e => {
   const winEl = e.target.closest && e.target.closest(".win");
@@ -536,6 +545,11 @@ function tableWindow(def) {
       cols.map(c => `<th data-k="${c.k}" data-tip="${esc(c.tip)}">${esc(c.label)}</th>`).join("") +
       `</tr></thead><tbody></tbody></table><div class="empty"></div>` +
       `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
+    // A click on a player opens their breakdown (the Details window).
+    w.body.querySelector("tbody").onclick = e => {
+      const tr = e.target.closest("tr[data-acct]");
+      if (tr && !ui.editing) openDetails(tr.dataset.acct);
+    };
     w.body.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
       const c = w.cfg, key = th.dataset.k;
       if (c.sortKey === key) c.sortAsc = !c.sortAsc; else { c.sortKey = key; c.sortAsc = key === "name"; }
@@ -565,7 +579,7 @@ function tableWindow(def) {
       const shown = ps.slice(w.offset, w.offset + rows);
       w.body.querySelector("tbody").innerHTML = shown.map((p, i) => {
         const frac = (typeof p[k] === "number" ? Math.max(0, p[k]) / top * 100 : 0).toFixed(1);
-        return `<tr class="p${p.me ? " me" : ""}"><td>${w.offset + i + 1}</td>${nameCell(p, frac)}` +
+        return `<tr class="p${p.me ? " me" : ""}" data-acct="${esc(p.account)}"><td>${w.offset + i + 1}</td>${nameCell(p, frac)}` +
           cols.map(cc => `<td${cc.heal && !p.heal_full ? ' class="part"' : ""}>${statText(cc.k, p[cc.k])}</td>`)
             .join("") + `</tr>`;
       }).join("");
@@ -702,6 +716,136 @@ defineWindow({
     w.body.querySelector(".peak").textContent = n > 1 ? `peak ${fmt(Math.max(...out))} dealt` : "";
   },
 });
+
+// ---- details: one player's breakdown, opened by clicking a row ------------------------------
+
+// The core adds the breakdown of saved.detail (an account) to the feed; it reads the choice from
+// ui.json, so the first numbers follow a second or two after the click.
+function openDetails(account) {
+  const w = wins.find(v => v.id === "details");
+  saved.detail = account;
+  saveNow();
+  w.offset = 0;
+  w.drawn = "";
+  if (!isOpen(w)) setOpen(w, true); else renderAll();
+}
+const DETAIL_TABS = [["in", "Damage taken"], ["out", "Damage dealt"]];
+const DETAIL_ROWS = 12;
+defineWindow({
+  id: "details", blurb: ["Details", "one player's damage by skill and over time", "activity"],
+  title: "Details",
+  cfg: {tab: "in"},
+  tools: [{id: "close", tip: "Close", label: "✕"}],
+  tool(w, id) {
+    if (id !== "close") return;
+    saved.detail = "";
+    saveNow();
+    setOpen(w, false);
+  },
+  at: ([sw, sh]) => [Math.max(0, Math.round(sw / 2 - 300)), Math.max(0, Math.round(sh / 2 - 240))],
+  mount(w) {
+    const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
+    w.body.style.width = px(600) + "px";
+    w.body.innerHTML = `<div class="dhead"><span class="who"></span><div class="seg">` +
+      DETAIL_TABS.map(([k, label]) => `<button data-tab="${k}">${label}</button>`).join("") + `</div></div>` +
+      `<canvas class="chart" width="${px(600)}" height="${px(150)}"></canvas>` +
+      `<table><colgroup><col><col style="width:${px(90)}px"><col style="width:${px(56)}px">` +
+      `<col style="width:${px(56)}px"><col style="width:${px(70)}px"></colgroup><thead><tr>` +
+      `<th class="l">Skill</th><th>Damage</th><th>Share</th><th>Hits</th><th>Per hit</th>` +
+      `</tr></thead><tbody></tbody></table><div class="empty"></div>` +
+      `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
+    w.body.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => {
+      w.cfg.tab = b.dataset.tab; w.offset = 0; w.drawn = ""; save(); w.def.render(w);
+    });
+    w.compact = saved.compact;
+  },
+  render(w) {
+    if (w.compact !== saved.compact) w.def.mount(w);
+    fightState(w);
+    const want = saved.detail || "";
+    const d = ui.live && !ui.cleared && ui.live.detail && ui.live.detail.account === want ? ui.live.detail : null;
+    const tab = DETAIL_TABS.some(([k]) => k === w.cfg.tab) ? w.cfg.tab : "in";
+    w.body.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+    const p = players().find(x => x.account === want);
+    const name = d ? d.name : p ? p.name : want;
+    const spec = d ? d.spec : p && p.spec;
+    w.body.querySelector(".who").innerHTML = (spec ? `<img src="icons/${encodeURIComponent(spec)}.png" alt="">` : "") +
+      `<b>${esc(name)}</b><small>${esc(want)}</small>`;
+    const skills = d ? (tab === "in" ? d.skills_in : d.skills_out) : [];
+    const total = skills.reduce((n, s) => n + s.damage, 0);
+    w.offset = Math.max(0, Math.min(w.offset, skills.length - DETAIL_ROWS));
+    const shown = skills.slice(w.offset, w.offset + DETAIL_ROWS);
+    const top = Math.max(1, ...skills.map(s => s.damage));
+    const col = tab === "in" ? T("bad") : T("good");
+    w.body.querySelector("tbody").innerHTML = shown.map(s => {
+      const frac = (s.damage / top * 100).toFixed(1);
+      return `<tr class="p"><td class="l name" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
+        `${esc(s.name || "Skill " + s.id)}</td><td>${fmt(s.damage)}</td>` +
+        `<td>${total ? (s.damage / total * 100).toFixed(1) + "%" : "–"}</td><td>${int(s.hits)}</td>` +
+        `<td>${fmt(s.hits ? s.damage / s.hits : 0)}</td></tr>`;
+    }).join("");
+    const empty = w.body.querySelector(".empty");
+    empty.style.display = shown.length ? "none" : "block";
+    empty.textContent = !want ? "Click a player in a table" : !d ? (ui.live && ui.live.state === "idle"
+      ? emptyText() : "Loading…") : tab === "in" ? "No damage taken this fight" : "No damage dealt this fight";
+    const downs = d ? d.states.filter(s => s[1] === "down").length : 0;
+    const deaths = d ? d.states.filter(s => s[1] === "dead").length : 0;
+    w.body.querySelector(".sum").textContent = d ? `${fmt(total)} ${tab === "in" ? "taken" : "dealt"}` +
+      (tab === "in" ? ` · ${downs} down${downs === 1 ? "" : "s"} · ${deaths} death${deaths === 1 ? "" : "s"}` : "") : "";
+    w.body.querySelector(".scroll").textContent = skills.length > DETAIL_ROWS
+      ? `${w.offset + 1}-${Math.min(skills.length, w.offset + DETAIL_ROWS)} of ${skills.length} (wheel)` : "";
+    drawDetail(w, d, tab, col);
+  },
+});
+// The chart: the tab's damage per second (3 s rolling average), downs and deaths marked.
+function drawDetail(w, d, tab, col) {
+  const series = d ? d[tab] : [];
+  const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${tab}|${theme.id}|${theme.s.font}|${saved.compact}`;
+  if (w.drawn === key) return;
+  w.drawn = key;
+  const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
+  const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 8, padR = 8;
+  g.clearRect(0, 0, W, H);
+  const bucket = (d && d.bucket_ms) || 1000;
+  const a = series.map((_, i) => {
+    const s = series.slice(Math.max(0, i - 2), i + 1);
+    return s.reduce((x, y) => x + y, 0) / s.length * 1000 / bucket;
+  });
+  const n = a.length, top = Math.max(1, ...a);
+  const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
+  const y = v => H - padB - v / top * (H - padB - padT);
+  g.strokeStyle = T("line"); g.lineWidth = 1;
+  g.font = "10px " + theme.s.font; g.fillStyle = T("faint");
+  for (const f of [0, 0.5, 1]) {
+    const yy = Math.round(y(top * f)) + 0.5;
+    g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
+    if (n > 1) g.fillText(fmt(top * f), 2, yy + 3);
+  }
+  if (n < 2) {
+    g.fillStyle = T("dim"); g.textAlign = "center";
+    g.fillText(d ? "Not enough of the fight yet" : "", W / 2, H / 2); g.textAlign = "start";
+    return;
+  }
+  g.fillText("0:00", padL, H - 3);
+  const end = axidpsKit.clock(n * bucket);
+  g.fillText(end, W - padR - g.measureText(end).width, H - 3);
+  // Downs (dashed) and deaths (solid) across the chart.
+  for (const [at, st] of d.states) {
+    if (st === "up") continue;
+    const xx = Math.round(x(Math.min(n - 1, at / bucket))) + 0.5;
+    g.strokeStyle = st === "dead" ? T("bad") : T("dim");
+    g.setLineDash(st === "dead" ? [] : [3, 3]);
+    g.beginPath(); g.moveTo(xx, padT); g.lineTo(xx, H - padB); g.stroke();
+  }
+  g.setLineDash([]);
+  g.fillStyle = alpha(col, 0.18);
+  g.beginPath(); g.moveTo(x(0), y(0));
+  a.forEach((v, i) => g.lineTo(x(i), y(v)));
+  g.lineTo(x(n - 1), y(0)); g.closePath(); g.fill();
+  g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath();
+  a.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
+  g.stroke();
+}
 
 // ---- custom windows (saved.custom: the player's specs; see custom.js) ------------------------
 
@@ -1760,9 +1904,23 @@ if (DEMO.includes("demo")) {
     const k = tl.out.length - 1;
     tl.out[k] = (tl.out[k] || 0) + Math.round(60000 * (1 + Math.sin(k / 9)) * (0.6 + Math.random() * 0.8));
     tl.in[k] = (tl.in[k] || 0) + Math.round(40000 * (1 + Math.cos(k / 13)) * (0.6 + Math.random() * 0.8));
+    // The Details window's player (the core sends only the one asked for).
+    const dp = ps.find(p => p.account === saved.detail);
+    const sk = (names, scale) => names.map((n, i) => ({id: 9000 + i, name: n,
+      damage: Math.round(scale * ms / (i + 1.5)), hits: Math.round(ms / 900 / (i + 1))}));
+    const detail = dp && {account: dp.account, name: dp.name, prof: dp.prof, spec: dp.spec, bucket_ms: 1000,
+      out: tl.out.map(v => Math.round((v || 0) / 9)), in: tl.in.map(v => Math.round((v || 0) / 14)),
+      skills_out: sk(["Mighty Blow", "Burning", "Whirlwind Attack", "Bleeding", "Earthshaker", "Hammer Swing",
+        "Backbreaker", "Fierce Blow", "Staggering Blow", "Signet of Rage", "Bull's Charge", "Torment", "Rampage", "Arc Divider"], 5),
+      skills_in: sk(["Meteor Shower", "Burning", "Lava Font", "Bleeding", "Grenade Barrage", "Poisoned",
+        "Unload", "Confusion", "Dragon's Tooth", "Torment", "Mind Wrack", "Phase Smash", "Flame Grab"], 3),
+      states: [[42000, "down"], [47000, "up"], [96000, "down"], [99000, "dead"]]};
     axidps.update({v: 1, t: Date.now(), state: "fight", fight: {duration_ms: ms, map: 38}, players: ps,
-      timeline: {bucket_ms: 1000, out: tl.out.map(v => v || 0), in: tl.in.map(v => v || 0)}, healing: heal});
+      timeline: {bucket_ms: 1000, out: tl.out.map(v => v || 0), in: tl.in.map(v => v || 0)}, healing: heal,
+      detail: detail || null});
   };
+  // ?demo&details: the Details window open on the fourth player.
+  if (DEMO.includes("details")) { saved.detail = ps[3].account; saved.open.details = true; }
   for (let i = 0; i < 240; i++) step();
   setInterval(step, 500);
   setInterval(() => axidps.perf({fps: 55 + Math.round(Math.random() * 10), ping: 90 + Math.round(Math.random() * 40),
