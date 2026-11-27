@@ -169,7 +169,8 @@ const ui = {
   screen: [2560, 1440],
   editing: false,      // the DLL's edit mode, as reported by the host
   editSeq: 0,          // our edit requests: odd = on, even = off
-  session: {},         // open state of windows that always start closed (the hub)
+  session: {},         // open state of windows that always start closed (the hub, Details)
+  detailFrom: "",      // the window whose player click opened Details (it sits beside it)
   update: null,        // the launcher's self-update status (host, from update-status.json)
   zones: [],           // the game's own UI (host, from MumbleLink): [{id, label, x, y, w, h}]
   notice: "",          // the hub's Windows tab note (a window that could not open)
@@ -548,10 +549,10 @@ function tableWindow(def) {
       cols.map(c => `<th data-k="${c.k}" data-tip="${esc(c.tip)}">${esc(c.label)}</th>`).join("") +
       `</tr></thead><tbody></tbody></table><div class="empty"></div>` +
       `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
-    // A click on a player opens their breakdown (the Details window).
+    // A click on a player opens their breakdown beside this window (again: closes it).
     w.body.querySelector("tbody").onclick = e => {
       const tr = e.target.closest("tr[data-acct]");
-      if (tr && !ui.editing) openDetails(tr.dataset.acct);
+      if (tr && !ui.editing) openDetails(tr.dataset.acct, w);
     };
     w.body.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
       const c = w.cfg, key = th.dataset.k;
@@ -722,30 +723,52 @@ defineWindow({
 
 // ---- details: one player's breakdown, opened by clicking a row ------------------------------
 
+// Not a window of its own: a click on a player in any window opens it beside that window, a click
+// on the same player there again (or its ✕) closes it. It is never saved open and has no hub card.
 // The core adds the breakdown of saved.detail (an account) to the feed; it reads the choice from
 // ui.json, so the first numbers follow a second or two after the click.
-function openDetails(account) {
+function openDetails(account, from) {
   const w = wins.find(v => v.id === "details");
+  if (!account) return;
+  if (isOpen(w) && saved.detail === account && ui.detailFrom === (from && from.id)) {
+    closeDetails();
+    return;
+  }
+  ui.detailFrom = from ? from.id : "";
   saved.detail = account;
   saveNow();
   w.offset = 0;
   w.drawn = "";
   if (!isOpen(w)) setOpen(w, true); else renderAll();
 }
+function closeDetails() {
+  const w = wins.find(v => v.id === "details");
+  saved.detail = "";
+  saveNow();
+  setOpen(w, false);
+}
+// Beside the window it was opened from: to its right if it fits on screen, else to its left;
+// level with its top, kept on screen. The middle of the screen when that window is gone.
+function besideSource([sw, sh], el) {
+  const src = wins.find(v => v.id === ui.detailFrom);
+  const dw = el.offsetWidth || 600, dh = el.offsetHeight || 480;
+  if (!src || !isOpen(src)) return [Math.max(0, Math.round(sw / 2 - dw / 2)), Math.max(0, Math.round(sh / 2 - dh / 2))];
+  const [x, y] = posOf(src), gap = 6;
+  const right = x + src.el.offsetWidth + gap;
+  const left = x - dw - gap;
+  const nx = right + dw <= sw || left < 0 ? right : left;
+  return [Math.max(0, Math.min(Math.round(nx), sw - dw)), Math.max(0, Math.min(Math.round(y), sh - dh))];
+}
 const DETAIL_TABS = [["in", "Damage taken"], ["out", "Damage dealt"]];
 const DETAIL_ROWS = 12;
 defineWindow({
-  id: "details", blurb: ["Details", "one player's damage by skill and over time", "activity"],
-  title: "Details",
+  id: "details", title: "Details", session: true, fixed: true,
   cfg: {tab: "in"},
   tools: [{id: "close", tip: "Close", label: "✕"}],
   tool(w, id) {
-    if (id !== "close") return;
-    saved.detail = "";
-    saveNow();
-    setOpen(w, false);
+    if (id === "close") closeDetails();
   },
-  at: ([sw, sh]) => [Math.max(0, Math.round(sw / 2 - 300)), Math.max(0, Math.round(sh / 2 - 240))],
+  at: besideSource,
   mount(w) {
     const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
     w.body.style.width = px(600) + "px";
@@ -959,6 +982,11 @@ function drawChart(w, spec) {
 // A custom window's body for its look (again whenever the spec or compact mode changes).
 function buildCustom(w) {
   const spec = w.def.spec;
+  // A click on a player (not the Total row) opens their breakdown beside this window.
+  w.body.onclick = e => {
+    const r = e.target.closest("[data-acct]");
+    if (r && r.dataset.acct && !ui.editing) openDetails(r.dataset.acct, w);
+  };
   const k = saved.compact ? 0.8 : 1, px = n => Math.round(n * k);
   w.layout = JSON.stringify(spec) + (saved.compact ? "/c" : "");
   w.drawn = "";
@@ -1022,7 +1050,7 @@ function renderCustom(w) {
     const s = spec.stats[0];
     w.body.querySelector(".cbars").innerHTML = shown.map(r => {
       const p = r.p, col = PROF[p.prof] || PROF[0];
-      return `<div class="bl${p.me ? " me" : ""}" data-tip="${esc(p.account)}" style="border-left-color:${col};` +
+      return `<div class="bl${p.me ? " me" : ""}" data-acct="${esc(p.account)}" data-tip="${esc(p.account)}" style="border-left-color:${col};` +
         `background:${rowBar(col, frac(r))}"><span class="n">` +
         `${p.spec ? `<img src="icons/${encodeURIComponent(p.spec)}.png" alt="">` : ""}${esc(p.name)}</span>` +
         `<span class="v${part(s, p) ? " part" : ""}">${esc(customText(s, r.values[0]))}</span></div>`;
@@ -1035,7 +1063,7 @@ function renderCustom(w) {
         return `<tr class="p"><td>${w.offset + i + 1}</td><td class="l name">${esc(p.name)}</td>` +
           spec.stats.map((s, j) => `<td>${esc(customText(s, r.values[j], r.keys[j]))}</td>`).join("") + `</tr>`;
       }
-      return `<tr class="p${p.me ? " me" : ""}"><td>${w.offset + i + 1}</td>${nameCell(p, frac(r))}` +
+      return `<tr class="p${p.me ? " me" : ""}" data-acct="${esc(p.account)}"><td>${w.offset + i + 1}</td>${nameCell(p, frac(r))}` +
         spec.stats.map((s, j) => `<td${part(s, p) ? ' class="part"' : ""}>${esc(customText(s, r.values[j]))}</td>`).join("") +
         `</tr>`;
     }).join("");
@@ -1748,6 +1776,10 @@ window.axidps = {
         dev: s.dev === true,
         rows: s.rows ?? Math.max(15, ...Object.values(s.cfg || {}).map(c => (c && c.maxRows) || 0))};
     }
+    // Details was a window of its own, saved open and placed: now it opens only from a click.
+    if (saved.open.details !== undefined || saved.pos.details) {
+      delete saved.open.details; delete saved.pos.details; migrated = true;
+    }
     // The old fixed tables become custom windows once (saved.custom absent).
     if (saved.custom === undefined && axidpsCustom.migrateTables(saved)) migrated = true;
     saved.custom = axidpsCustom.normalizeAll(saved.custom);
@@ -1930,7 +1962,7 @@ if (DEMO.includes("demo")) {
       detail: detail || null});
   };
   // ?demo&details: the Details window open on the fourth player.
-  if (DEMO.includes("details")) { saved.detail = ps[3].account; saved.open.details = true; }
+  if (DEMO.includes("details")) { saved.detail = ps[3].account; ui.session.details = true; }
   for (let i = 0; i < 240; i++) step();
   setInterval(step, 500);
   setInterval(() => axidps.perf({fps: 55 + Math.round(Math.random() * 10), ping: 90 + Math.round(Math.random() * 40),
