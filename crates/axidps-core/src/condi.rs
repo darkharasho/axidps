@@ -75,6 +75,12 @@ pub const PLAYER_BASE: [(usize, i16); 4] = [(1, 1000), (2, 1000), (3, 1000), (4,
 /// them). Kinds come in pairs: even flat (gear, food, infusions), odd level-scaled (boons,
 /// signets); arcdps maps both to one slot (Might is 0x7 condition damage and
 /// 0xf power, +30 each at level 80).
+/// Buff modifier kind: incoming condition damage %, added per instance (Vulnerability mod 1;
+/// mod 0, kind 41, is the strike one).
+pub const KIND_INCOMING_CONDI_PCT: i32 = 43;
+/// Buff modifier kind: condition damage taken, as a % factor (Resolution 67).
+pub const KIND_CONDI_TAKEN_FACTOR: i32 = 44;
+
 pub const KIND_ATTRS: &[(i32, usize)] = &[
     (0x4, 8),
     (0x5, 8), // Concentration
@@ -382,6 +388,7 @@ impl Model {
         let mut out: BTreeMap<(u32, u32), (f32, u32)> = BTreeMap::new();
         let mut pov_groups: std::collections::BTreeSet<(u32, u32)> = Default::default();
         let kind = self.known.damage_kind();
+        let taken = self.incoming_factor(&buffs(f.target));
         for &(src, buff, level, ms) in &f.stacks {
             let pov_src = self.pov == Some(src) || master(src).is_some_and(|m| self.pov == Some(m));
             if pov_src {
@@ -394,7 +401,7 @@ impl Model {
             match dmg {
                 Some(d) => {
                     let e = out.entry((src, buff)).or_default();
-                    e.0 += d * f32::from(ms) / 1000.0;
+                    e.0 += d * taken * f32::from(ms) / 1000.0;
                     e.1 += 1;
                 }
                 None if mods.is_none() => self.coverage.no_formula += 1,
@@ -462,6 +469,32 @@ impl Model {
             *sum.get_or_insert(0.0) += eval(m, level, &stats)?;
         }
         sum
+    }
+
+    /// How much of a condition's damage the target takes, from the modifiers of the buffs it
+    /// holds (`(buff, level)` per active instance) that need nothing: incoming condition damage
+    /// % adds up per instance (Vulnerability +1% a stack), a damage-taken factor multiplies
+    /// (Resolution 67%). Traits and conditional modifiers are not known for other players.
+    fn incoming_factor(&self, held: &[(u32, u8)]) -> f32 {
+        let (mut add, mut mul) = (0.0f32, 1.0f32);
+        let mut factors: std::collections::BTreeSet<u32> = Default::default();
+        for &(buff, _) in held {
+            let Some(mods) = self.known.modifiers(buff) else {
+                continue;
+            };
+            for m in mods {
+                if m.prereq != PREREQ_READ || !mode_applies(m.mode, self.mode) || m.ftype != 6 {
+                    continue;
+                }
+                match m.target {
+                    KIND_INCOMING_CONDI_PCT => add += m.base,
+                    // One factor per buff, however many instances it has.
+                    KIND_CONDI_TAKEN_FACTOR if factors.insert(buff) => mul *= m.base / 100.0,
+                    _ => {}
+                }
+            }
+        }
+        ((1.0 + add / 100.0) * mul).max(0.0)
     }
 
     /// Record the POV's rebuilt attributes next to its exact ones (see [`SelfCheck::pov_stats`]).
@@ -750,6 +783,35 @@ mod tests {
         // POV: 2 + 20 + 90 = 112.
         assert_eq!(m.check.sums.get(&BLEEDING), Some(&(112, 0)));
         assert_eq!(m.check.ticks.get(&BLEEDING), Some(&(1, 0)));
+    }
+
+    #[test]
+    fn the_targets_buffs_scale_the_damage_it_takes() {
+        // Vulnerability +1% incoming condition damage a stack; Resolution 67% of it, once
+        // however many instances; a modifier that needs a trait does nothing.
+        let mut k = known();
+        for e in formula(738, &[(41, 6, 1.0, 0.0, 0.0), (KIND_INCOMING_CONDI_PCT, 6, 1.0, 0.0, 0.0)])
+            .iter()
+            .chain(&formula(873, &[(KIND_CONDI_TAKEN_FACTOR, 6, 67.0, 0.0, 0.0)]))
+        {
+            k.apply(e);
+        }
+        let mut traited = formula(5000, &[(KIND_CONDI_TAKEN_FACTOR, 6, 10.0, 0.0, 0.0)]);
+        if let Event::BuffFormula { prereq, .. } = &mut traited[0] {
+            *prereq = PREREQ_READ | 1;
+        }
+        k.apply(&traited[0]);
+        let mut m = Model::new(k, Some(1), GameMode::Wvw);
+        let f = Fired {
+            target: 50,
+            time: 3000,
+            stacks: vec![(10, BLEEDING, 80, 1000)],
+        };
+        let mut held = vec![(738, 80); 25];
+        held.extend([(873, 80), (873, 80), (5000, 80)]);
+        let ticks = m.tick(&f, |_| None, |id| if id == 50 { held.clone() } else { vec![] });
+        // 82 × 1.25 × 0.67 = 68.7.
+        assert_eq!(ticks[0].damage, 69);
     }
 
     /// Bleeding as the game lists it: a trait variant, PvE/PvP/WvW variants and the base.
