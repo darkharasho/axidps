@@ -1961,7 +1961,8 @@ function renderStore(w) {
       : c.action === "install" ? btn("install", "primary")
       : c.action === "replace" ? btn("replace")
       : c.action === "update" ? btn("uninstall", "quiet") + btn("update", "primary")
-      : c.action === "installed" ? `<span class="have">Installed</span>` + btn("uninstall", "quiet") : "";
+      : c.action === "installed" ? `<span class="have">Installed</span>` + btn("uninstall", "quiet")
+      : c.action === "revoked" ? `<span class="have off">Turned off</span>` + btn("uninstall", "quiet") : "";
     const uses = c.uses.map(u => u.deep ? `<em>${esc(u.text)}</em>` : esc(u.text)).join(" ");
     return `<div class="srow ${TRUST[c.trust] || "u"}" data-s="${esc(c.id)}"><div class="top">` +
       `<span class="nm"><b>${esc(c.title)}</b><span class="trust">${esc(c.trust)}</span></span>` +
@@ -2025,8 +2026,9 @@ const hub = defineWindow({
       `<section data-tab="store"><div class="store-top"><div class="stabs"></div><span class="grow"></span>` +
       `<span class="sfield"></span>` +
       `<button data-sact="refresh" data-tip="check the store for new plugins and versions">Refresh</button></div>` +
+      `<p class="note store-msg"></p>` +
       `<div class="shead"><span>Plugin</span><span>Author</span><span class="ver">Version</span><span></span></div>` +
-      `<p class="note store-msg"></p><div class="srows"></div>` +
+      `<div class="srows"></div>` +
       `<div class="opt" data-storeauto><div>Update automatically<small>Store plugins update by themselves ` +
       `when the new version asks for nothing new. Anything else waits for you to press Update.</small></div>` +
       `<span class="tog"><i></i></span></div></section>` +

@@ -115,6 +115,8 @@
   const DEEPER = ["world", "position", "squad", "enemies", "textures"];
   const STORE_FILTERS = ["all", "installed", "updates"];
   const EMPTY_FILTER = {installed: "Nothing installed from the store yet.", updates: "Everything is up to date."};
+  // The same, while a search is on: the filter isn't empty, the search just has no hits in it.
+  const EMPTY_SEARCH = {installed: "No installed plugins match.", updates: "No updates match."};
 
   // "a", "a and b", "a, b and c".
   function andList(xs) {
@@ -136,7 +138,8 @@
   // or description, any case) and `filter` ("all" | "installed" | "updates"), and how many match
   // the query under each filter. `list` (the plugin list) marks installed plugins that were
   // revoked. Row action: "install" | "update" | "installed" (Uninstall) | "replace" (over the
-  // player's own folder, after asking) | null (needs a newer axidps). trust: "verified" |
+  // player's own folder, after asking) | "revoked" (installed but turned off; Uninstall only) |
+  // null (needs a newer axidps). trust: "verified" |
   // "unverified" | "revoked". uses: usesOf plus "You have <v>." for an update and the awaiting-
   // review sentence. note: the player's own copy, the revocation or the last error (bad: true for
   // those last two).
@@ -154,7 +157,8 @@
       const err = str(x.error, 200);
       const mine = plugins.find(p => p && p.id === x.id);
       const revoked = mine && mine.trust === "revoked" ? String(mine.error || "Revoked") : "";
-      const action = x.handInstalled ? "replace" : x.installed ? (x.update ? "update" : "installed")
+      // A revoked install is turned off: nothing to install or update, only Uninstall.
+      const action = x.handInstalled ? "replace" : x.installed ? (revoked ? "revoked" : x.update ? "update" : "installed")
         : err === "needs a newer axidps" ? null : "install";
       const title = str(x.name) || x.id;
       const uses = usesOf(x);
@@ -171,7 +175,7 @@
     });
     const inFilter = {
       all: () => true,
-      installed: r => r.action === "installed" || r.action === "update",
+      installed: r => r.action === "installed" || r.action === "update" || r.action === "revoked",
       updates: r => r.action === "update",
     };
     const counts = {all: rows.length, installed: rows.filter(inFilter.installed).length,
@@ -181,7 +185,9 @@
     if (!all.length) message = state === "loading" ? STORE_TEXT.loading : state === "ok" ? "No plugins in the store yet." : OFFLINE;
     else {
       const parts = state !== "ok" && STORE_TEXT[state] ? [STORE_TEXT[state]] : [];
-      if (!cards.length) parts.push(q && !rows.length ? `No plugins match “${String(query).trim()}”.` : EMPTY_FILTER[f] || "");
+      if (!cards.length) {
+        parts.push(q && !rows.length ? `No plugins match “${String(query).trim()}”.` : (q ? EMPTY_SEARCH : EMPTY_FILTER)[f] || "");
+      }
       message = parts.filter(Boolean).join(" ");
     }
     return {state, filter: f, counts, message, cards};
@@ -475,7 +481,7 @@
     // the host refuses anything else that would touch a folder the player added.
     storeAct(id, act) {
       const env = this.env;
-      const m = storeModel(this.store, "").cards.find(c => c.id === id);
+      const m = storeModel(this.store, "", this.list).cards.find(c => c.id === id);
       if (!env || !m || m.busy) return;
       const go = what => env.toHost(JSON.stringify({store: {[what]: id}}));
       if (act === "install" && m.action === "install") go("install");
@@ -483,7 +489,7 @@
       else if (act === "replace" && m.action === "replace") {
         env.confirm(`Replace the plugin you added yourself with the store version of ${m.title}? ` +
           "Your copy is kept in the store's replaced folder.", "Replace", () => go("replace"));
-      } else if (act === "uninstall" && (m.action === "installed" || m.action === "update")) {
+      } else if (act === "uninstall" && ["installed", "update", "revoked"].includes(m.action)) {
         env.confirm(`Uninstall ${m.title}? Its windows and settings go with it.`, "Uninstall", () => {
           if (!this.uninstalling) this.uninstalling = new Set();
           this.uninstalling.add(id);

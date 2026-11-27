@@ -236,7 +236,7 @@
   .stabs span.on i { color: var(--accent-hi); }
   .field.search { min-width: 180px; width: 180px; overflow: hidden; }
   .field.search.empty { color: var(--faint); }
-  .store-msg { margin: 8px 0; color: var(--dim); }
+  .store-msg { margin: 0 0 8px; color: var(--dim); }
   .shead, .srow .top { display: grid; grid-template-columns: minmax(0, 1fr) 74px 62px 132px; align-items: baseline;
     column-gap: 8px; }
   .shead { color: var(--faint); font-size: 11px; padding: 0 10px 4px 13px; border-bottom: 1px solid var(--line); }
@@ -258,6 +258,7 @@
   .srow .sa { display: flex; justify-content: flex-end; align-items: baseline; gap: 6px; }
   .srow .sa button { padding: 2px 10px; font-size: 11px; }
   .srow .sa .have { color: var(--good); font-size: 11px; }
+  .srow .sa .have.off { color: var(--bad); }
   .srow .desc { margin-top: 3px; max-width: 62ch; color: var(--text); }
   .srow .uses { margin-top: 2px; font-size: 11px; color: var(--faint); }
   .srow .uses em { font-style: normal; color: var(--accent); }

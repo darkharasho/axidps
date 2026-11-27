@@ -521,6 +521,7 @@ test("storeModel rows: trust, uses sentence, action and note", () => {
   const r = ph.storeModel(storePayload([listing("r.gone", { installed: "1.0.0", trust: "verified" })]), "",
     [plugin("r.gone", { trust: "revoked", reason: "malware", error: "Revoked: malware" })]);
   assert.strictEqual(r.cards[0].trust, "revoked");
+  assert.strictEqual(r.cards[0].action, "revoked", "installed but turned off: no Installed, no Update");
   assert.strictEqual(r.cards[0].note, "Revoked: malware");
   assert.strictEqual(r.cards[0].bad, true);
   // Needs a newer axidps: nothing to press.
@@ -685,8 +686,33 @@ test("cardModel label per trust level, the revoked reason shown", () => {
 
 test("sampleStore covers every kind of row", () => {
   const m = ph.storeModel(ph.sampleStore(), "", ph.sampleStoreList());
-  assert.deepStrictEqual([...new Set(m.cards.map(c => c.action))].sort(), ["install", "installed", "replace", "update"]);
+  assert.deepStrictEqual([...new Set(m.cards.map(c => c.action))].sort(), ["install", "installed", "replace", "revoked", "update"]);
   assert.deepStrictEqual([...new Set(m.cards.map(c => c.trust))].sort(), ["revoked", "unverified", "verified"]);
   assert.ok(m.cards.some(c => c.uses.some(u => u.deep)));
   assert.ok(m.counts.updates >= 1 && m.counts.installed >= 2);
+});
+
+test("a revoked install: action revoked, counted as installed, and it can still be uninstalled", () => {
+  const list = [plugin("r.gone", { trust: "revoked", reason: "malware", error: "Revoked: malware" })];
+  const s = storePayload([listing("r.gone", { installed: "1.0.0" }), listing("a.new")]);
+  const m = ph.storeModel(s, "", list, "installed");
+  assert.deepStrictEqual(m.cards.map(c => [c.id, c.action]), [["r.gone", "revoked"]]);
+  assert.deepStrictEqual(m.counts, { all: 2, installed: 1, updates: 0 });
+  const saved = { plugins: {}, pos: {}, open: {}, cfg: {} };
+  const { h, sent, asked } = storeHost(s, saved, true);
+  h.list = list;
+  h.storeAct("r.gone", "install");
+  h.storeAct("r.gone", "update");
+  assert.deepStrictEqual(sent, []);
+  h.storeAct("r.gone", "uninstall");
+  assert.strictEqual(asked.length, 1);
+  assert.deepStrictEqual(sent.map(t => JSON.parse(t)), [{ store: { uninstall: "r.gone" } }]);
+});
+
+test("an empty filter mid-search says nothing matches, not that nothing is there", () => {
+  const s = storePayload([listing("a.new", { name: "Boon Board" }), listing("i.have", { name: "Tag Colours", installed: "1.0.0" })]);
+  assert.strictEqual(ph.storeModel(s, "boon", [], "installed").message, "No installed plugins match.");
+  assert.strictEqual(ph.storeModel(s, "boon", [], "updates").message, "No updates match.");
+  assert.strictEqual(ph.storeModel(s, "tag", [], "installed").message, "");
+  assert.strictEqual(ph.storeModel(s, "", [], "updates").message, "Everything is up to date.");
 });
