@@ -12,6 +12,7 @@
 //! While the DLL heartbeat is stale (no game) nothing is painted.
 
 mod scheme;
+mod outline;
 mod textures;
 
 use std::cell::{Cell, RefCell};
@@ -406,6 +407,8 @@ struct Delegate {
     dev: Cell<Option<bool>>,
     /// The merged texture styling rules of plugins granted `textures` (`{"textures": [...]}`).
     textures: RefCell<Option<Vec<axidps_overlay_shm::texstyle::Rule>>>,
+    /// The character outline's settings (`{"outline": {...} | null}`).
+    outline: RefCell<Option<axidps_overlay_shm::outline::Settings>>,
 }
 
 impl WebViewDelegate for Delegate {
@@ -481,6 +484,9 @@ impl WebViewDelegate for Delegate {
         }
         if let Some(t) = v.get("textures") {
             *self.textures.borrow_mut() = Some(textures::rules(t));
+        }
+        if let Some(o) = v.get("outline") {
+            *self.outline.borrow_mut() = Some(outline::settings(o));
         }
         // `?test` pages only (tools/overlay-fake-dll.py): the plugin windows' status and error
         // counts, as one log line.
@@ -653,6 +659,8 @@ struct App {
     shm: RefCell<Shm>,
     /// The texture styling rules file (beside the frame file).
     textures: Option<textures::File>,
+    outline: Option<outline::File>,
+    outline_on: bool,
     start: Instant,
     state: Option<Running>,
     live: LiveFeed,
@@ -799,11 +807,21 @@ impl App {
         if let Some(t) = &mut self.textures {
             t.heartbeat();
         }
+        if let Some(o) = &mut self.outline {
+            o.heartbeat();
+        }
         let Some(st) = &self.state else { return };
         if let (Some(rules), Some(t)) = (st.delegate.textures.borrow_mut().take(), &mut self.textures)
         {
             println!("texture rules: {}", rules.len());
             t.set(&rules);
+        }
+        if let (Some(s), Some(o)) = (st.delegate.outline.borrow_mut().take(), &mut self.outline) {
+            if s.on != self.outline_on {
+                self.outline_on = s.on;
+                println!("outline: {}", if s.on { "on" } else { "off" });
+            }
+            o.set(&s);
         }
         let shm = &self.shm;
         let loaded = st.delegate.loaded.get();
@@ -1203,6 +1221,10 @@ fn main() -> anyhow::Result<()> {
     let textures = textures::File::create(&tex_path)
         .inspect_err(|e| println!("texture rules file {}: {e}", tex_path.display()))
         .ok();
+    let outline_path = shm_path.with_file_name("axidps-outline");
+    let outline = outline::File::create(&outline_path)
+        .inspect_err(|e| println!("outline file {}: {e}", outline_path.display()))
+        .ok();
     // A heartbeat left over from an earlier game session must not count as a live game.
     let hb0 = shm.atomic(fmt::DLL_HB_OFF).load(Ordering::Relaxed);
     let mut app = App {
@@ -1219,6 +1241,8 @@ fn main() -> anyhow::Result<()> {
         waker,
         shm: RefCell::new(shm),
         textures,
+        outline,
+        outline_on: false,
         start: Instant::now(),
         state: None,
         live: LiveFeed {
