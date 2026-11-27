@@ -74,7 +74,7 @@ impl Manifest {
     }
 }
 
-fn valid_id(s: &str) -> bool {
+pub(crate) fn valid_id(s: &str) -> bool {
     (3..=48).contains(&s.len())
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')

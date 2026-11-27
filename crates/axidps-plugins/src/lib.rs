@@ -1,6 +1,8 @@
 //! Plugin plumbing that needs no Servo: manifests, folder scan, path resolution, CSP and a
 //! change watcher. The overlay host and `axidps plugin check/preview` share it.
 
+pub mod index;
+pub mod install;
 pub mod keys;
 pub mod logline;
 pub mod manifest;
