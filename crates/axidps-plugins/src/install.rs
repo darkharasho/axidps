@@ -77,6 +77,14 @@ impl Record {
     pub fn contains(&self, id: &str) -> bool {
         self.plugins.contains_key(id)
     }
+
+    /// The store owns `dir` as plugin `id`: recorded, and its files hash to the recorded tree
+    /// byte for byte. A folder the player replaced or edited is theirs.
+    pub fn owns(&self, id: &str, dir: &Path) -> bool {
+        self.plugins.get(id).is_some_and(|i| {
+            tree::hash_dir(dir).is_ok_and(|h| tree::hex(&h) == i.tree)
+        })
+    }
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
@@ -103,7 +111,8 @@ pub fn install(
     }
     let mut record = Record::load(store_dir);
     let target = plugins_dir.join(id);
-    let in_the_way = |r: &Record| target.symlink_metadata().is_ok() && !r.contains(id);
+    // Anything at the target that isn't byte for byte what the store put there is the player's.
+    let in_the_way = |r: &Record| target.symlink_metadata().is_ok() && !r.owns(id, &target);
     if in_the_way(&record) {
         return Err(IN_THE_WAY.into());
     }
@@ -151,6 +160,9 @@ pub fn uninstall(plugins_dir: &Path, store_dir: &Path, id: &str) -> Result<(), S
     }
     let target = plugins_dir.join(id);
     if target.symlink_metadata().is_ok() {
+        if !record.owns(id, &target) {
+            return Err(IN_THE_WAY.into());
+        }
         // Out of the way first, so a half-deleted folder never loads as the plugin.
         let old = plugins_dir.join(format!(".{id}.old-{}", std::process::id()));
         remove(&old);
@@ -422,15 +434,15 @@ mod tests {
         let on_disk: Value = serde_json::from_slice(&fs::read(d.store.join(RECORD_FILE)).unwrap()).unwrap();
         assert_eq!(on_disk["someone.card"]["version"], "1.0.0");
 
-        // A newer version replaces it whole (the old version's extra file goes too).
-        fs::write(dir.join("stale.txt"), "x").unwrap();
+        // A newer version replaces it whole (the old version's extra file goes too). A file the
+        // player added would make the folder theirs: `replaced_or_edited_store_folder_is_never_touched`.
         let mut files2 = good_files("1.1.0");
         files2.retain(|(n, _)| n != "js/app.js");
         let zip2 = zip_of(&files2);
         let v2 = version_of("1.1.0", &zip2, &files2);
         install(&d.plugins, &d.store, "someone.card", &v2, &zip2).unwrap();
         assert_eq!(tree::hex(&tree::hash_dir(&dir).unwrap()), v2.tree);
-        assert!(!dir.join("js").exists() && !dir.join("stale.txt").exists());
+        assert!(!dir.join("js").exists());
         assert_eq!(listing(&d.plugins), ["mine", "someone.card"]);
         assert_eq!(Record::load(&d.store).plugins["someone.card"].version, "1.1.0");
     }
@@ -631,6 +643,49 @@ mod tests {
         fs::write(d.plugins.join("someone.card"), "file").unwrap();
         assert_eq!(install(&d.plugins, &d.store, "someone.card", &v, &zip).unwrap_err(), IN_THE_WAY);
         assert!(Record::load(&d.store).plugins.is_empty());
+    }
+
+    #[test]
+    fn replaced_or_edited_store_folder_is_never_touched() {
+        let d = dirs();
+        let files = good_files("1.0.0");
+        let zip = zip_of(&files);
+        let v = version_of("1.0.0", &zip, &files);
+        let dir = d.plugins.join("someone.card");
+        let files2 = good_files("1.1.0");
+        let zip2 = zip_of(&files2);
+        let v2 = version_of("1.1.0", &zip2, &files2);
+
+        // The store's folder removed, the player's own put in its place: recorded, not owned.
+        install(&d.plugins, &d.store, "someone.card", &v, &zip).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("own.txt"), "own").unwrap();
+        assert_eq!(install(&d.plugins, &d.store, "someone.card", &v2, &zip2).unwrap_err(), IN_THE_WAY);
+        assert_eq!(uninstall(&d.plugins, &d.store, "someone.card").unwrap_err(), IN_THE_WAY);
+        assert_eq!(fs::read_to_string(dir.join("own.txt")).unwrap(), "own");
+        assert_eq!(listing(&d.plugins), ["mine", "someone.card"]);
+        assert!(Record::load(&d.store).contains("someone.card"));
+
+        // Folder gone: a reinstall is fine.
+        fs::remove_dir_all(&dir).unwrap();
+        install(&d.plugins, &d.store, "someone.card", &v, &zip).unwrap();
+
+        // One byte edited in the store's install: the player's now.
+        let edited = fs::read(dir.join("card.html")).unwrap();
+        let mut bytes = edited.clone();
+        bytes[0] ^= 1;
+        fs::write(dir.join("card.html"), &bytes).unwrap();
+        assert_eq!(install(&d.plugins, &d.store, "someone.card", &v2, &zip2).unwrap_err(), IN_THE_WAY);
+        assert_eq!(uninstall(&d.plugins, &d.store, "someone.card").unwrap_err(), IN_THE_WAY);
+        assert_eq!(fs::read(dir.join("card.html")).unwrap(), bytes);
+        assert_eq!(Record::load(&d.store).plugins["someone.card"].version, "1.0.0");
+
+        // Put back byte for byte: the store's again.
+        fs::write(dir.join("card.html"), &edited).unwrap();
+        install(&d.plugins, &d.store, "someone.card", &v2, &zip2).unwrap();
+        uninstall(&d.plugins, &d.store, "someone.card").unwrap();
+        assert_eq!(listing(&d.plugins), ["mine"]);
     }
 
     #[test]

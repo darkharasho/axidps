@@ -126,8 +126,10 @@ impl Store {
             state: "offline",
             error: None,
             errors: HashMap::new(),
+            owned: HashSet::new(),
         };
         core.load();
+        core.refresh_owned();
         let page = core.page();
         let store_ids = core.store_ids();
         let signed = core.signed.clone();
@@ -137,6 +139,8 @@ impl Store {
             .name("store".into())
             .spawn(move || {
                 for job in jobs {
+                    // The player may have changed folders since: who owns what, hashed once.
+                    core.refresh_owned();
                     let rescan = core.run(&job);
                     let reply = Reply {
                         job,
@@ -292,6 +296,8 @@ struct Core {
     error: Option<String>,
     /// The last install/update/uninstall failure per plugin.
     errors: HashMap<String, String>,
+    /// Record ids whose folder is byte for byte what the store installed (`Record::owns`).
+    owned: HashSet<String>,
 }
 
 impl Core {
@@ -340,6 +346,7 @@ impl Core {
             Ok(()) => {
                 println!("store: {what} {id} done");
                 self.errors.remove(id);
+                self.refresh_owned();
                 true
             }
             Err(e) => {
@@ -414,8 +421,19 @@ impl Core {
         write_atomic(&self.store_dir, "index.json.sig", sig)
     }
 
+    /// Store installs the store still owns: an edited, replaced or missing folder isn't one.
+    fn refresh_owned(&mut self) {
+        let record = Record::load(&self.store_dir);
+        self.owned = record
+            .plugins
+            .keys()
+            .filter(|id| record.owns(id, &self.plugins_dir.join(id)))
+            .cloned()
+            .collect();
+    }
+
     fn store_ids(&self) -> HashSet<String> {
-        Record::load(&self.store_dir).plugins.into_keys().collect()
+        self.owned.clone()
     }
 
     fn ctx(&self) -> Ctx {
@@ -496,11 +514,12 @@ impl Core {
         let mut list = Vec::new();
         for raw in self.cache.iter().flat_map(|c| &c.plugins) {
             let id = &raw.id;
-            let folder = self.plugins_dir.join(id);
-            let has_folder = folder.symlink_metadata().is_ok();
-            // A record entry without its folder isn't installed: the Store offers it again.
-            let installed = record.plugins.get(id).filter(|_| has_folder).map(|i| i.version.clone());
-            let hand = !record.contains(id)
+            let has_folder = self.plugins_dir.join(id).symlink_metadata().is_ok();
+            // Installed only while the folder is byte for byte the store's: a missing one is
+            // offered again, an edited or replaced one is the player's.
+            let owned = self.owned.contains(id);
+            let installed = record.plugins.get(id).filter(|_| owned).map(|i| i.version.clone());
+            let hand = !owned
                 && (has_folder || player.iter().any(|p| p.manifest.as_ref().is_some_and(|m| m.id == *id)));
             let l = supported(raw);
             let offer = l.offer(&self.signed);
@@ -1005,6 +1024,52 @@ mod tests {
         let p = page(&ask(&mut s, json!({"install": ID})));
         assert_eq!(card(&p)["installed"], "1.0.0", "{p}");
         assert!(t.plugins.join(ID).join(axidps_plugins::MANIFEST_FILE).exists());
+    }
+
+    #[test]
+    fn replaced_or_edited_store_folder_counts_as_hand_installed() {
+        let t = t();
+        let v1 = t.publish("1.0.0", &[]);
+        t.serve(vec![v1.clone()], json!({}));
+        let mut s = t.store();
+        ask(&mut s, json!("refresh"));
+        ask(&mut s, json!({"install": ID}));
+        let dir = t.plugins.join(ID);
+
+        // The store's folder deleted, the player's own dropped in its place, then a newer
+        // version that would auto-update: the player's folder is left alone.
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("mine.txt"), "mine").unwrap();
+        let v11 = t.publish("1.1.0", &[]);
+        t.serve(vec![v1.clone(), v11.clone()], json!({}));
+        let p = page(&ask(&mut s, json!("refresh")));
+        assert_eq!(card(&p)["handInstalled"], true, "{p}");
+        assert_eq!(card(&p)["installed"], Value::Null);
+        assert_eq!(card(&p)["update"], Value::Null);
+        assert!(!s.ctx(false).store_ids.contains(ID));
+        for msg in [json!({"update": ID}), json!({"uninstall": ID})] {
+            let p = page(&ask(&mut s, msg));
+            assert_eq!(card(&p)["error"], install::IN_THE_WAY);
+        }
+        assert_eq!(std::fs::read_to_string(dir.join("mine.txt")).unwrap(), "mine");
+        assert!(!dir.join(axidps_plugins::MANIFEST_FILE).exists());
+
+        // A store install with one byte edited is the player's too: never auto-updated.
+        std::fs::remove_dir_all(&dir).unwrap();
+        t.serve(vec![v1.clone()], json!({}));
+        ask(&mut s, json!("refresh"));
+        ask(&mut s, json!({"install": ID}));
+        assert_eq!(t.record().plugins[ID].version, "1.0.0");
+        let html = dir.join("card.html");
+        let mut bytes = std::fs::read(&html).unwrap();
+        bytes[0] ^= 1;
+        std::fs::write(&html, &bytes).unwrap();
+        t.serve(vec![v1, v11], json!({}));
+        let p = page(&ask(&mut s, json!("refresh")));
+        assert_eq!(card(&p)["handInstalled"], true);
+        assert_eq!(std::fs::read(&html).unwrap(), bytes);
+        assert_eq!(t.record().plugins[ID].version, "1.0.0");
     }
 
     #[test]
