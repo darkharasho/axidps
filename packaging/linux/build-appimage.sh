@@ -37,12 +37,12 @@ APPIMAGETOOL="$(fetch "$APPIMAGETOOL_URL" "$APPIMAGETOOL_SHA256")"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 APPDIR="$WORK/AppDir"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/icons/hicolor/32x32/apps"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
 cp -a "$STAGE/." "$APPDIR/usr/bin/"
 "$PKG/stage-page.sh" "$APPDIR/usr/bin/overlay/page" "$VERSION"
 cp "$PKG/icon.png" "$APPDIR/axidps.png"
-cp "$PKG/icon.png" "$APPDIR/usr/share/icons/hicolor/32x32/apps/axidps.png"
+cp "$PKG/icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/axidps.png"
 cp "$HERE/axidps.desktop" "$APPDIR/axidps.desktop"
 
 # NO_STRIP: linuxdeploy's bundled strip cannot read modern (.relr.dyn) binaries.
