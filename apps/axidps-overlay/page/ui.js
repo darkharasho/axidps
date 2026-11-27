@@ -2121,15 +2121,7 @@ const launcher = defineWindow({
 });
 
 const BUILD = window.AXIDPS_BUILD || "dev";
-const TABS = [
-  ["windows", "Windows", "grid", "Show and hide the axidps windows."],
-  ["tables", "Custom windows", "columns", "Build your own windows from what axidps counts."],
-  ["appearance", "Appearance", "layers", "Themes, opacity and blur for every window."],
-  ["settings", "Settings", "sliders", "What axidps counts, and how."],
-  ["store", "Store", "plus", "Find plugins and install them."],
-  ["plugins", "Plugins", "plug", "Add windows and tools made by others."],
-  ["updates", "Updates", "download", "Versions of the axidps parts on this machine."],
-];
+const TABS = axidpsHub.TABS;
 // Core settings (saved.core, read by axidps core from ui.json): [key, label, detail, default].
 const CORE_OPTS = [
   ["wvw_gadgets", "WvW: count siege, gates and walls", "Damage to gadgets in WvW and Armistice Bastion shows in the meter.", true],
@@ -2425,55 +2417,33 @@ function renderStore(w) {
 // outside it or Esc.
 const hub = defineWindow({
   id: "hub", title: "axidps", session: true, bare: true, modal: true, fixed: true,
-  at: ([sw, sh]) => [Math.max(0, Math.round((sw - 760) / 2)), Math.max(0, Math.round((sh - 500) / 2))],
+  at: sc => {
+    const [hw, hh] = axidpsHub.hubSize(sc);
+    return [Math.max(0, Math.round((sc[0] - hw) / 2)), Math.max(0, Math.round((sc[1] - hh) / 2))];
+  },
   mount(w) {
     w.tab = "windows";
-    w.body.innerHTML = `<div class="hub"><nav>` +
-      `<div class="brand">${icon("chart", 18, "accent")}<div><b>axidps</b><small>build ${esc(BUILD)}</small></div></div>` +
-      TABS.map(([id, label, gl]) => `<div class="nav" data-tab="${id}">${icon(gl, 14)}${label}` +
-        `${id === "plugins" ? '<span class="n"></span>' : ""}</div>`).join("") +
-      `<div class="grow"></div>` +
+    w.body.innerHTML = `<div class="hub"><div class="top">` +
+      `<div class="brand">${icon("chart", 18, "accent")}<b>axidps</b></div>` +
+      `<nav>${TABS.map(([id, label]) => `<div class="tabb" data-tab="${id}">${esc(label)}` +
+        `${id === "plugins" ? '<span class="n"></span>' : ""}</div>`).join("")}</nav>` +
+      `<span class="grow"></span><span class="kbd">Alt+Shift+M opens and closes this</span>` +
+      `<button class="x" data-act="close" data-tip="close (Esc)">${icon("x", 12)}</button></div>` +
+      `<main>` +
+      // Windows: today's Windows and Custom windows content, until the new page replaces it
+      `<section data-tab="windows"><div class="cards"></div><div class="acts">` +
       `<button data-act="layout" data-tip="move windows (Esc or Done to finish)">${icon("maximize-2", 12, "text")}Arrange windows</button>` +
-      `<div class="kbd">Alt+Shift+M hides axidps</div></nav>` +
-      `<main><header><div><h2></h2><p></p></div>` +
-      `<button class="x" data-act="close" data-tip="close (Esc)">${icon("x", 12)}</button></header>` +
-      // Windows
-      `<section data-tab="windows"><div class="cards"></div><div class="acts"><button data-act="clear" data-tip="blank every window until the next fight">` +
+      `<button data-act="clear" data-tip="blank every window until the next fight">` +
       `${icon("trash-2", 12, "text")}Clear fight</button><button data-act="clearsession" ` +
       `data-tip="start the session span of every custom window over">${icon("trash-2", 12, "text")}Clear session</button></div><p class="note win-note"></p>` +
-      `<div class="plugs"><h3>Plugins</h3><div class="pcards"></div></div></section>` +
-      // Tables
-      `<section data-tab="tables"><div class="tbls"></div><div class="acts">` +
+      `<div class="plugs"><h3>Plugins</h3><div class="pcards"></div></div>` +
+      `<h3>Custom windows</h3><div class="ctbl"><div class="tbls"></div><div class="acts">` +
       `<button data-act="addtable" data-tip="a blank window, or a copy of one you have">${icon("plus", 12, "text")}Add a window</button>` +
       `</div><div class="addmenu"></div>` +
       `<p class="note">Heal columns are complete only for you: the game reports no one else's heals, so ` +
-      `for others they show what passed between them and you (dimmed).</p></section>` +
-      // Appearance
-      `<section data-tab="appearance"><h3>Theme</h3><div class="themes">${THEMES.map(themeCard).join("")}</div>` +
-      `<h3>Look</h3><div class="look"><span>Opacity</span><div class="seg" data-look="opacity">` +
-      OPACITY.map(o => `<button data-v="${o}">${Math.round(o * 100)}%</button>`).join("") + `</div>` +
-      `<span>Blur</span><div class="seg" data-look="blur">` +
-      BLUR.map((b, i) => `<button data-v="${i}">${b}</button>`).join("") + `</div></div>` +
-      `<p class="note">Blur softens the game behind see-through windows. Picking a theme brings its own look.</p></section>` +
-      // Settings
-      `<section data-tab="settings"><h3>Windows</h3>` +
-      `<div class="opt"><div>Rows shown<small>Every party or squad member up to this many; scroll for the rest.</small></div>` +
-      `<div class="step">${[-5, -1].map(d => `<button data-rows="${d}">${d}</button>`).join("")}` +
-      `<b class="rows-n"></b>${[1, 5].map(d => `<button data-rows="${d}">+${d}</button>`).join("")}</div></div>` +
-      `<div class="opt" data-compact><div>Compact<small>Smaller rows, text and columns, so each window takes less room.</small></div>` +
-      `<span class="tog"><i></i></span></div>` +
-      `<div class="opt" data-merge><div>Merge windows that snap together<small>In Arrange, drop a table window ` +
-      `against another to join them into one window; pull a table's header to take it out again.</small></div>` +
-      `<span class="tog"><i></i></span></div>` +
-      `<h3>Combat</h3>` +
-      CORE_OPTS.map(([k, label, detail]) => `<div class="opt" data-opt="${k}"><div>${esc(label)}<small>${esc(detail)}</small></div>` +
-        `<span class="tog"><i></i></span></div>`).join("") +
-      `<h3>Plugins</h3><div class="opt" data-dev><div>Developer mode<small>Reload plugins when their files ` +
-      `change, count their errors and add Reload to their cards. The overlay restarts to switch developer ` +
-      `mode.</small></div><span class="tog"><i></i></span></div>` +
-      `<p class="note dev-note">Developer tools: open about:debugging in Firefox, add 127.0.0.1:6080</p></section>` +
-      // Store: the registry's plugins, a search box, and whether store plugins update by themselves
-      `<section data-tab="store"><div class="store-top"><div class="stabs"></div><span class="grow"></span>` +
+      `for others they show what passed between them and you (dimmed).</p></div></section>` +
+      // Plugins: today's Store and Plugins content, until the new page replaces it
+      `<section data-tab="plugins"><div class="pstore"><div class="store-top"><div class="stabs"></div><span class="grow"></span>` +
       `<span class="sfield"></span>` +
       `<button data-sact="refresh" data-tip="check the store for new plugins and versions">Refresh</button></div>` +
       `<p class="note store-msg"></p>` +
@@ -2481,18 +2451,39 @@ const hub = defineWindow({
       `<div class="srows"></div>` +
       `<div class="opt" data-storeauto><div>Update automatically<small>Store plugins update by themselves ` +
       `when the new version asks for nothing new. Anything else waits for you to press Update.</small></div>` +
-      `<span class="tog"><i></i></span></div></section>` +
-      // Plugins: the same cards as the Windows tab
-      `<section data-tab="plugins"><div class="blank pblank"><b>No plugins installed</b>` +
+      `<span class="tog"><i></i></span></div></div>` +
+      `<h3>Installed</h3><div class="blank pblank"><b>No plugins installed</b>` +
       `Plugins will add their own windows and tools here, next to the built-in ones.</div>` +
       `<div class="pcards"></div></section>` +
-      // Updates
-      `<section data-tab="updates"><div class="kv"><span>AxiDPS</span><b>${esc(BUILD)}</b>` +
+      // Options
+      `<section data-tab="options"><div class="optpage"><h3>Look</h3><div class="themes">${THEMES.map(themeCard).join("")}</div>` +
+      `<div class="opt"><div>How see-through<small>Lower is more see-through. Picking a theme brings its own look.</small></div>` +
+      `<div class="slide" data-slide="opacity">${OPACITY.map((o, i) => `<i data-v="${o}" style="left:${i * 20}%"></i>`).join("")}` +
+      `<u></u><em></em></div><b class="slide-n"></b></div>` +
+      `<div class="opt"><div>Blur<small>Softens the game behind see-through windows.</small></div>` +
+      `<div class="seg" data-look="blur">${BLUR.map((b, i) => `<button data-v="${i}">${b}</button>`).join("")}</div></div>` +
+      `<div class="opt" data-compact><div>Smaller text and rows<small>Smaller rows, text and columns, so each window takes less room.</small></div>` +
+      `<span class="tog"><i></i></span></div>` +
+      `<h3>Windows</h3>` +
+      `<div class="opt"><div>How many players to show<small>Every party or squad member up to this many; scroll for the rest.</small></div>` +
+      `<div class="step">${[-5, -1].map(d => `<button data-rows="${d}">${d}</button>`).join("")}` +
+      `<b class="rows-n"></b>${[1, 5].map(d => `<button data-rows="${d}">+${d}</button>`).join("")}</div></div>` +
+      `<div class="opt" data-merge><div>Join windows that touch<small>In Arrange, drop a table window ` +
+      `against another to join them into one window; pull a table's header to take it out again.</small></div>` +
+      `<span class="tog"><i></i></span></div>` +
+      `<h3>What gets counted</h3>` +
+      CORE_OPTS.map(([k, label, detail]) => `<div class="opt" data-opt="${k}"><div>${esc(label)}<small>${esc(detail)}</small></div>` +
+        `<span class="tog"><i></i></span></div>`).join("") +
+      `<h3>Updates</h3><div class="kv"><span>AxiDPS</span><b>${esc(BUILD)}</b>` +
       `<span class="upd-label">Update</span><b class="upd-text"></b>` +
       `<span>Core</span><b class="core-state"></b></div>` +
       `<div class="opt" data-autoupdate><div>Install updates automatically` +
       `<small>New versions install when you close the game.</small></div>` +
-      `<span class="tog"><i></i></span></div></section>` +
+      `<span class="tog"><i></i></span></div>` +
+      `<div class="opt" data-dev><div>Developer mode<small>Reload plugins when their files ` +
+      `change, count their errors and add Reload to their cards. The overlay restarts to switch developer ` +
+      `mode.</small></div><span class="tog"><i></i></span></div>` +
+      `<p class="note dev-note">Developer tools: open about:debugging in Firefox, add 127.0.0.1:6080</p></div></section>` +
       `<div class="ask"><div><p></p><div class="acts"><button data-ask="no">Cancel</button>` +
       `<button data-ask="yes" class="primary"></button></div></div></div>` +
       `</main></div>`;
@@ -2508,7 +2499,7 @@ const hub = defineWindow({
       const t = e.target.closest("[data-tab]");
       if (!t) return;
       w.tab = t.dataset.tab;
-      if (w.tab === "store") pluginHost.storeOpen();
+      if (w.tab === "plugins") pluginHost.storeOpen();
       w.def.render(w); paintIcons(w.el); scheduleReport();
     };
     q(".ask").onclick = e => {
@@ -2519,7 +2510,7 @@ const hub = defineWindow({
       renderAll();
       if (a && b && b.dataset.ask === "yes") a.yes();
     };
-    q('section[data-tab="store"]').onclick = e => {
+    q(".pstore").onclick = e => {
       if (e.target.closest("[data-search]")) { startText(STORE_SEARCH); return; }
       const f = e.target.closest("[data-sfilter]");
       if (f) { w.storeFilter = f.dataset.sfilter; renderAll(); return; }
@@ -2535,7 +2526,7 @@ const hub = defineWindow({
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
     q('[data-act="addtable"]').onclick = () => { w.addMenu = !w.addMenu; w.def.render(w); };
-    q('section[data-tab="tables"]').onclick = e => {
+    q(".ctbl").onclick = e => {
       const b = e.target.closest("[data-cact]");
       if (b && !b.disabled) builderAct(w, b);
     };
@@ -2563,12 +2554,27 @@ const hub = defineWindow({
       saved[sg.dataset.look] = Number(b.dataset.v);
       applyTheme(); save(); renderAll();
     });
-    q('section[data-tab="updates"]').onclick = e => {
-      if (!e.target.closest("[data-autoupdate]")) return;
-      saved.app = Object.assign({}, saved.app, {autoUpdate: !autoUpdate()});
-      save(); renderAll();
+    // The opacity slider: a click or a drag lands on the nearest step.
+    const slide = q(".slide");
+    const slideAt = e => {
+      const r = slide.getBoundingClientRect();
+      const i = Math.max(0, Math.min(OPACITY.length - 1, Math.round((e.clientX - r.left) / r.width * (OPACITY.length - 1))));
+      if (saved.opacity === OPACITY[i]) return;
+      saved.opacity = OPACITY[i];
+      applyTheme(); save(); renderAll();
     };
-    q('section[data-tab="settings"]').onclick = e => {
+    slide.onmousedown = e => {
+      slideAt(e);
+      const mv = ev => slideAt(ev);
+      const up = () => { document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up); };
+      document.addEventListener("mousemove", mv);
+      document.addEventListener("mouseup", up);
+    };
+    q('section[data-tab="options"]').onclick = e => {
+      if (e.target.closest("[data-autoupdate]")) {
+        saved.app = Object.assign({}, saved.app, {autoUpdate: !autoUpdate()});
+        save(); renderAll(); return;
+      }
       const st = e.target.closest("[data-rows]");
       if (st) { saved.rows = Math.max(1, Math.min(MAX_ROWS, maxRows() + Number(st.dataset.rows))); save(); renderAll(); return; }
       if (e.target.closest("[data-compact]")) { saved.compact = !saved.compact; save(); renderAll(); return; }
@@ -2581,15 +2587,12 @@ const hub = defineWindow({
     };
   },
   render(w) {
-    const tab = TABS.find(t => t[0] === w.tab);
-    w.body.querySelectorAll(".nav").forEach(n => {
-      const on = n.dataset.tab === w.tab;
-      n.classList.toggle("on", on);
-      n.querySelector("canvas").dataset.ink = on ? "accent" : "dim";
-    });
+    const [hw, hh] = axidpsHub.hubSize(ui.screen);
+    const hubEl = w.body.querySelector(".hub");
+    hubEl.style.width = hw + "px";
+    hubEl.style.height = hh + "px";
+    w.body.querySelectorAll(".tabb").forEach(n => n.classList.toggle("on", n.dataset.tab === w.tab));
     w.body.querySelectorAll("section").forEach(sc => sc.classList.toggle("on", sc.dataset.tab === w.tab));
-    w.body.querySelector("h2").textContent = tab[1];
-    w.body.querySelector("header p").textContent = tab[3];
     const cardKey = wins.filter(x => x.def.blurb).map(x => x.id + x.def.blurb[0]).join();
     if (w.cardKey !== cardKey) {
       w.cardKey = cardKey;
@@ -2612,7 +2615,6 @@ const hub = defineWindow({
       w.plugKey = plugKey;
       w.body.querySelector(".plugs").style.display = models.length ? "" : "none";
       w.body.querySelector(".pblank").style.display = models.length ? "none" : "";
-      w.body.querySelector('.nav[data-tab="plugins"] .n').textContent = models.length;
       const cards = models.map(([id, m, panel]) =>
         `<div class="pc" data-p="${esc(id)}"><div class="pc-h"><b>${esc(m.title)}</b>` +
         `${m.label ? badge(m.label) : ""}<span class="grow"></span>` +
@@ -2626,8 +2628,12 @@ const hub = defineWindow({
         `${m.reason ? `<span class="pl bad">${esc(m.reason)}</span>` : ""}${panel ? plugPanel(panel) : ""}</div>`).join("");
       w.body.querySelectorAll(".pcards").forEach(pc => pc.innerHTML = cards);
     }
-    if (w.tab === "tables") renderBuilder(w);
+    if (w.tab === "windows") renderBuilder(w);
     renderStore(w);
+    const nUpd = pluginHost.storeModel(pluginHost.store, "", pluginHost.list, "all").counts.updates;
+    const pill = w.body.querySelector('.tabb[data-tab="plugins"] .n');
+    pill.textContent = nUpd === 1 ? "1 update" : nUpd + " updates";
+    pill.style.display = nUpd ? "" : "none";
     const ask = w.body.querySelector(".ask");
     ask.classList.toggle("on", !!w.ask);
     if (w.ask) {
@@ -2647,8 +2653,11 @@ const hub = defineWindow({
     // A theme's own opacity may sit between the buttons (Midnight's 94%): light the nearest.
     const op = Number(saved.opacity) || 1;
     const near = OPACITY.reduce((x, y) => Math.abs(y - op) < Math.abs(x - op) ? y : x);
-    w.body.querySelectorAll('.seg[data-look="opacity"] button').forEach(b =>
-      b.classList.toggle("on", Number(b.dataset.v) === near));
+    const oi = OPACITY.indexOf(near);
+    const sl = w.body.querySelector(".slide");
+    sl.querySelector("em").style.width = oi * 20 + "%";
+    sl.querySelector("u").style.left = oi * 20 + "%";
+    w.body.querySelector(".slide-n").textContent = Math.round(near * 100) + "%";
     w.body.querySelectorAll('.seg[data-look="blur"] button').forEach(b =>
       b.classList.toggle("on", Number(b.dataset.v) === (saved.blur | 0)));
     w.body.querySelectorAll("[data-opt]").forEach(o =>
@@ -2792,7 +2801,7 @@ if (DEMO.includes("demo")) {
   if (dt) pickTheme(dt[1]);
   if (DEMO.includes("hub")) ui.session.hub = true;
   const tb = /tab=(\w+)/.exec(DEMO);
-  if (tb) hub.tab = tb[1];
+  if (tb) hub.tab = axidpsHub.tabFor(tb[1]);
   // ?demo&...&tab=store: the Store tab with a canned list (pluginHost.sampleStore).
   if (DEMO.includes("store")) { axidps.plugins(pluginHost.sampleStoreList()); axidps.store(pluginHost.sampleStore()); }
   for (const k of ["support", "defense", "fight", "timeline", "healing"]) {
