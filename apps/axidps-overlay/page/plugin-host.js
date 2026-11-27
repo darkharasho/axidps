@@ -49,6 +49,86 @@
     return out;
   }
 
+  // The hub's form for one plugin window: the window's declared settings, checked again (the
+  // browser demo serves the list too, so it's untrusted). A bad entry is dropped, not fatal.
+  const MAX_WIN_SETTINGS = 16, MAX_LABEL = 60, MAX_OPTION = 40, MAX_OPTIONS = 12;
+  const finite = x => typeof x === "number" && Number.isFinite(x);
+  function settingsModel(win) {
+    const list = win && Array.isArray(win.settings) ? win.settings : [];
+    const out = [], keys = new Set();
+    for (const s of list) {
+      if (out.length >= MAX_WIN_SETTINGS) break;
+      if (!s || typeof s !== "object" || typeof s.key !== "string" || !WINDOW_ID.test(s.key) || keys.has(s.key)
+        || typeof s.label !== "string" || !s.label || s.label.length > MAX_LABEL) continue;
+      const f = {key: s.key, type: s.type, label: s.label};
+      if (s.type === "toggle") {
+        if (s.default !== undefined && typeof s.default !== "boolean") continue;
+        f.default = s.default === true;
+      } else if (s.type === "choice") {
+        const o = s.options;
+        if (!Array.isArray(o) || o.length < 1 || o.length > MAX_OPTIONS
+          || !o.every(x => typeof x === "string" && x && x.length <= MAX_OPTION)) continue;
+        if (s.default !== undefined && !o.includes(s.default)) continue;
+        f.options = o.slice();
+        f.default = s.default === undefined ? o[0] : s.default;
+      } else if (s.type === "number") {
+        if (!finite(s.min) || !finite(s.max) || s.min > s.max) continue;
+        if (s.step !== undefined && !(finite(s.step) && s.step > 0)) continue;
+        if (s.default !== undefined && !(finite(s.default) && s.default >= s.min && s.default <= s.max)) continue;
+        Object.assign(f, {min: s.min, max: s.max, step: s.step === undefined ? 1 : s.step,
+          default: s.default === undefined ? s.min : s.default});
+      } else continue;
+      keys.add(s.key);
+      out.push(f);
+    }
+    return out;
+  }
+
+  // `value` made to fit `field`: numbers snap to the step grid from min and stay in range;
+  // anything of the wrong type is refused.
+  function fitSetting(field, value) {
+    if (field.type === "toggle") return typeof value === "boolean" ? {ok: true, value} : {ok: false};
+    if (field.type === "choice") return field.options.includes(value) ? {ok: true, value} : {ok: false};
+    if (field.type !== "number" || !finite(value)) return {ok: false};
+    const {min, max, step} = field;
+    const v = Math.min(Math.max(value, min), max);
+    let k = Math.round((v - min) / step);
+    if (min + k * step > max + 1e-9) k -= 1;
+    return {ok: true, value: Number((min + k * step).toFixed(10))};
+  }
+
+  // What the form shows: a stored value that fits its setting, otherwise the default. Keys the
+  // manifest no longer declares stay in the store but aren't shown.
+  function settingValues(model, cfg) {
+    const out = {};
+    for (const f of model) {
+      const v = own(cfg, f.key) ? cfg[f.key] : undefined;
+      const fits = f.type === "toggle" ? typeof v === "boolean"
+        : f.type === "choice" ? f.options.includes(v)
+        : finite(v) && v >= f.min && v <= f.max;
+      out[f.key] = fits ? v : f.default;
+    }
+    return out;
+  }
+
+  // The host's own options for a plugin window (never seen by the frame).
+  function windowOpts(saved, fullId) {
+    const o = own(saved && saved.pwin, fullId) ? saved.pwin[fullId] : null;
+    return {bar: o && typeof o.bar === "boolean" ? o.bar : true,
+      clear: o && typeof o.clear === "boolean" ? o.clear : false};
+  }
+
+  // The hub's settings panel for plugin `p`: one section per valid window.
+  function panelModel(p, saved) {
+    const cfg = saved && saved.cfg;
+    return validManifestWindows([p]).map(({win, fullId}) => {
+      const model = settingsModel(win);
+      const vals = settingValues(model, own(cfg, fullId) ? cfg[fullId] : null);
+      return {fullId, title: String(win.title || win.id).slice(0, MAX_TEXT), opts: windowOpts(saved, fullId),
+        fields: model.map(f => Object.assign({}, f, {value: vals[f.key]}))};
+    });
+  }
+
   // What the player grants a plugin by enabling it: its permissions and one "net:<host>" per
   // network entry.
   function grantsOf(p) {
@@ -419,7 +499,7 @@
       for (const ent of this.entries.slice()) {
         const w = this.want.find(x => x.fullId === ent.fullId);
         if (!w || w.alias !== ent.alias || w.win.entry !== ent.win.entry) this.drop(ent);
-        else { ent.plugin = w.plugin; ent.win = w.win; }
+        else { ent.plugin = w.plugin; ent.win = w.win; this.applyOpts(ent); }
       }
       for (const w of this.want) {
         if (this.entries.some(e => e.fullId === w.fullId)) continue;
@@ -547,6 +627,7 @@
         at: this.at(ent),
         mount: win => this.mount(ent, win),
       });
+      this.applyOpts(ent);
       const label = trustLabel(w.plugin);
       if (label) {
         const b = ent.w.el.querySelector(".bar b");
@@ -563,6 +644,48 @@
       }
       this.entries.push(ent);
       this.debug();
+    },
+    // The window's stored settings, with each declared setting's default under them.
+    settingsOf(ent) {
+      const cfg = this.env.saved().cfg;
+      const mine = own(cfg, ent.fullId) && cfg[ent.fullId] && typeof cfg[ent.fullId] === "object" ? cfg[ent.fullId] : {};
+      return Object.assign(settingValues(settingsModel(ent.win), {}), mine);
+    },
+    // A change from the hub's settings panel: merged into the window's store, saved, and the
+    // whole store sent to the frame. False, with nothing changed, if it doesn't fit.
+    setSetting(fullId, key, value) {
+      const ent = this.entries.find(e => e.fullId === fullId);
+      const field = ent && settingsModel(ent.win).find(f => f.key === key);
+      const fit = field ? fitSetting(field, value) : {ok: false};
+      if (!fit.ok) return false;
+      const saved = this.env.saved();
+      if (!saved.cfg || typeof saved.cfg !== "object") saved.cfg = {};
+      const cur = own(saved.cfg, fullId) ? saved.cfg[fullId] : null;
+      saved.cfg[fullId] = Object.assign({}, cur && typeof cur === "object" && !Array.isArray(cur) ? cur : {},
+        {[key]: fit.value});
+      this.env.save();
+      if (ent.hello) this.post(ent, "settings", {value: this.settingsOf(ent)});
+      return true;
+    },
+    // The host's own window options (title bar, transparent background), kept in saved.pwin,
+    // which no frame ever sees.
+    setWindowOpt(fullId, name, on) {
+      const ent = this.entries.find(e => e.fullId === fullId);
+      if (!ent || (name !== "bar" && name !== "clear") || typeof on !== "boolean") return false;
+      const saved = this.env.saved();
+      if (!saved.pwin || typeof saved.pwin !== "object") saved.pwin = {};
+      saved.pwin[fullId] = Object.assign(windowOpts(saved, fullId), {[name]: on});
+      this.env.save();
+      this.applyOpts(ent);
+      this.env.scheduleReport();
+      return true;
+    },
+    applyOpts(ent) {
+      const o = windowOpts(this.env.saved(), ent.fullId);
+      if (!ent.w) return;
+      const cl = ent.w.el && ent.w.el.classList;
+      if (cl) { cl.toggle("nobar", !o.bar); cl.toggle("clear", o.clear); }
+      ent.w.clear = o.clear;
     },
     mount(ent, win) {
       const f = document.createElement("iframe");
@@ -594,7 +717,14 @@
       } catch (e) { /* frame gone */ }
     },
     hasFight(ent) { return Array.isArray(ent.plugin.permissions) && ent.plugin.permissions.includes("fight"); },
+    // A window in trouble (not responding, or developer mode's error count) shows its title bar
+    // even when the player hid it, so the warning isn't lost.
+    showTrouble(ent) {
+      const cl = ent.w && ent.w.el && ent.w.el.classList;
+      if (cl) cl.toggle("trouble", ent.stalled || (this.env.saved().dev === true && ent.badge.count > 0));
+    },
     showStatus(ent) {
+      this.showTrouble(ent);
       const st = ent.w && ent.w.state;
       if (!st) return;
       const live = !ent.stalled && ent.status.live;
@@ -604,6 +734,7 @@
     },
     // Developer mode's error count in the title bar, in --bad, the last messages in its tooltip.
     showBadge(ent) {
+      this.showTrouble(ent);
       const bar = ent.w && ent.w.bar;
       if (bar && typeof bar.querySelector === "function") {
         let el = bar.querySelector(".errs");
@@ -651,12 +782,9 @@
           // The SDK says hello once per document: a (re)load, the frame's own included.
           ent.badge = errorBadge(ent.badge, {type: "load"});
           this.showBadge(ent);
-          const saved = env.saved();
           this.post(ent, "ready", {plugin: ent.plugin.id, window: ent.win.id, api: API,
             permissions: (ent.plugin.permissions || []).slice()});
-          const cfg = own(saved.cfg, ent.fullId) && saved.cfg[ent.fullId] && typeof saved.cfg[ent.fullId] === "object"
-            ? saved.cfg[ent.fullId] : {};
-          this.post(ent, "settings", {value: cfg});
+          this.post(ent, "settings", {value: this.settingsOf(ent)});
           this.post(ent, "look", env.look());
           this.post(ent, "edit", {on: !!env.ui.editing});
           if (this.hasFight(ent)) this.post(ent, "fight", {feed: env.feed()});
@@ -804,7 +932,8 @@
   };
 
   const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, trustLabel, storeModel, usesOf, sampleStore, sampleStoreList, migrateSaved, clampSize, accept,
-    logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, MAX_OPEN};
+    logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, settingsModel, settingValues, windowOpts,
+    panelModel, fitSetting, MAX_OPEN};
   Object.assign(host, pure);
   if (typeof window !== "undefined") window.pluginHost = host;
   if (typeof module !== "undefined" && module.exports) module.exports = Object.assign({host}, pure);

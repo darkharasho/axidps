@@ -174,6 +174,7 @@ Each window:
 | `icon` | no | One of `chart users shield swords activity x grid layers sliders plug download columns plus`. Anything else shows `plug`. |
 | `open` | no | `true` to show the window until the player closes it. Default `false`: the player opens it from the hub's Windows tab. |
 | `place` | no | Where the window first appears: `beside-meter` (default; in a row to the right of the Support window) or `below-meter`. The player can move it; its position is saved. |
+| `settings` | no | Options the player sets from the hub's cog, at most 16. See [Settings in the hub](#settings-in-the-hub). |
 
 Text the page shows (titles, names, statuses) is cut to 80 characters.
 
@@ -244,6 +245,53 @@ don't stop other handlers.
 
 Settings are per window and are kept when the plugin is switched off and on again. They are the
 only storage a plugin has.
+
+### Settings in the hub
+
+Each enabled plugin's card in the hub has a cog. It opens a panel with, for each of the plugin's
+windows:
+
+- two options every plugin window gets, kept by axidps and never sent to your page:
+  - *Show title bar* (on by default). Off hides the title bar; the player still moves the window
+    in Arrange. The bar comes back while the window is not responding, or, in developer mode,
+    while it has errors, so those warnings still show.
+  - *Transparent background* (off by default). On removes the window's background, border and
+    blurred backdrop, so only what your page draws shows.
+- the settings your manifest declares for that window, in order:
+
+```json
+"settings": [
+  {"key": "big", "type": "toggle", "label": "Large numbers", "default": false},
+  {"key": "unit", "type": "choice", "label": "Units", "options": ["ms", "s"], "default": "ms"},
+  {"key": "rows", "type": "number", "label": "Rows", "min": 1, "max": 20, "step": 1, "default": 5}
+]
+```
+
+| Field | Rules |
+| --- | --- |
+| `key` | `a-z 0-9 -`, unique within the window. The name of the value in `axidps.settings`. |
+| `type` | `toggle`, `choice` or `number`. |
+| `label` | 1–60 characters, shown as text. |
+| `options` | `choice` only: 1–12 names of 1–40 characters each. |
+| `min`, `max` | `number` only: required, `min` ≤ `max`. |
+| `step` | `number` only: above 0, default 1. The panel shows − and + buttons that move by it. |
+| `default` | Must fit the type. Left out, it is `false`, the first option, or `min`. |
+
+A bad entry makes the manifest invalid, like any other field (`axidps plugin check` says which).
+There is no text type: the overlay gets mouse clicks from the game but no keys, so nothing could
+be typed into it.
+
+The values live in the window's settings store, the same one `axidps.settings` reads. A
+declared key that isn't stored yet comes to your page as its `default`. When the player changes
+one, axidps merges it into the stored object, saves it, and sends the whole object in a
+`settings` event. So when your page calls `settings.set`, keep the keys it didn't write itself:
+
+```js
+axidps.settings.set({...axidps.settings.get(), mine: 1});
+```
+
+The bundled Performance plugin is a small example: its *Large numbers* toggle makes the line
+bigger.
 
 ### `axidps.window`
 

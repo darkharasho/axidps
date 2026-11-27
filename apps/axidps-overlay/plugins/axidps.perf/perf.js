@@ -7,6 +7,8 @@
     e.textContent = v > 0 ? String(v) : "–";
     e.classList.toggle("warn", v > 0 && bad(v));
   };
+  // "Large numbers", from the hub's settings panel.
+  axidps.on("settings", s => document.body.classList.toggle("big", s.big === true));
   axidps.on("perf", p => {
     show("fps", p.fps, v => v < 30);
     show("ping", p.ping, v => v > 250);

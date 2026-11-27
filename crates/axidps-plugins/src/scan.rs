@@ -234,6 +234,7 @@ fn one(p: &Plugin) -> Value {
             "windows": m.windows.iter().map(|w| json!({
                 "id": w.id, "title": w.title, "entry": w.entry, "description": w.description,
                 "icon": w.icon, "open": w.open, "place": w.place.as_str(),
+                "settings": w.settings,
             })).collect::<Vec<_>>(),
             "bundled": p.bundled,
         }),
