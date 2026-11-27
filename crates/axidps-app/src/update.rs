@@ -1413,12 +1413,16 @@ mod tests {
         let old = tmp.path().join("axidps-0.2.0.AppImage");
         fs::write(&old, b"old").unwrap();
         let fd = inheritable_fd();
+        // Compare what the number points at, not whether it exists: dash keeps the script it
+        // reads on fd 10 or above, so the same number can be open in the child for its own use.
+        let pipe = fs::read_link(format!("/proc/self/fd/{fd}")).unwrap();
         let new = tmp.path().join("axidps-0.3.0.AppImage.new");
         fs::write(
             &new,
             format!(
-                "#!/bin/sh\n[ -e /proc/$$/fd/{fd} ] && echo has > {0} || echo none > {0}\n",
-                seen.display()
+                "#!/bin/sh\n[ \"$(readlink /proc/$$/fd/{fd})\" = '{1}' ] && echo has > {0} || echo none > {0}\n",
+                seen.display(),
+                pipe.display()
             ),
         )
         .unwrap();
