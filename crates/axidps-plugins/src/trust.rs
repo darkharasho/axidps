@@ -56,7 +56,8 @@ pub struct Signed {
 impl Signed {
     /// The approvals, passes and revocation in index `v` that verify against `keys.approvers`.
     /// A bad item is skipped with a log line naming it; a `revoked` older than `min_seq` is
-    /// ignored (an old copy can't undo a revocation).
+    /// ignored (an old copy can't undo a revocation), and when `min_seq > 0` and no `revoked`
+    /// at least that new is accepted, the approvals and passes are dropped too.
     pub fn from_index(v: &Value, keys: &Keys, min_seq: u64) -> (Signed, Vec<String>) {
         let mut s = Signed::default();
         let mut log = Vec::new();
@@ -82,6 +83,17 @@ impl Signed {
                 Ok(r) => s.revoked = Some(r),
                 Err(e) => log.push(clean(&format!("revoked.json refused: {e}"))),
             }
+        }
+        // Fail closed: an index without a revocation at least as new as the last one seen
+        // (missing, stale or refused) could be an old copy from before something was revoked,
+        // so its approvals and passes unlock nothing.
+        if min_seq > 0 && s.revoked.is_none() {
+            log.push(format!(
+                "index is older than the last revocation seen (seq {min_seq}): \
+                 its approvals and passes are ignored"
+            ));
+            s.approvals.clear();
+            s.passes.clear();
         }
         (s, log)
     }
@@ -620,11 +632,43 @@ mod tests {
         let index = json!({"revoked": revoked(4, json!({"ids": []}))});
         let (s, log) = Signed::from_index(&index, &keys(), 5);
         assert!(s.revoked.is_none());
-        assert_eq!(log.len(), 1);
         assert!(log[0].contains("revoked.json"), "{log:?}");
         let (s, log) = Signed::from_index(&index, &keys(), 4);
         assert_eq!(s.revoked.unwrap().seq, 4);
         assert!(log.is_empty());
+    }
+
+    #[test]
+    fn index_older_than_the_last_revocation_unlocks_nothing() {
+        let a = approval("example.x", TREE, &["world"]);
+        let p = pass(&["example.*"], &["world"], "2026-12-01");
+        let perms = &["fight", "world"][..];
+        let stale = json!({"approvals": [a.clone()], "passes": [p.clone()],
+                           "revoked": revoked(4, json!({}))});
+        let bare = json!({"approvals": [a.clone()], "passes": [p.clone()]});
+        let mut forged = revoked(5, json!({}));
+        forged["seq"] = json!(9);
+        let refused = json!({"approvals": [a.clone()], "passes": [p.clone()], "revoked": forged});
+        for (name, index) in [("stale", &stale), ("no revoked", &bare), ("refused", &refused)] {
+            let (s, log) = Signed::from_index(index, &keys(), 5);
+            assert_eq!(s, Signed::default(), "{name}");
+            assert!(log.iter().any(|l| l.contains("older than the last revocation")), "{name}: {log:?}");
+            let d = decide(&plugin("example.x", false, perms), Some(TREE), &dev_ctx(s));
+            assert_eq!(d.level, Trust::Unverified, "{name}");
+            assert!(d.granted.is_empty(), "{name}");
+        }
+        // Current revocation: everything counts.
+        let current = json!({"approvals": [a.clone()], "passes": [p.clone()],
+                             "revoked": revoked(5, json!({}))});
+        let (s, log) = Signed::from_index(&current, &keys(), 5);
+        assert!(log.is_empty(), "{log:?}");
+        assert_eq!((s.approvals.len(), s.passes.len(), s.revoked.as_ref().map(|r| r.seq)), (1, 1, Some(5)));
+        // Nothing seen yet: an index without revoked still counts.
+        let (s, log) = Signed::from_index(&bare, &keys(), 0);
+        assert!(log.is_empty(), "{log:?}");
+        let d = decide(&plugin("example.x", false, perms), Some(TREE), &ctx(s));
+        assert_eq!(d.level, Trust::Verified);
+        assert_eq!(d.granted, ["world"]);
     }
 
     #[test]
