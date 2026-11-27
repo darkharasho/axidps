@@ -21,8 +21,10 @@
   const PERMISSION_TEXT = {fight: "Reads your fight data", world: "Draws over the game world",
     position: "Reads your position and camera", squad: "Reads your squad and party",
     enemies: "Reads enemy players seen in combat",
-    textures: "Changes how the game's icons look (commander tags, markers, targets)"};
+    textures: "Changes how the game's icons look (commander tags, markers, targets)",
+    outline: "Outlines your character"};
   const MAX_TEXTURE_RULES = 64;
+  const MAX_OUTLINE = 1024;
   const PLUGIN_ID = /^[a-z0-9.-]{3,48}$/, WINDOW_ID = /^[a-z0-9-]+$/;
   const own = (o, k) => !!o && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k);
 
@@ -234,6 +236,16 @@
         try {
           const j = JSON.stringify(m.rules);
           return typeof j === "string" && utf8Len(j) <= MAX_SETTINGS;
+        } catch (e) {
+          return false;
+        }
+      }
+      case "outline": {
+        if (m.settings === null) return true;
+        if (!m.settings || typeof m.settings !== "object" || Array.isArray(m.settings)) return false;
+        try {
+          const j = JSON.stringify(m.settings);
+          return typeof j === "string" && utf8Len(j) <= MAX_OUTLINE;
         } catch (e) {
           return false;
         }
@@ -523,6 +535,9 @@
       if (this.textures && !this.entries.some(e => e !== ent && e.plugin.id === ent.plugin.id)) {
         this.setTextures(ent.plugin.id, []);
       }
+      if (this.outlineOwner === ent.plugin.id && !this.entries.some(e => e !== ent && e.plugin.id === ent.plugin.id)) {
+        this.setOutline(ent.plugin.id, null);
+      }
       if (ent.w) this.env.removeWindow(ent.w);
       const i = this.entries.indexOf(ent);
       if (i >= 0) this.entries.splice(i, 1);
@@ -661,10 +676,31 @@
           this.setTextures(ent.plugin.id, m.rules);
           break;
         }
+        case "outline": {
+          if (!this.hasOutline(ent)) {
+            env.toHost(JSON.stringify({log: {plugin: ent.plugin.id, level: "warn",
+              msg: "outline.set is only for built-in plugins; ignored"}}));
+            return;
+          }
+          this.setOutline(ent.plugin.id, m.settings);
+          break;
+        }
       }
     },
     hasTextures(ent) {
       return Array.isArray(ent.plugin.permissions) && ent.plugin.permissions.includes("textures");
+    },
+    hasOutline(ent) {
+      return ent.plugin.bundled === true && Array.isArray(ent.plugin.permissions)
+        && ent.plugin.permissions.includes("outline");
+    },
+    // The outline plugin's settings changed (null turns the outline off): send them if they differ.
+    setOutline(id, settings) {
+      this.outlineOwner = id;
+      const msg = JSON.stringify({outline: settings});
+      if (msg === this.outlineSent) return;
+      this.outlineSent = msg;
+      if (this.env) this.env.toHost(msg);
     },
     // One plugin's rules changed (an empty list removes them): send the merged list if it differs.
     setTextures(id, rules) {
@@ -733,6 +769,7 @@
         if (ent.plugin.id !== id || !ent.frame) continue;
         // The reloaded page sets its rules again.
         if (this.textures) this.setTextures(id, []);
+        if (this.outlineOwner === id) this.setOutline(id, null);
         ent.hello = false;
         ent.helloAt = 0;
         ent.seen = Date.now();

@@ -637,3 +637,31 @@ test("a stalled or erroring window is marked trouble so a hidden title bar comes
   h.showBadge(ent);
   assert.deepStrictEqual(trouble(), ["trouble", true]);
 });
+
+test("accept: outline settings are an object or null, bounded", () => {
+  assert.strictEqual(ph.accept({ axidps: 1, type: "outline", settings: null }), true);
+  assert.strictEqual(ph.accept({ axidps: 1, type: "outline", settings: { on: true } }), true);
+  assert.strictEqual(ph.accept({ axidps: 1, type: "outline", settings: [1] }), false);
+  assert.strictEqual(ph.accept({ axidps: 1, type: "outline", settings: { s: "x".repeat(2000) } }), false);
+});
+test("outline: only a bundled plugin naming the permission reaches the host; dropping it turns the outline off", () => {
+  const { h, ent } = feedHost();
+  const sent = [];
+  h.env.toHost = t => sent.push(t);
+  const player = ent("x.outline", ["outline"]);
+  const named = ent("axidps.other", ["fight"]); named.plugin.bundled = true;
+  const real = ent("axidps.outline", ["outline"]); real.plugin.bundled = true;
+  h.handle(player, { axidps: 1, type: "outline", settings: { on: true } });
+  h.handle(named, { axidps: 1, type: "outline", settings: { on: true } });
+  assert.strictEqual(sent.length, 2);
+  for (const s of sent) assert.match(s, /only for built-in plugins/);
+  h.handle(real, { axidps: 1, type: "outline", settings: { on: true, thickness: 4 } });
+  assert.deepStrictEqual(JSON.parse(sent[2]), { outline: { on: true, thickness: 4 } });
+  h.handle(real, { axidps: 1, type: "outline", settings: { on: true, thickness: 4 } });
+  assert.strictEqual(sent.length, 3);
+  h.drop(real);
+  assert.deepStrictEqual(JSON.parse(sent[3]), { outline: null });
+});
+test("permission text names outline", () => {
+  assert.deepStrictEqual(ph.permissionLines({ permissions: ["outline"] }), ["Outlines your character"]);
+});

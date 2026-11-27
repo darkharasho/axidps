@@ -191,3 +191,20 @@ test("sdk textures", () => {
   assert.strictEqual(w.posted[w.posted.length - 1].m.type, "log", "a bad call only logs");
   assert.strictEqual(w.posted.length, n + 1);
 });
+
+test("outline.set posts a copy, clear posts null, bad input logs", () => {
+  const w = fakeWin();
+  const sdk = makeSdk(w);
+  const last = () => w.posted[w.posted.length - 1].m;
+  const obj = { on: true };
+  sdk.outline.set(obj);
+  assert.deepStrictEqual(last(), { axidps: 1, type: "outline", settings: { on: true } });
+  assert.notStrictEqual(last().settings, obj);
+  sdk.outline.clear();
+  assert.deepStrictEqual(last(), { axidps: 1, type: "outline", settings: null });
+  const n = w.posted.length;
+  sdk.outline.set([1]);
+  assert.strictEqual(last().type, "log");
+  assert.match(last().msg, /outline.set needs an object/);
+  assert.strictEqual(w.posted.length, n + 1);
+});
