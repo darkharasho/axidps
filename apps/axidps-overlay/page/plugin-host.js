@@ -454,12 +454,55 @@
         at: this.at(ent),
         mount: win => this.mount(ent, win),
       });
+      this.applyOpts(ent);
       if (w.plugin.bundled !== true) {
         const b = ent.w.el.querySelector(".bar b");
         if (b) b.dataset.tip = `${String(w.plugin.name || w.plugin.id).slice(0, MAX_TEXT)} · Unverified`;
       }
       this.entries.push(ent);
       this.debug();
+    },
+    // The window's stored settings, with each declared setting's default under them.
+    settingsOf(ent) {
+      const cfg = this.env.saved().cfg;
+      const mine = own(cfg, ent.fullId) && cfg[ent.fullId] && typeof cfg[ent.fullId] === "object" ? cfg[ent.fullId] : {};
+      return Object.assign(settingValues(settingsModel(ent.win), {}), mine);
+    },
+    // A change from the hub's settings panel: merged into the window's store, saved, and the
+    // whole store sent to the frame. False, with nothing changed, if it doesn't fit.
+    setSetting(fullId, key, value) {
+      const ent = this.entries.find(e => e.fullId === fullId);
+      const field = ent && settingsModel(ent.win).find(f => f.key === key);
+      const fit = field ? fitSetting(field, value) : {ok: false};
+      if (!fit.ok) return false;
+      const saved = this.env.saved();
+      if (!saved.cfg || typeof saved.cfg !== "object") saved.cfg = {};
+      const cur = own(saved.cfg, fullId) ? saved.cfg[fullId] : null;
+      saved.cfg[fullId] = Object.assign({}, cur && typeof cur === "object" && !Array.isArray(cur) ? cur : {},
+        {[key]: fit.value});
+      this.env.save();
+      if (ent.hello) this.post(ent, "settings", {value: this.settingsOf(ent)});
+      return true;
+    },
+    // The host's own window options (title bar, transparent background), kept in saved.pwin,
+    // which no frame ever sees.
+    setWindowOpt(fullId, name, on) {
+      const ent = this.entries.find(e => e.fullId === fullId);
+      if (!ent || (name !== "bar" && name !== "clear") || typeof on !== "boolean") return false;
+      const saved = this.env.saved();
+      if (!saved.pwin || typeof saved.pwin !== "object") saved.pwin = {};
+      saved.pwin[fullId] = Object.assign(windowOpts(saved, fullId), {[name]: on});
+      this.env.save();
+      this.applyOpts(ent);
+      this.env.scheduleReport();
+      return true;
+    },
+    applyOpts(ent) {
+      const o = windowOpts(this.env.saved(), ent.fullId);
+      if (!ent.w) return;
+      const cl = ent.w.el && ent.w.el.classList;
+      if (cl) { cl.toggle("nobar", !o.bar); cl.toggle("clear", o.clear); }
+      ent.w.clear = o.clear;
     },
     mount(ent, win) {
       const f = document.createElement("iframe");
@@ -548,12 +591,9 @@
           // The SDK says hello once per document: a (re)load, the frame's own included.
           ent.badge = errorBadge(ent.badge, {type: "load"});
           this.showBadge(ent);
-          const saved = env.saved();
           this.post(ent, "ready", {plugin: ent.plugin.id, window: ent.win.id, api: API,
             permissions: (ent.plugin.permissions || []).slice()});
-          const cfg = own(saved.cfg, ent.fullId) && saved.cfg[ent.fullId] && typeof saved.cfg[ent.fullId] === "object"
-            ? saved.cfg[ent.fullId] : {};
-          this.post(ent, "settings", {value: cfg});
+          this.post(ent, "settings", {value: this.settingsOf(ent)});
           this.post(ent, "look", env.look());
           this.post(ent, "edit", {on: !!env.ui.editing});
           if (this.hasFight(ent)) this.post(ent, "fight", {feed: env.feed()});

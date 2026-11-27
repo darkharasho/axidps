@@ -179,9 +179,9 @@ const ui = {
 // Persisted by the host in ~/.config/axidps/ui.json.
 // pos/open/cfg are keyed by window key (w.key: a plugin window's full id `<plugin>/<window>`,
 // else its id); plugins: {<plugin id>: {enabled, granted}}; dev: developer mode (the host reads it at
-// start).
+// start); pwin: {<plugin window full id>: {bar, clear}}, the host's own options for that window.
 let saved = {v: 1, pos: {}, open: {}, cfg: {}, theme: "midnight", opacity: 0.94, blur: 1, rows: 15, core: {}, app: {},
-  tables: [], custom: [], hideZones: false, compact: false, plugins: {}, dev: false};
+  tables: [], custom: [], hideZones: false, compact: false, plugins: {}, pwin: {}, dev: false};
 const wins = [];
 // The live feed's history, for custom windows' spans other than "fight" and their charts
 // (custom.js). Not `history`: that is the page's window.history.
@@ -427,11 +427,13 @@ function report() {
     if (!isOpen(w)) continue;
     const r = w.el.getBoundingClientRect();
     const [sx, sy] = posOf(w);
+    // Bare windows, and plugin windows set transparent, get no rounded blurred backdrop.
+    const flat = (w.def.bare && !w.def.modal) || w.clear === true;
     // No drag zone: windows are locked in place and move only in edit mode (Arrange).
     windows.push({name: w.id, ax: Math.floor(r.left), ay: Math.floor(r.top),
       w: Math.ceil(r.width), h: Math.ceil(r.height), sx: Math.round(sx), sy: Math.round(sy),
-      drag: [0, 0, 0, 0], r: w.def.bare && !w.def.modal ? 0 : theme.s.r,
-      blur: w.def.bare && !w.def.modal ? 0 : w.def.modal ? Math.max(2, blurLevel()) : blurLevel(),
+      drag: [0, 0, 0, 0], r: flat ? 0 : theme.s.r,
+      blur: flat ? 0 : w.def.modal ? Math.max(2, blurLevel()) : blurLevel(),
       flags: (w.def.ed ? 1 : 0) | (w.def.modal ? 2 : 0)});
   }
   // Never more than the DLL's table holds; the interactive and modal windows go first.
@@ -2113,6 +2115,7 @@ window.axidps = {
         opacity: s.opacity ?? t.look[0], blur: s.blur ?? t.look[1], core: s.core || {}, app: s.app || {},
         tables: Array.isArray(s.tables) ? s.tables : [], custom: s.custom, hideZones: !!s.hideZones, compact: !!s.compact,
         plugins: s.plugins && typeof s.plugins === "object" && !Array.isArray(s.plugins) ? s.plugins : {},
+        pwin: s.pwin && typeof s.pwin === "object" && !Array.isArray(s.pwin) ? s.pwin : {},
         dev: s.dev === true,
         rows: s.rows ?? Math.max(15, ...Object.values(s.cfg || {}).map(c => (c && c.maxRows) || 0))};
     }

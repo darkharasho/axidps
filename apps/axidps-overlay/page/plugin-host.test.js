@@ -517,3 +517,93 @@ test("fitSetting snaps and clamps numbers, refuses the wrong type", () => {
   assert.deepStrictEqual(ph.fitSetting(c, "s"), { ok: true, value: "s" });
   assert.strictEqual(ph.fitSetting(c, "h").ok, false);
 });
+
+// A host with one plugin window "x.y/a" added and said hello: its posts and class toggles recorded.
+function settingsHost(saved, settings) {
+  const p = plugin("x.y", { windows: [win("a", { settings: settings || [T("big"), N("rows")] })] });
+  const { h, sent } = fakeHost([p], saved);
+  const toggles = [];
+  let reports = 0;
+  Object.assign(h.env, {
+    scheduleReport: () => { reports++; }, look: () => ({}), feed: () => null, ui: { editing: false },
+    defineWindow: () => ({ el: { querySelector: () => null,
+      classList: { toggle: (c, on) => toggles.push([c, on]) } } }),
+  });
+  h.add(ph.validManifestWindows([p])[0]);
+  const ent = h.entries[0];
+  ent.posted = [];
+  ent.cw = { postMessage: m => ent.posted.push(JSON.parse(JSON.stringify(m))) };
+  return { h, ent, sent, toggles, reports: () => reports };
+}
+
+test("setSetting merges, saves, and sends the whole store", () => {
+  const saved = { cfg: { "x.y/a": { mine: 1 } } };
+  const { h, ent } = settingsHost(saved);
+  ent.hello = true;
+  assert.strictEqual(h.setSetting("x.y/a", "big", true), true);
+  assert.deepStrictEqual(saved.cfg["x.y/a"], { mine: 1, big: true });
+  assert.deepStrictEqual(ent.posted.at(-1), { axidps: 1, type: "settings", value: { big: true, rows: 1, mine: 1 } });
+});
+
+test("setSetting refuses unknown keys, wrong types, unknown windows and __proto__", () => {
+  const saved = { cfg: { "x.y/a": { mine: 1 } } };
+  const { h, ent } = settingsHost(saved);
+  ent.hello = true;
+  const before = JSON.stringify(saved);
+  for (const [id, k, v] of [["x.y/a", "nope", true], ["x.y/a", "big", "yes"], ["x.y/b", "big", true],
+    ["x.y/a", "__proto__", 1], ["__proto__", "big", true], ["x.y/a", "rows", "3"]]) {
+    assert.strictEqual(h.setSetting(id, k, v), false, `${id} ${k}`);
+  }
+  assert.strictEqual(JSON.stringify(saved), before);
+  assert.deepStrictEqual(ent.posted, []);
+  assert.strictEqual(Object.prototype.big, undefined);
+});
+
+test("after a plugin's own settings.set drops hub keys, the next change merges into it", () => {
+  const saved = { cfg: { "x.y/a": { big: true } } };
+  const { h, ent } = settingsHost(saved);
+  h.handle(ent, { axidps: 1, type: "settings", value: { mine: 2 } });
+  assert.strictEqual(h.setSetting("x.y/a", "rows", 3), true);
+  assert.deepStrictEqual(saved.cfg["x.y/a"], { mine: 2, rows: 3 });
+});
+
+test("setSetting with no stored object starts a fresh one", () => {
+  const saved = { cfg: { "x.y/a": "junk" } };
+  const { h } = settingsHost(saved);
+  assert.strictEqual(h.setSetting("x.y/a", "rows", 4.6), true);
+  assert.deepStrictEqual(saved.cfg["x.y/a"], { rows: 5 });
+});
+
+test("hello sends declared defaults under the stored values", () => {
+  const saved = { cfg: { "x.y/a": { mine: 1, rows: 4 } } };
+  const { h, ent } = settingsHost(saved);
+  h.handle(ent, { axidps: 1, type: "hello" });
+  const s = ent.posted.find(m => m.type === "settings");
+  assert.deepStrictEqual(s.value, { big: false, rows: 4, mine: 1 });
+});
+
+test("setWindowOpt saves pwin and applies the classes; the frame never hears of it", () => {
+  const saved = { cfg: {} };
+  const { h, ent, toggles, reports } = settingsHost(saved);
+  ent.hello = true;
+  toggles.length = 0;
+  assert.strictEqual(h.setWindowOpt("x.y/a", "bar", false), true);
+  assert.deepStrictEqual(saved.pwin["x.y/a"], { bar: false, clear: false });
+  assert.deepStrictEqual(toggles, [["nobar", true], ["clear", false]]);
+  assert.strictEqual(ent.w.clear, false);
+  assert.ok(reports() >= 1);
+  assert.strictEqual(h.setWindowOpt("x.y/a", "clear", true), true);
+  assert.deepStrictEqual(saved.pwin["x.y/a"], { bar: false, clear: true });
+  assert.strictEqual(ent.w.clear, true);
+  assert.strictEqual(h.setWindowOpt("x.y/a", "nope", true), false);
+  assert.strictEqual(h.setWindowOpt("x.y/a", "bar", "no"), false);
+  assert.strictEqual(h.setWindowOpt("x.y/b", "bar", false), false);
+  assert.ok(!JSON.stringify(ent.posted).includes("pwin"));
+  assert.deepStrictEqual(ent.posted, []);
+});
+
+test("add applies saved window options", () => {
+  const { toggles, ent } = settingsHost({ cfg: {}, pwin: { "x.y/a": { clear: true } } });
+  assert.deepStrictEqual(toggles, [["nobar", false], ["clear", true]]);
+  assert.strictEqual(ent.w.clear, true);
+});
