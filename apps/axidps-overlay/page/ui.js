@@ -490,7 +490,8 @@ function report() {
       w: Math.ceil(r.width), h: Math.ceil(r.height), sx: Math.round(sx), sy: Math.round(sy),
       // A merged window drags by its bar; a press elsewhere pulls a table off. A torn-off table
       // takes the drag over from its grab point until the DLL reports it (FLAG_GRAB).
-      drag: w.grab ? [w.grab[0], w.grab[1], 0, 0] : w.def.group ? [0, 0, Math.ceil(r.width), w.bar.offsetHeight] : [0, 0, 0, 0],
+      drag: w.grab ? [w.grab[0], w.grab[1], 0, 0]
+        : w.def.group && ui.editing ? [0, 0, Math.ceil(r.width), w.bar.offsetHeight] : [0, 0, 0, 0],
       r: flat ? 0 : theme.s.r,
       blur: flat ? 0 : w.def.modal ? Math.max(2, blurLevel()) : blurLevel(),
       flags: (w.def.ed ? 1 : 0) | (w.def.modal ? 2 : 0) | (w.def.group ? FLAG_GROUP : 0) | (w.grab ? FLAG_GRAB : 0)});
@@ -520,7 +521,7 @@ const groups = new Map(); // id -> group window
 const groupOf = w => w && w.inGroup ? groups.get(w.inGroup) : null;
 const memberWin = k => wins.find(w => w.key === k);
 // The drag in progress: {name, key (of the dock), d (dock), gid (target), temp (made for the preview)}.
-let mdrag = null, mpull = null;
+let mdrag = null, mpull = null, sawDragging = false;
 
 // A frame-by-frame tween (Servo has no Element.animate): fn(frame) -> style props, set each frame
 // and cleared at the end. A new tween on the same element cancels the last.
@@ -716,7 +717,7 @@ const nextGroupId = () => Math.max(0, ...(saved.groups || []).map(g => g.id), ..
 
 function onDragging(name, x, y, gx, gy) {
   const w = wins.find(v => v.id === name);
-  if (w && w.grab) { w.grab = null; scheduleReport(); } // the DLL took the hand-off
+  if (w && w.grab) { w.grab = null; mpull = null; scheduleReport(); } // the DLL took the hand-off
   if (!saved.merge || !ui.editing || !w || !(mergeable(w) || w.def.group) || w.inGroup) return;
   const px = x + gx, py = y + gy;
   // Inside the open slot (with a little slack): stay.
@@ -762,7 +763,7 @@ function onDragging(name, x, y, gx, gy) {
   const ghost = XM.compact(block).map(b => Object.assign({}, b, {k: "ghost:" + b.k, ghost: true}));
   // One ghost cell for the whole block, sized like the dragged window.
   const plan = cell && XM.place(real, cell.r, cell.c, d.side, ghost);
-  if (!plan) { if (temp) dissolveTemp(g); mdrag = null; return; }
+  if (!plan) { w.el.classList.remove("docking"); if (temp) dissolveTemp(g); mdrag = null; return; }
   const ghosts = plan.filter(c => c.ghost), g0 = ghosts[0];
   const r0 = Math.min(...ghosts.map(c => c.r)), c0 = Math.min(...ghosts.map(c => c.c));
   const cells = plan.filter(c => !c.ghost).concat([{k: "ghost", ghost: true, r: r0, c: c0, w: bw.width, h: bw.height,
@@ -775,6 +776,17 @@ function onDragging(name, x, y, gx, gy) {
   w.el.classList.add("docking");
   renderAll();
   animateGroup(g, before, d.side, null, box);
+}
+
+// Without drag progress (an older DLL): try the dropped window's edges, just inside each, as the
+// pointer; a window snapped beside a table has that edge within the dock band.
+function dockOnDrop(w) {
+  if (!saved.merge || !ui.editing || !w || !(mergeable(w) || w.def.group) || w.inGroup) return;
+  const W = w.el.offsetWidth, H = w.el.offsetHeight, [x, y] = posOf(w);
+  for (const [gx, gy] of [[6, H / 2], [W - 6, H / 2], [W / 2, 6], [W / 2, H - 6]]) {
+    onDragging(w.id, x, y, Math.round(gx), Math.round(gy));
+    if (mdrag) return;
+  }
 }
 
 // The drop: with a slot open, the window (or group) joins; otherwise nothing changes here.
@@ -849,12 +861,15 @@ function onPull(name, x, y) {
   const gxy = [Math.round(r.width / 2), 12];
   const s = saved.groups.find(v => v.id === g.gid);
   s.cells = XM.removeKey(s.cells, m.key);
+  // Where the others sit now, before the grid closes the gap.
+  const stay = s.cells.map(c => memberWin(c.k)).filter(Boolean).map(o => [o, memberPos(o).map(Math.round)]);
   release(m.el);
   saved.pos[m.key] = [Math.round(ox + x - gxy[0]), Math.round(oy + y - gxy[1])];
   m.grab = gxy;
   if (s.cells.length < 2) {
     saved.groups = saved.groups.filter(v => v !== s);
     dissolve(g);
+    for (const [o, at] of stay) saved.pos[o.key] = at;
   } else {
     layGroup(g, s.cells);
     animateGroup(g, before, null, null, box);
@@ -2738,12 +2753,14 @@ window.axidps = {
     const w = wins.find(v => v.id === name);
     saved.pos[w ? w.key : name] = [Math.round(x), Math.round(y)];
     if (w && w.grab) w.grab = null;
+    if (mpull && mpull.torn) mpull = null;
+    if (!mdrag && !sawDragging) dockOnDrop(w); // a DLL that never says where the drag is
     onDropped(w); // dropped into an open slot: merged (saves)
     save();
     renderAll();
   },
   // Edit mode, while the DLL drags a window: where it is now, and the grab point inside it.
-  dragging(name, x, y, gx, gy) { onDragging(name, x, y, gx, gy); },
+  dragging(name, x, y, gx, gy) { sawDragging = true; onDragging(name, x, y, gx, gy); },
   // A pull on a merged window: the pointer, window-local; pullEnd at the release.
   pull(name, x, y) { onPull(name, x, y); },
   pullEnd() { onPullEnd(); },

@@ -114,7 +114,7 @@ pub mod kind {
     pub const DRAG: u32 = 10;
     /// A pull on a `FLAG_GROUP` window: x/y = the pointer, window-local; name = the window.
     pub const PULL: u32 = 11;
-    /// The pull ended with the button's release (x/y as `PULL`) without a hand-off.
+    /// The pull ended with the button's release without a hand-off (x/y unused, 0).
     pub const PULL_END: u32 = 12;
 }
 
