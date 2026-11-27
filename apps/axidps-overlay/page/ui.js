@@ -2260,7 +2260,7 @@ function customSettings(spec, full, filterOpen, boonOpen, note, addOpen) {
     crow("Sort by", `<div class="chips sortk">${sortBtns}</div>` + dir) +
     crow("How many rows", `<div class="step"><button data-cact="limit-" aria-label="Fewer">&minus;</button>` +
       `<b>${spec.limit || "Auto"}</b><button data-cact="limit+" aria-label="More">+</button></div>`);
-  return `<div class="tbl cw" data-c="${spec.id}"><div class="tbl-h"><b>${esc(spec.name)}</b></div>` +
+  return `<div class="tbl cw" data-c="${spec.id}">` +
     `<div class="cols2"><div class="cl">${left}</div><div class="cr">${right}</div></div></div>`;
 }
 // ---- the Windows tab: every window in a list, the selected one's settings beside it -------------

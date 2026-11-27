@@ -68,7 +68,6 @@
   button.primary { background: var(--accent); color: var(--bg); font-weight: 600; }
   button.primary:hover { background: var(--accent-hi); }
   .ico { display: block; flex: none; }
-  .wc .ico { align-self: flex-start; }
 
   /* ---- tables ---- */
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -140,7 +139,6 @@
   .mgrid > .ghost { display: flex; align-items: center; justify-content: center; overflow: hidden; }
   .ghost .joinhint { background: var(--bg); color: var(--good); border: 1px solid var(--good); border-radius: 10px;
     padding: 2px 10px; font-size: 12px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-  .lay p { margin: 0 0 10px; color: var(--dim); }
   .lay label { display: flex; align-items: center; gap: 10px; height: 26px; }
   .lay label small { color: var(--faint); margin-left: auto; font-variant-numeric: tabular-nums; }
   .lay .row { display: flex; gap: 6px; margin-top: 10px; justify-content: flex-end; }
@@ -225,7 +223,6 @@
   .ws .grid > .opt:first-child { margin-bottom: 8px; }
   .ws .grid .pset { max-width: 560px; }
   .ws .grid .tbl.cw { max-width: 760px; margin-top: 14px; }
-  .ws .grid .tbl.cw > .tbl-h { display: none; }
   .cw .cols2 .crow { grid-template-columns: 1fr; gap: 5px; padding: 8px 0; }
   .cw .crow > span { font-size: 12px; }
   .cw .crow .seg { flex-wrap: wrap; }
@@ -267,15 +264,6 @@
   .hub h3 { margin: 16px 0 8px; font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: .06em;
     text-transform: uppercase; }
   .hub h3:first-child { margin-top: 0; }
-  /* Window cards */
-  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-  .wc { height: 92px; border: 1px solid var(--line); border-radius: var(--rs); background: var(--raise);
-    padding: 12px; display: flex; flex-direction: column; position: relative; }
-  .wc:hover { border-color: var(--line-hi); background: var(--raise-hi); }
-  .wc.on { border-color: var(--accent-line); }
-  .wc .tog { position: absolute; right: 12px; top: 12px; }
-  .wc b { margin-top: auto; color: var(--title); }
-  .wc small { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; }
   .acts { display: flex; gap: 8px; margin-top: 14px; }
   .acts button { display: flex; align-items: center; gap: 7px; padding: 6px 12px; }
   /* Theme cards: each previews its own colours, font and shape. */
@@ -286,8 +274,6 @@
   .th .tb { height: 22px; display: flex; align-items: center; padding: 0 8px; font-size: 11px; font-weight: 600; }
   .th .rows { padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
   .th .rows i { height: 6px; display: block; }
-  .look { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px 10px; align-items: center; }
-  .look > span { color: var(--dim); }
   .seg { display: flex; gap: 2px; background: var(--raise); border: 1px solid var(--line); border-radius: var(--rs);
     padding: 2px; }
   .seg button { flex: 1; padding: 3px 0; font-size: 11px; color: var(--dim); background: transparent; }
@@ -302,15 +288,15 @@
   .blank { border: 1px dashed var(--line-hi); border-radius: var(--rs); padding: 26px 20px; text-align: center;
     color: var(--dim); }
   .blank b { display: block; color: var(--title); margin-bottom: 4px; }
+  .kv { display: grid; grid-template-columns: 140px auto; gap: 6px 12px; }
+  .kv span { color: var(--dim); }
   .step { display: flex; align-items: center; gap: 3px; }
   .step button { padding: 2px 0; width: 30px; font-size: 11px; }
   .step b { width: 36px; text-align: center; font-size: 14px; font-variant-numeric: tabular-nums; }
   .foot span { white-space: nowrap; overflow: hidden; }
-  .kv { display: grid; grid-template-columns: 140px auto; gap: 6px 12px; }
-  .kv span { color: var(--dim); }
   /* Heal columns for anyone but you: only what passed between them and you. */
   td.part { color: var(--faint); }
-  .lay .grow, .tbl-h .grow { flex: 1; }
+  .lay .grow { flex: 1; }
   .lay .zl { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; height: 30px; }
   button:disabled { opacity: .45; pointer-events: none; }
   /* The DEV badge (a developer pass) on a plugin's title bar. */
@@ -382,24 +368,11 @@
     padding: 14px 16px; }
   .ask p { margin: 0 0 12px; color: var(--title); line-height: 1.45; }
   .ask .acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 0; }
-  .pc-h button.cog { padding: 2px 6px; display: flex; align-items: center; }
-  .pc .pset { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 4px; }
-  .pc .pset h4 { margin: 6px 0 0; font-size: 11px; font-weight: 600; color: var(--title); }
-  .pc .pset .opt { padding: 5px 0; gap: 10px; font-size: 12px; }
-  .pc .pset .opt:last-child { border-bottom: 0; }
-  .pc .pset .seg { flex: none; }
-  .pc .pset .seg button { flex: none; padding: 2px 9px; }
-  .pc .pset .step button { width: 24px; }
-  .pc .pset .step b { width: 34px; font-size: 12px; }
   .tag { font-size: 10px; color: var(--dim); border: 1px solid var(--line-hi); border-radius: var(--rs);
     padding: 0 5px; line-height: 15px; white-space: nowrap; }
   /* Tables tab */
   .tbl { border: 1px solid var(--line); border-radius: var(--rs); background: var(--raise); padding: 8px 10px;
     margin-bottom: 8px; }
-  .tbl-h { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-  .tbl-h b { color: var(--title); }
-  .tbl-h button { padding: 2px 8px; font-size: 11px; }
-  .tbl-h button.on { color: var(--accent); background: var(--accent-soft); }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }
   .chip { display: inline-flex; align-items: center; gap: 2px; height: 22px; border-radius: var(--rs);
     border: 1px dashed var(--line-hi); color: var(--dim); font-size: 11px; }
@@ -409,7 +382,6 @@
     padding-left: 2px; }
   .chip.on button { padding: 0 4px; color: var(--dim); }
   /* Custom windows tab: a card per window (.tbl), a row per part of its spec. */
-  .tbl-h .tag { margin-left: 4px; }
   .crow { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; align-items: center; padding: 3px 0; }
   .crow > span { color: var(--dim); font-size: 11px; }
   .crow > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
