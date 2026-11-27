@@ -863,6 +863,11 @@ const iconImg = id => {
 
 // One view of the feed's breakdown: the chart's series and colour, the table's columns and rows,
 // the footer, and the empty text. p: the player's row (boons come from it).
+// A squad member's spec by account (for a feed row without one).
+function specOf(account) {
+  const p = account && players().find(x => x.account === account);
+  return p && typeof p.spec === "string" ? p.spec : "";
+}
 function detailView(view, by, d, p) {
   const sum = a => a.reduce((n, v) => n + (Number(v) || 0), 0);
   const share = (v, t) => t ? (v / t * 100).toFixed(1) + "%" : "–";
@@ -899,7 +904,8 @@ function detailView(view, by, d, p) {
       const total = sum(list.map(h => h.healing + h.barrier));
       return {series: d ? (out ? d.heal_out : d.heal_in) || [] : [], col: T("accent"), byToggle: true,
         head: ["Healing", "Barrier", "Share"], nameHead: out ? "Healed" : "Healed by",
-        rows: list.map(h => ({prof: h.prof, name: h.name || h.account || "Unknown", v: h.healing + h.barrier,
+        rows: list.map(h => ({prof: h.prof, spec: h.spec || specOf(h.account), name: h.name || h.account || "Unknown",
+          v: h.healing + h.barrier,
           keys: [h.healing, h.barrier, h.healing + h.barrier],
           cells: [fmt(h.healing), fmt(h.barrier), share(h.healing + h.barrier, total)]})),
         sum: `${fmt(total)} ${out ? "given" : "received"}` + (partial ? " · only what passed between you" : ""),
@@ -1022,7 +1028,8 @@ defineWindow({
     const html = shown.map(r => {
       const frac = (Math.max(0, r.v) / top * 100).toFixed(1);
       const col = r.prof !== undefined ? PROF[r.prof] || PROF[0] : v.col;
-      const lead = r.icon !== undefined ? iconImg(r.icon) : "";
+      const lead = r.icon !== undefined ? iconImg(r.icon)
+        : r.spec ? `<img class="sk" src="icons/${encodeURIComponent(r.spec)}.png" alt="">` : "";
       const sel = v.pick && r.icon !== undefined;
       return `<tr class="p${sel && r.icon === pick ? " sel" : ""}"${sel ? ` data-skill="${r.icon}"` : ""}>` +
         `<td class="l name" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
@@ -2197,7 +2204,7 @@ if (DEMO.includes("demo")) {
       damage: Math.round(scale * ms / (i + 1.5)), hits: Math.round(ms / 900 / (i + 1))}));
     const hl = list => list.map(([id, n], i) => ({id, name: n, healing: Math.round(3 * ms / (i + 1.5)),
       barrier: i % 3 ? 0 : Math.round(ms / (i + 2)), hits: Math.round(ms / 1500 / (i + 1))}));
-    const peers = ps.slice(0, 8).map((p, i) => ({name: p.name, account: p.account, prof: p.prof,
+    const peers = ps.slice(0, 8).map((p, i) => ({name: p.name, account: p.account, prof: p.prof, spec: p.spec,
       healing: Math.round(2 * ms / (i + 1.5)), barrier: Math.round(ms / (i + 3))}));
     const detail = dp && {account: dp.account, name: dp.name, prof: dp.prof, spec: dp.spec, bucket_ms: 1000,
       out: tl.out.map(v => Math.round((v || 0) / 9)), in: tl.in.map(v => Math.round((v || 0) / 14)),

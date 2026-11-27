@@ -1742,13 +1742,16 @@ impl LiveStats {
             v.truncate(DETAIL_SKILLS);
             v.into_iter()
                 .map(|(id, h)| {
-                    let (name, account, prof) = match self.idents.get(&id) {
-                        Some(w) => (w.name.clone(), w.account.clone(), w.prof),
-                        None => reg.agent(id).map_or((String::new(), String::new(), 0), |a| {
-                            (a.character.clone(), a.account.clone(), a.prof)
-                        }),
+                    let (name, account, prof, elite) = match self.idents.get(&id) {
+                        Some(w) => (w.name.clone(), w.account.clone(), w.prof, w.elite),
+                        None => reg
+                            .agent(id)
+                            .map_or((String::new(), String::new(), 0, 0), |a| {
+                                (a.character.clone(), a.account.clone(), a.prof, a.elite)
+                            }),
                     };
-                    json!({"name": name, "account": account, "prof": prof, "healing": h.healing,
+                    json!({"name": name, "account": account, "prof": prof,
+                        "spec": crate::names::spec_name(prof, elite), "healing": h.healing,
                         "barrier": h.barrier})
                 })
                 .collect::<Vec<_>>()
@@ -2455,6 +2458,7 @@ mod tests {
         assert_eq!(d["heals_in"][0]["id"], 12);
         assert_eq!(d["heal_targets"][0]["name"], "Char 4");
         assert_eq!(d["heal_targets"][0]["healing"], 250);
+        assert!(d["heal_targets"][0]["spec"].is_string());
         assert_eq!(d["heal_sources"][0]["name"], "Char 4");
         assert_eq!(d["strips"], json!([{"id": 740, "name": "Might", "count": 1}]));
         assert_eq!(d["cleanses"], json!([{"id": 736, "name": "Bleeding", "count": 1}]));
