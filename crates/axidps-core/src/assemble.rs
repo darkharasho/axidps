@@ -1187,6 +1187,13 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 _ => {}
             }
         }
+        // An exact tick of a damaging condition (the POV's) sets that target's tick phase.
+        if let Event::BuffDamage { dst, buff, .. } = ev
+            && buff_damage_result(buff) == BUFF_DAMAGE_TICK
+            && crate::buffs::phase_source(buff)
+        {
+            stacks.sync_tick(dst, time);
+        }
         // Condition ticks due before this event: the model's rows (estimates for others).
         stacks.advance(time);
         for fired in stacks.take_fired() {

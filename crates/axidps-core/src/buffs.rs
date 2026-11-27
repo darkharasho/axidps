@@ -128,6 +128,10 @@ fn on_ms(from: u64, at: u64, applied: u64, end: u64) -> u16 {
     u16::try_from(ms.min(TICK_MS)).unwrap_or(1000)
 }
 
+/// A remove with at most this much time left is the stack running out, not a cleanse (arcdps's
+/// own is_offcycle threshold on removes).
+const EXPIRY_SLACK_MS: u32 = 40;
+
 /// Buff whose presence on the target marks an apply `is_offcycle`.
 const OFFCYCLE_MARKER: u32 = 0xf65c;
 
@@ -137,6 +141,13 @@ fn max_stacks(buff: u32) -> Option<u16> {
         .ok()
         .and_then(|i| MAX_STACKS.get(i))
         .map(|&(_, m)| m)
+}
+
+/// Whether an exact damage row of `buff` lands only on its target's tick, so its time is the
+/// target's tick phase: Bleeding, Burning, Poison and Torment. Confusion also hits when the
+/// target uses a skill, so its rows say nothing about the phase.
+pub fn phase_source(buff: u32) -> bool {
+    matches!(buff, 723 | 736 | 737 | 19426)
 }
 
 fn starts_tick(buff: u32) -> bool {
@@ -221,9 +232,11 @@ impl Stacks {
         }
     }
 
-    /// A ticking stack left the target before its next tick: keep it for that tick.
+    /// A ticking stack ran out before its target's next tick: keep it for that tick. A stack
+    /// removed with time left (a cleanse, a strip, a death) does not tick again: the POV's
+    /// exact ticks show the game deals nothing for it.
     fn note_end(&mut self, target: u32, s: &Stack, now: u64) {
-        if self.record && s.active && starts_tick(s.buff) {
+        if self.record && s.active && starts_tick(s.buff) && s.remaining(now) <= EXPIRY_SLACK_MS {
             self.ended
                 .push((target, s.src, s.buff, s.level, s.applied, now));
         }
@@ -252,6 +265,26 @@ impl Stacks {
             .filter(|(_, s)| s.active && s.remaining(now) > 0)
             .map(|(_, s)| (s.buff, s.level))
             .collect()
+    }
+
+    /// The game dealt `target` an exact condition tick at `at` (the POV's own, given or taken):
+    /// put the target's tick phase on it. The phase is the target's, so every source's
+    /// estimated ticks on it follow; the model's own guess drifts when the game restarts it.
+    pub fn sync_tick(&mut self, target: u32, at: u64) {
+        let half = TICK_MS / 2;
+        // Ticks for earlier seconds run as they were.
+        self.tick(target, at.saturating_sub(half));
+        match self.ticks.get(&target).copied() {
+            // Already ran this second's tick early: keep its phase from here.
+            Some(next) if next > at + half => {
+                self.ticks.insert(target, at + TICK_MS);
+            }
+            // This second's tick is still to come (or the model had stopped): run it now.
+            _ => {
+                self.ticks.insert(target, at);
+                self.tick(target, at);
+            }
+        }
     }
 
     /// Record every condition tick from now on (see [`Fired`]).
@@ -607,12 +640,12 @@ mod tests {
 
     #[test]
     fn fired_stacks_carry_the_part_of_the_second_they_were_on() {
-        // Bleeding from 0 (ticks at 1000, 2000, ...); a second stack lands at 1400 and is
-        // removed at 2700; the first runs out at 3200.
+        // Bleeding from 0 (ticks at 1000, 2000, ...); a second stack lands at 1400 and runs out
+        // at 2700; the first runs out at 3200.
         let mut s = Stacks::default();
         s.record_ticks();
         s.apply(0, &apply(5, 7, 736, 1, 3200, true));
-        s.apply(1400, &apply(5, 8, 736, 2, 5000, true));
+        s.apply(1400, &apply(5, 8, 736, 2, 1300, true));
         s.apply(
             2700,
             &Event::BuffRemove {
@@ -664,6 +697,44 @@ mod tests {
             fired_times(&mut s),
             vec![(1000, 1), (2000, 1), (8300, 1), (9300, 1)]
         );
+    }
+
+    #[test]
+    fn a_cleansed_stack_does_not_tick_again() {
+        // Bleeding 5000 ms from 0, cleansed at 2500 with 2500 ms left: ticks at 1000 and 2000
+        // only (the game deals nothing for the part second before the cleanse).
+        let mut s = Stacks::default();
+        s.record_ticks();
+        s.apply(0, &apply(5, 7, 736, 1, 5000, true));
+        s.apply(
+            2500,
+            &Event::BuffRemoveAll {
+                dst: 5,
+                remover: 9,
+                buff: 736,
+            },
+        );
+        s.advance(10_000);
+        assert_eq!(fired_times(&mut s), vec![(1000, 1), (2000, 1)]);
+    }
+
+    #[test]
+    fn an_exact_tick_moves_the_targets_phase() {
+        // Model phase from the apply at 0 is 1000, 2000, …; the game ticks at 1400 instead.
+        let mut s = Stacks::default();
+        s.record_ticks();
+        s.apply(0, &apply(5, 7, 736, 1, 10_000, true));
+        s.advance(1300);
+        assert_eq!(fired_times(&mut s), vec![(1000, 1)]);
+        // Model ran 1000 early (within half a second): not run again, phase moves on.
+        s.sync_tick(5, 1400);
+        s.advance(3500);
+        assert_eq!(fired_times(&mut s), vec![(2400, 1), (3400, 1)]);
+        // A tick the model has not reached yet runs at the game's time.
+        s.sync_tick(5, 4100);
+        assert_eq!(fired_times(&mut s), vec![(4100, 1)]);
+        s.advance(5200);
+        assert_eq!(fired_times(&mut s), vec![(5100, 1)]);
     }
 
     #[test]
