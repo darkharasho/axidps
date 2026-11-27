@@ -473,7 +473,7 @@ addEventListener("mousemove", e => {
 addEventListener("wheel", e => {
   const winEl = e.target.closest && e.target.closest(".win");
   const w = wins.find(w => w.el === winEl);
-  if (!w) return;
+  if (!w || e.target.closest(".dside")) return;
   w.tip.style.display = "none";
   w.offset += e.deltaY > 0 ? 3 : -3;
   if (w.def.render) w.def.render(w);
@@ -873,7 +873,7 @@ function detailView(view, by, d, p) {
   const share = (v, t) => t ? (v / t * 100).toFixed(1) + "%" : "–";
   const dmgRows = list => {
     const total = sum(list.map(s => s.damage));
-    return {total, rows: list.map(s => ({icon: s.id, name: s.name || `Skill ${s.id}`, v: s.damage,
+    return {total, rows: list.map(s => ({icon: s.id, name: s.name || `Skill ${s.id}`, v: s.damage, stat: s,
       keys: [s.damage, s.damage, s.hits, s.hits ? s.damage / s.hits : 0],
       cells: [fmt(s.damage), share(s.damage, total), int(s.hits), fmt(s.hits ? s.damage / s.hits : 0)]}))};
   };
@@ -883,6 +883,7 @@ function detailView(view, by, d, p) {
     const all = d ? d.skills_out : [];
     const list = view === "damage" ? all : all.filter(s => !!s.condi === (view === "condi"));
     const {total, rows} = dmgRows(list);
+    for (const r of rows) r.panel = {kind: "dmg", total, casts: true};
     const series = !d ? [] : view === "damage" ? d.out : view === "condi" ? (d.out_condi || []) : minus(d.out, d.out_condi || []);
     const est = view !== "power" && p && (p.condi_est || 0) > 0;
     return {series, col: T("good"), head: dmgHead, rows, pick: "out", sum: `${fmt(total)} ${view === "damage" ? "" : view + " "}dealt` +
@@ -890,6 +891,7 @@ function detailView(view, by, d, p) {
   }
   if (view === "taken") {
     const {total, rows} = dmgRows(d ? d.skills_in : []);
+    for (const r of rows) r.panel = {kind: "dmg", total, casts: false};
     const downs = d ? d.states.filter(s => s[1] === "down").length : 0;
     const deaths = d ? d.states.filter(s => s[1] === "dead").length : 0;
     return {series: d ? d.in : [], col: T("bad"), head: dmgHead, rows,
@@ -915,7 +917,8 @@ function detailView(view, by, d, p) {
     const total = sum(list.map(h => h.healing + h.barrier));
     return {series: d ? (out ? d.heal_out : d.heal_in) || [] : [], col: T("accent"), byToggle: true,
       head: ["Healing", "Barrier", "Share", "Hits"], pick: out ? "heal" : null,
-      rows: list.map(h => ({icon: h.id, name: h.name || `Skill ${h.id}`, v: h.healing + h.barrier,
+      rows: list.map(h => ({icon: h.id, name: h.name || `Skill ${h.id}`, v: h.healing + h.barrier, stat: h,
+        panel: {kind: "heal", total, casts: out},
         keys: [h.healing, h.barrier, h.healing + h.barrier, h.hits],
         cells: [fmt(h.healing), fmt(h.barrier), share(h.healing + h.barrier, total), int(h.hits)]})),
       sum: `${fmt(total)} ${out ? "given" : "received"}` + (partial ? " · only what passed between you" : ""),
@@ -956,15 +959,16 @@ defineWindow({
   at: besideSource,
   mount(w) {
     const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
-    w.body.style.width = px(620) + "px";
-    w.body.innerHTML = `<div class="dhead"><span class="who"></span><div class="seg by">` +
+    w.body.style.width = "";
+    w.body.innerHTML = `<div class="dmain" style="width:${px(620)}px"><div class="dhead"><span class="who"></span><div class="seg by">` +
       `<button data-by="skill">By skill</button><button data-by="player">By player</button></div></div>` +
       `<div class="seg views">` + DETAIL_VIEWS.map(([k, label]) => `<button data-view="${k}">${label}</button>`).join("") + `</div>` +
       `<canvas class="chart" width="${px(620)}" height="${px(140)}"></canvas>` +
       `<table><colgroup></colgroup><thead><tr></tr></thead><tbody></tbody></table><div class="empty"></div>` +
-      `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
+      `<div class="foot"><span class="sum"></span><span class="scroll"></span></div></div>` +
+      `<div class="dside" style="width:${px(210)}px"><div class="din"><div class="dtop"></div><div class="dscroll"></div></div></div>`;
     w.body.querySelectorAll("[data-view]").forEach(b => b.onclick = () => {
-      w.cfg.view = b.dataset.view; w.offset = 0; w.drawn = ""; w.drawnTable = ""; pickSkill(0); save(); w.def.render(w);
+      w.cfg.view = b.dataset.view; w.offset = 0; w.drawn = ""; w.drawnTable = ""; w.pin = 0; w.hover = 0; pickSkill(0); save(); w.def.render(w);
     });
     // A header click sorts by that column (again: the other way); the name column sorts A-Z first.
     w.body.querySelector("thead").onclick = e => {
@@ -975,15 +979,31 @@ defineWindow({
       w.offset = 0; w.drawnTable = ""; w.def.render(w);
     };
     // A skill row click marks its casts and its damage per second on the chart (again: clears).
-    w.body.querySelector("tbody").onclick = e => {
-      const tr = e.target.closest("tr[data-skill]");
+    // The skill panel (right) also opens; clicking the same row again closes both.
+    const tbody = w.body.querySelector("tbody"), side = w.body.querySelector(".dside");
+    tbody.onclick = e => {
+      const tr = e.target.closest("tr[data-panel]");
       if (!tr) return;
-      const id = Number(tr.dataset.skill);
-      pickSkill(saved.detail_skill === id ? 0 : id);
+      const id = Number(tr.dataset.panel);
+      if (tr.dataset.skill) pickSkill(saved.detail_skill === id ? 0 : id);
+      else w.pin = w.pin === id ? 0 : id;
+      w.hover = 0;
       w.drawn = ""; w.drawnTable = ""; w.def.render(w);
     };
+    // Hovering a skill row shows its panel until the pointer leaves the rows (or the panel).
+    tbody.onmouseover = e => {
+      const tr = e.target.closest("tr[data-panel]");
+      const id = tr ? Number(tr.dataset.panel) : 0;
+      if (id && id !== w.hover) { w.hover = id; w.def.render(w); }
+    };
+    const leave = e => {
+      if (e.relatedTarget && (tbody.contains(e.relatedTarget) || side.contains(e.relatedTarget))) return;
+      if (w.hover) { w.hover = 0; w.def.render(w); }
+    };
+    tbody.onmouseleave = leave;
+    side.onmouseleave = leave;
     w.body.querySelectorAll("[data-by]").forEach(b => b.onclick = () => {
-      w.cfg.by = b.dataset.by; w.offset = 0; w.drawnTable = ""; w.drawn = ""; pickSkill(0); save(); w.def.render(w);
+      w.cfg.by = b.dataset.by; w.offset = 0; w.drawnTable = ""; w.drawn = ""; w.pin = 0; w.hover = 0; pickSkill(0); save(); w.def.render(w);
     });
     w.compact = saved.compact;
   },
@@ -1035,7 +1055,8 @@ defineWindow({
       const lead = r.icon !== undefined ? iconImg(r.icon)
         : r.spec ? `<img class="sk" src="icons/${encodeURIComponent(r.spec)}.png" alt="">` : "";
       const sel = v.pick && r.icon !== undefined;
-      return `<tr class="p${sel && r.icon === pick ? " sel" : ""}"${sel ? ` data-skill="${r.icon}"` : ""}>` +
+      const on = r.panel && r.icon === (v.pick ? pick : w.pin);
+      return `<tr class="p${on ? " sel" : ""}"${sel ? ` data-skill="${r.icon}"` : ""}${r.panel ? ` data-panel="${r.icon}"` : ""}>` +
         `<td class="l name" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
         `${lead}${esc(r.name)}</td>` + r.cells.map(c => `<td>${esc(c)}</td>`).join("") + `</tr>`;
     }).join("");
@@ -1051,11 +1072,61 @@ defineWindow({
       : v.sum + (v.pick ? " · click a skill for its casts" : "");
     w.body.querySelector(".scroll").textContent = v.rows.length > DETAIL_ROWS
       ? `${w.offset + 1}-${Math.min(v.rows.length, w.offset + DETAIL_ROWS)} of ${v.rows.length} (wheel)` : "";
+    // The skill panel: the hovered row's, else the clicked one's.
+    const shownId = w.hover || (v.pick ? pick : w.pin) || 0;
+    const prow = shownId && rows.find(r => r.icon === shownId && r.panel);
+    const side = w.body.querySelector(".dside");
+    const ph = prow ? skillPanel(prow, d) : "";
+    if (w.drawnPanel !== ph) {
+      w.drawnPanel = ph;
+      side.classList.toggle("on", !!prow);
+      if (prow) {
+        side.style.setProperty("--cls", v.col);
+        const [top, body] = ph.split("\u0000");
+        side.querySelector(".dtop").innerHTML = top;
+        side.querySelector(".dscroll").innerHTML = body;
+      }
+      scheduleReport();
+    }
     const cv = w.body.querySelector("canvas");
     cv.style.display = v.series ? "block" : "none";
     if (v.series) drawDetail(w, d, v.series, v.col, view, v.perSecond !== false, pick ? {id: pick, of: v.pick} : null);
   },
 });
+// The Details skill panel for row `r`: its header and its scrolling stats, split by a NUL.
+function skillPanel(r, d) {
+  const s = r.stat || {}, p = r.panel;
+  const f = ui.live && ui.live.fight, secs = f ? (Number(f.duration_ms) || 0) / 1000 : 0;
+  const amount = p.kind === "heal" ? (s.healing || 0) + (s.barrier || 0) : s.damage || 0;
+  const pct = (n, of) => of ? (n / of * 100).toFixed(1) + "%" : "–";
+  const kv = list => `<div class="kv">` + list.map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v)}</b>`).join("") + `</div>`;
+  const sec = t => `<div class="sec">${esc(t)}</div>`;
+  const bar = (label, n, of) => `<div class="cbl">${esc(label)} ${pct(n, of)}</div>` +
+    `<div class="cb"><div style="width:${of ? Math.min(100, n / of * 100).toFixed(1) : 0}%"></div></div>`;
+  const top = `<h4>${iconImg(r.icon)}<span>${esc(r.name)}</span></h4><div class="dbig">${fmt(amount)}` +
+    ` <small>· ${pct(amount, p.total)}${secs > 0 ? ` · ${fmt(amount / secs)}/s` : ""}</small></div>`;
+  const hits = s.hits || 0;
+  let body = "";
+  if (p.casts && !s.condi) {
+    const n = d && Array.isArray(d.casts) ? d.casts.filter(c => c[1] === r.icon).length : 0;
+    body += sec("Casts") + kv(n ? [["Activations", int(n)], ["Hits per cast", (hits / n).toFixed(1)]]
+      : [["Activations", "none"]]);
+  }
+  if (p.kind === "heal") {
+    body += sec("Hits") + kv([["Hits", int(hits)], ["Healing", fmt(s.healing || 0)], ["Barrier", fmt(s.barrier || 0)],
+      ["Per hit", fmt(hits ? amount / hits : 0)]]);
+    return top + "\u0000" + body;
+  }
+  body += sec(s.condi ? "Ticks" : "Hits") + kv([[s.condi ? "Ticks" : "Hits", int(hits)], ["Min", fmt(s.min || 0)],
+    ["Avg", fmt(hits ? amount / hits : 0)], ["Max", fmt(s.max || 0)]]);
+  if (!s.condi) {
+    body += bar("Crit", s.crit || 0, hits) + bar("Glance", s.glance || 0, hits);
+    const avoided = [["Blocked", s.block], ["Evaded", s.evade], ["Missed (blind)", s.miss], ["Absorbed", s.absorb],
+      ["Interrupts", s.interrupt]];
+    body += sec("Avoided") + kv(avoided.map(([k, n]) => [k, int(n)]).concat([["On barrier", fmt(s.barrier || 0)]]));
+  }
+  return top + "\u0000" + body;
+}
 // The chart: the view's amount per second (smoothRate, as the Timeline), downs and deaths marked.
 function drawDetail(w, d, series, col, view, perSecond, pick) {
   // The selected skill: its amount per bucket (once the core sends it) and its cast starts.
@@ -2204,8 +2275,12 @@ if (DEMO.includes("demo")) {
     // The Details window's player (the core sends only the one asked for).
     const dp = ps.find(p => p.account === saved.detail);
     // Real skill ids, so the icons show; ids under 1000 and Torment are conditions.
-    const sk = (list, scale) => list.map(([id, n], i) => ({id, name: n, condi: [736, 737, 723, 861, 19426].includes(id),
-      damage: Math.round(scale * ms / (i + 1.5)), hits: Math.round(ms / 900 / (i + 1))}));
+    const sk = (list, scale) => list.map(([id, n], i) => {
+      const condi = [736, 737, 723, 861, 19426].includes(id), hits = Math.max(1, Math.round(ms / 900 / (i + 1)));
+      const damage = Math.round(scale * ms / (i + 1.5)), avg = damage / hits;
+      return Object.assign({id, name: n, condi, damage, hits, min: Math.round(avg * 0.3), max: Math.round(avg * 1.4)},
+        condi ? {} : {crit: Math.round(hits * 0.9), glance: i % 4 ? 0 : 2, block: i % 3 ? 0 : 1, evade: i % 2, barrier: Math.round(damage / 40)});
+    });
     const hl = list => list.map(([id, n], i) => ({id, name: n, healing: Math.round(3 * ms / (i + 1.5)),
       barrier: i % 3 ? 0 : Math.round(ms / (i + 2)), hits: Math.round(ms / 1500 / (i + 1))}));
     const peers = ps.slice(0, 8).map((p, i) => ({name: p.name, account: p.account, prof: p.prof, spec: p.spec,

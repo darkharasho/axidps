@@ -220,8 +220,55 @@ struct Series {
     cleanses: Vec<u64>,
 }
 
-/// One agent's damage by skill, one way: skill -> (damage, hits).
-type BySkill = BTreeMap<u32, (u64, u32)>;
+/// One skill's damage one way, with its hits by result (the details window's skill panel).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SkillStat {
+    damage: u64,
+    /// Hits that did damage, and the least and most one did.
+    hits: u32,
+    min: u32,
+    max: u32,
+    crit: u32,
+    glance: u32,
+    /// Strikes blocked, evaded, interrupted, absorbed (invulnerable) or missed (blind).
+    block: u32,
+    evade: u32,
+    interrupt: u32,
+    absorb: u32,
+    miss: u32,
+    /// The part of `damage` that hit barrier.
+    barrier: u64,
+}
+
+impl SkillStat {
+    fn hit(&mut self, dmg: u64) {
+        let v = u32::try_from(dmg).unwrap_or(u32::MAX);
+        self.min = if self.hits == 0 { v } else { self.min.min(v) };
+        self.max = self.max.max(v);
+        self.damage = self.damage.saturating_add(dmg);
+        self.hits = self.hits.saturating_add(1);
+    }
+
+    fn merge(&mut self, o: &SkillStat) {
+        if o.hits > 0 {
+            self.min = if self.hits == 0 { o.min } else { self.min.min(o.min) };
+        }
+        self.max = self.max.max(o.max);
+        self.damage = self.damage.saturating_add(o.damage);
+        self.hits += o.hits;
+        self.crit += o.crit;
+        self.glance += o.glance;
+        self.block += o.block;
+        self.evade += o.evade;
+        self.interrupt += o.interrupt;
+        self.absorb += o.absorb;
+        self.miss += o.miss;
+        self.barrier = self.barrier.saturating_add(o.barrier);
+    }
+}
+
+/// One agent's damage by skill, one way.
+type BySkill = BTreeMap<u32, SkillStat>;
 /// Healing by skill: skill -> (healing, barrier, hits).
 type HealSkills = BTreeMap<u32, (u64, u64, u32)>;
 
@@ -231,9 +278,26 @@ const DETAIL_SKILLS: usize = 60;
 const MAX_CASTS: usize = 4000;
 
 fn add_skill(m: &mut BTreeMap<u32, BySkill>, id: u32, skill: u32, dmg: u64) {
+    m.entry(id).or_default().entry(skill).or_default().hit(dmg);
+}
+
+/// A strike of `skill` by `id` (or on it): its damage (0: none) and how it landed.
+fn add_strike(m: &mut BTreeMap<u32, BySkill>, id: u32, skill: u32, dmg: u64, result: u8, barrier: u32) {
     let e = m.entry(id).or_default().entry(skill).or_default();
-    e.0 = e.0.saturating_add(dmg);
-    e.1 = e.1.saturating_add(1);
+    if dmg > 0 {
+        e.hit(dmg);
+        e.barrier = e.barrier.saturating_add(u64::from(barrier).min(dmg));
+    }
+    match result {
+        1 => e.crit += 1,
+        2 => e.glance += 1,
+        3 => e.block += 1,
+        4 => e.evade += 1,
+        5 => e.interrupt += 1,
+        6 => e.absorb += 1,
+        7 => e.miss += 1,
+        _ => {}
+    }
 }
 
 /// One skill's amount per [`BUCKET_MS`] (the details chart's bars for a selected skill).
@@ -709,11 +773,19 @@ impl LiveStats {
                 dst,
                 skill,
                 value,
+                overstack,
                 result,
                 ..
             } => {
                 let by = self.owner(src);
-                if DAMAGE_RESULTS.contains(&result) && value > 0 {
+                if DAMAGE_RESULTS.contains(&result) && value <= 0 && result >= 3 {
+                    // A strike avoided: no damage, but the skill panel counts it.
+                    if by == self.owner(dst) || src == 0 {
+                        return;
+                    }
+                    add_strike(&mut self.skills_out, by, skill, 0, result, 0);
+                    add_strike(&mut self.skills_in, dst, skill, 0, result, 0);
+                } else if DAMAGE_RESULTS.contains(&result) && value > 0 {
                     if by == self.owner(dst) {
                         return;
                     }
@@ -724,11 +796,11 @@ impl LiveStats {
                     d.taken = d.taken.saturating_add(dmg);
                     self.add_series(t, by, dst, dmg, false);
                     if src != 0 {
-                        add_skill(&mut self.skills_out, by, skill, dmg);
+                        add_strike(&mut self.skills_out, by, skill, dmg, result, overstack);
                         let i = self.bucket(t);
                         add_skill_at(&mut self.skill_series, by, skill, i, dmg);
                     }
-                    add_skill(&mut self.skills_in, dst, skill, dmg);
+                    add_strike(&mut self.skills_in, dst, skill, dmg, result, overstack);
                 } else if (result == STRIKE_DOWN || result == STRIKE_KILL) && src != 0 && src != dst
                 {
                     let a = self.acc.entry(by).or_default();
@@ -1682,10 +1754,8 @@ impl LiveStats {
                 (&self.skills_out, &mut by_out),
                 (&self.skills_in, &mut by_in),
             ] {
-                for (&skill, &(d, h)) in from.get(id).into_iter().flatten() {
-                    let e = to.entry(skill).or_default();
-                    e.0 += d;
-                    e.1 += h;
+                for (&skill, st) in from.get(id).into_iter().flatten() {
+                    to.entry(skill).or_default().merge(st);
                 }
             }
             if let Some(k) = self.detail_skill {
@@ -1702,10 +1772,8 @@ impl LiveStats {
                 let est = self.est_series.get(id).map_or(&[][..], Vec::as_slice);
                 sum_into(&mut out, est);
                 sum_into(&mut out_condi, est);
-                for (&skill, &(d, h)) in self.est_skills.get(id).into_iter().flatten() {
-                    let e = by_out.entry(skill).or_default();
-                    e.0 += d;
-                    e.1 += h;
+                for (&skill, st) in self.est_skills.get(id).into_iter().flatten() {
+                    by_out.entry(skill).or_default().merge(st);
                 }
             }
             states.extend(self.state_log.get(id).into_iter().flatten().copied());
@@ -1715,13 +1783,31 @@ impl LiveStats {
         casts.sort_by_key(|c| c.0);
         let casts: Vec<Value> = casts.into_iter().map(|(at, skill)| json!([at, skill])).collect();
         let list = |m: BySkill| {
-            let mut v: Vec<(u32, (u64, u32))> = m.into_iter().collect();
-            v.sort_by_key(|&(_, (d, _))| std::cmp::Reverse(d));
+            let mut v: Vec<(u32, SkillStat)> = m.into_iter().collect();
+            v.sort_by_key(|&(_, s)| std::cmp::Reverse(s.damage));
             v.truncate(DETAIL_SKILLS);
             v.into_iter()
-                .map(|(id, (damage, hits))| {
-                    json!({"id": id, "name": crate::assemble::skill_name(id), "damage": damage, "hits": hits,
-                        "condi": self.condi_skills.contains(&id)})
+                .map(|(id, s)| {
+                    let mut row = json!({"id": id, "name": crate::assemble::skill_name(id),
+                        "damage": s.damage, "hits": s.hits, "condi": self.condi_skills.contains(&id)});
+                    // The skill panel's breakdown, only what happened (most skills have no blocks).
+                    for (k, n) in [
+                        ("min", u64::from(s.min)),
+                        ("max", u64::from(s.max)),
+                        ("crit", u64::from(s.crit)),
+                        ("glance", u64::from(s.glance)),
+                        ("block", u64::from(s.block)),
+                        ("evade", u64::from(s.evade)),
+                        ("interrupt", u64::from(s.interrupt)),
+                        ("absorb", u64::from(s.absorb)),
+                        ("miss", u64::from(s.miss)),
+                        ("barrier", s.barrier),
+                    ] {
+                        if n > 0 {
+                            row[k] = json!(n);
+                        }
+                    }
+                    row
                 })
                 .collect::<Vec<_>>()
         };
@@ -2306,6 +2392,17 @@ mod tests {
             &[
                 (1100, hit(1, NPC, 5, 500)),
                 (1200, hit(1, NPC, 5, 100)),
+                (
+                    1300,
+                    Event::Strike {
+                        src: 1,
+                        dst: NPC,
+                        skill: 5,
+                        value: 0,
+                        overstack: 0,
+                        result: 3,
+                    },
+                ),
                 (2100, hit(NPC, 1, 7, 200)),
                 (
                     2500,
@@ -2340,12 +2437,14 @@ mod tests {
         assert_eq!(d["in"], json!([0, 230]));
         assert_eq!(
             d["skills_out"],
-            json!([{"id": 5, "name": "", "damage": 600, "hits": 2, "condi": false}])
+            json!([{"id": 5, "name": "", "damage": 600, "hits": 2, "condi": false,
+                "min": 100, "max": 500, "block": 1}])
         );
         assert_eq!(d["skills_in"][0]["damage"], 200);
         assert_eq!(
             d["skills_in"][1],
-            json!({"id": 736, "name": "Bleeding", "damage": 30, "hits": 1, "condi": true})
+            json!({"id": 736, "name": "Bleeding", "damage": 30, "hits": 1, "condi": true,
+                "min": 30, "max": 30})
         );
         assert_eq!(d["states"], json!([[1800, "down"]]));
         l.end(3000, &r);
