@@ -281,6 +281,14 @@ impl Registry {
                 self.ensure(dst);
                 self.assign_addr(dst);
             }
+            Event::RelayBuffDamage { src, dst, .. } => {
+                for id in [src, dst] {
+                    if id != 0 {
+                        self.ensure(id);
+                        self.assign_addr(id);
+                    }
+                }
+            }
             Event::BuffDamage { src, dst, .. }
             | Event::Heal { src, dst, .. }
             | Event::RelayHeal { src, dst, .. } => {
