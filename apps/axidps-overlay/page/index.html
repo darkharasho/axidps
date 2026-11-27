@@ -167,6 +167,56 @@
   .hub main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .hub section { display: none; padding: 20px 28px 24px; overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; }
   .hub section.on { display: block; }
+  .hub section.wsec.on { display: flex; padding: 0; overflow: hidden; }
+  /* Windows tab: the list (left), the selected window's settings and the bottom bar (right) */
+  .wl { width: 290px; flex: none; border-right: 1px solid var(--line); background: var(--nav-modal); display: flex;
+    flex-direction: column; min-height: 0; }
+  .wl .lst { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 6px 10px 12px; }
+  .wl h3 { margin: 4px 8px 8px; }
+  .wl h3.gap { margin-top: 20px; }
+  .wl .note { margin: 8px; color: var(--accent); font-size: 11.5px; }
+  .w { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: var(--rs); cursor: pointer; margin-bottom: 2px; }
+  .w:hover { background: var(--raise-hi); }
+  .w.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
+  .w .ic { width: 30px; height: 24px; border-radius: 4px; border: 1px solid var(--line-hi); background: var(--bg); flex: none;
+    display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 4px; box-sizing: border-box; }
+  .w .ic i { display: block; height: 3px; border-radius: 1px; background: var(--dim); }
+  .w.on .ic { border-color: var(--accent-line); }
+  .w.on .ic i { background: var(--accent); }
+  .w .nm { flex: 1; min-width: 0; }
+  .w .nm b { display: block; color: var(--title); font-weight: 600; }
+  .w .nm small { display: block; color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .w.hid .nm b { color: var(--dim); font-weight: 400; }
+  .w.hid .ic { border-style: dashed; }
+  .w .show { padding: 4px 10px; font-size: 12px; color: var(--accent); background: transparent; border-color: var(--accent-line); }
+  .w .show:disabled { pointer-events: auto; cursor: not-allowed; }
+  .w.joined { margin-left: 22px; border-left: 2px solid var(--line-hi); padding-left: 8px; border-radius: 0 var(--rs) var(--rs) 0; }
+  .wl .foot { flex: none; height: auto; padding: 12px; justify-content: flex-start; align-items: stretch; font-size: inherit; color: inherit; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+  body.compact .wl .foot { height: auto; padding: 12px; font-size: inherit; }
+  .wl .foot > button { width: 100%; padding: 9px 12px; }
+  .wl .foot .addmenu { margin-top: 0; }
+  .wl .foot .move { background: var(--raise-hi); border-color: var(--line-hi); display: flex; align-items: center;
+    justify-content: center; gap: 8px; }
+  .wl .foot button:disabled { pointer-events: auto; cursor: not-allowed; }
+  .wr { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .ws { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .ws .head { flex: none; padding: 20px 24px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-start; gap: 10px; }
+  .ws .head > div { flex: 1; min-width: 0; }
+  .ws .head h2 { margin: 0; font-size: 18px; color: var(--title); overflow-wrap: anywhere; }
+  .ws .head .sub { margin: 3px 0 0; color: var(--dim); }
+  .ws .head button:disabled { pointer-events: auto; cursor: not-allowed; }
+  .ws .grid { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 10px 18px 24px; }
+  .ws .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 34px; max-width: 700px; }
+  .ws .grid .col { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); color: var(--text); }
+  .ws .grid .note { color: var(--dim); margin: 14px 0 0; }
+  .ws .grid > .opt:first-child { margin-bottom: 8px; }
+  .ws .grid .pset { max-width: 560px; }
+  .ws .grid .tbl.cw { max-width: 640px; margin-top: 14px; }
+  .ws .grid .tbl.cw > .tbl-h { display: none; }
+  .wr .bottom { flex: none; display: flex; gap: 8px; align-items: center; padding: 12px 24px; border-top: 1px solid var(--line);
+    background: var(--nav-modal); }
+  .wr .bottom .grow { flex: 1; }
+  .wr .bottom small { color: var(--faint); }
   .optpage { max-width: 640px; }
   .opt .slide { flex: none; width: 220px; height: 20px; position: relative; margin-right: 6px; cursor: pointer; }
   .slide::before { content: ""; position: absolute; left: 0; right: 0; top: 8px; height: 4px; border-radius: 2px;

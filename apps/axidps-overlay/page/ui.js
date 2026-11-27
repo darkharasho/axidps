@@ -173,7 +173,7 @@ function plugPanel(sections) {
     const full = `data-full="${esc(sec.fullId)}"`;
     return (sections.length > 1 ? `<h4>${esc(sec.title)}</h4>` : "") +
       opt(`data-pwin="bar" ${full}`, "Show title bar", "Hides the window's title. Move it in Arrange.", sec.opts.bar) +
-      opt(`data-pwin="clear" ${full}`, "Transparent background", "No background or border behind the plugin.", sec.opts.clear) +
+      opt(`data-pwin="clear" ${full}`, "See-through background", "No background or border behind the plugin.", sec.opts.clear) +
       sec.fields.map(f => {
         const at = `${full} data-k="${esc(f.key)}"`;
         if (f.type === "toggle") return opt(`data-ptog ${at}`, f.label, "", f.value === true);
@@ -2185,13 +2185,6 @@ const crow = (label, body) => `<div class="crow"><span>${label}</span><div>${bod
 // Column or subgroup choices a built-in table kept from before custom windows (they can no longer
 // be made, only reset).
 const builtinChanged = t => { const c = t.cfg; return Array.isArray(c.cols) || !!c.groupOnly; };
-// A built-in table's card: its name, Copy and, while it has old choices, Defaults (they are not
-// editable).
-function builtinCard(t, full) {
-  return `<div class="tbl" data-c="${t.id}"><div class="tbl-h"><b>${esc(t.def.blurb[0])}</b><span class="tag">built in</span>` +
-    `<span class="grow"></span>${builtinChanged(t) ? `<button data-cact="defaults" data-tip="its default columns, for the whole squad">Defaults</button>` : ""}` +
-    `<button data-cact="copy"${full ? " disabled" : ""} data-tip="a custom window with its columns">Copy</button></div></div>`;
-}
 // A custom window's card: every part of its spec.
 function customCard(spec, full, filterOpen, boonOpen, note) {
   const C = axidpsCustom, n = spec.stats.length, chart = spec.look === "chart", boons = spec.rows === "boons";
@@ -2253,28 +2246,92 @@ function customCard(spec, full, filterOpen, boonOpen, note) {
       `<b>${spec.limit || "auto"}</b><button data-cact="limit+">+</button></div>`) +
     `</div>`;
 }
-// The tab: a card per built-in table and per custom window, and the Add a window menu. Drawn
-// again only when something on it changes.
-function renderBuilder(w) {
+// ---- the Windows tab: every window in a list, the selected one's settings beside it -------------
+
+// What windowList sorts: one item per window that has a blurb.
+function pluginOf(x) {
+  return pluginHost.list.find(p => p && typeof p === "object" && String(x.key).startsWith(String(p.id) + "/"));
+}
+function windowItems() {
+  return wins.filter(x => x.def.blurb).map(x => {
+    const kind = x.def.custom ? "custom" : x.def.plugin ? "plugin" : "builtin";
+    const b1 = String(x.def.blurb[1] || "");
+    const p = kind === "plugin" ? pluginOf(x) : null;
+    const note = kind === "custom" ? "Your window"
+      : kind === "plugin" ? "Plugin · " + String(p ? p.name || p.id : x.def.blurb[0])
+      : b1.charAt(0).toUpperCase() + b1.slice(1);
+    return {id: x.id, key: x.key, name: x.def.blurb[0], note, kind, open: isOpen(x)};
+  });
+}
+const winById = id => wins.find(x => x.id === id);
+const toggleHtml = (attrs, label, note, on, tip) =>
+  `<div class="opt" ${attrs}${tip ? ` data-tip="${esc(tip)}"` : ""}><div>${esc(label)}${note ? `<small>${esc(note)}</small>` : ""}</div>` +
+  `<span class="tog${on ? " on" : ""}"><i></i></span></div>`;
+const winIcon = open => `<span class="ic">${open ? '<i style="width:90%"></i><i style="width:62%"></i><i style="width:42%"></i>' : ""}</span>`;
+// A pass over the page: the list, the selected window's settings and the bottom bar. Each part is
+// drawn again only when its markup changes (the feed redraws the hub many times a second).
+function renderWindows(w) {
   const C = axidpsCustom, full = saved.custom.length >= C.MAX_CUSTOM;
-  const tables = wins.filter(x => x.def.table);
   if (full) w.addMenu = false;
-  const feedSpecs = w.filterOpen ? players().map(p => p.spec).join() : "";
-  const key = JSON.stringify([saved.custom, tables.map(t => t.id + t.def.blurb[0] + builtinChanged(t)), w.filterOpen || "", !!w.addMenu, feedSpecs,
-    ui.text, w.boonOpen || "", w.cardNote || ""]);
-  if (w.builderKey === key) return;
-  w.builderKey = key;
-  w.body.querySelector(".tbls").innerHTML = tables.map(t => builtinCard(t, full)).join("") +
-    saved.custom.map(s => customCard(s, full, w.filterOpen === s.id,
-      w.boonOpen && w.boonOpen.id === s.id ? w.boonOpen.boon : 0, w.cardNote && w.cardNote.id === s.id ? w.cardNote.text : "")).join("");
-  const add = w.body.querySelector('[data-act="addtable"]');
+  const items = windowItems();
+  const rows = axidpsHub.windowList(items, saved.merge ? saved.groups : []);
+  w.sel = axidpsHub.selected(w.sel, rows);
+  const x = winById(w.sel);
+  const openCount = wins.filter(v => capped(v) && isOpen(v)).length;
+  const atlasFull = wins.some(v => v.overAtlas);
+  const blockOf = open => axidpsHub.showBlock({open, openCount, cap: CAP, atlasFull});
+  const put = (el, html) => { if (el._html !== html) { el._html = html; el.innerHTML = html; } };
+  const q = sel => w.body.querySelector(sel);
+
+  // The list.
+  const row = r => {
+    const hid = !r.open, why = hid ? blockOf(false) : "";
+    return `<div class="w${r.id === w.sel ? " on" : ""}${hid ? " hid" : ""}${r.depth ? " joined" : ""}" data-w="${esc(r.id)}">` +
+      `${winIcon(!hid)}<span class="nm"><b>${esc(r.name)}</b><small>${esc(r.note)}</small></span>` +
+      `${hid ? `<button class="show" data-show="${esc(r.id)}"${why ? ` disabled data-tip="${esc(why)}"` : ""}>Show</button>` : ""}</div>`;
+  };
+  put(q(".wl .lst"), `<h3>On screen</h3>${rows.onScreen.map(row).join("")}` +
+    `<h3 class="gap">Hidden</h3>${rows.hidden.map(row).join("")}` +
+    `<p class="note win-note"${ui.notice ? "" : ' style="display:none"'}>${esc(ui.notice)}</p>`);
+  const add = q('[data-act="addtable"]');
   add.disabled = full;
+  if (full) add.dataset.tip = `You can have ${C.MAX_CUSTOM} of your own windows. Remove one first.`; else delete add.dataset.tip;
   add.classList.toggle("on", !!w.addMenu);
-  const menu = w.body.querySelector(".addmenu");
-  menu.style.display = w.addMenu ? "" : "none";
-  menu.innerHTML = w.addMenu ? `<button data-cact="addblank">Blank</button>` +
-    tables.map(t => `<button data-cact="addfrom" data-v="${t.id}">Copy of ${esc(t.def.blurb[0])}</button>`).join("") +
-    saved.custom.map(s => `<button data-cact="addfrom" data-v="${s.id}">Copy of ${esc(s.name)}</button>`).join("") : "";
+  const tables = wins.filter(v => v.def.table);
+  put(q(".addmenu"), w.addMenu ? `<button data-cact="addblank">Blank</button>` +
+    tables.map(t => `<button data-cact="addfrom" data-v="${esc(t.id)}">Copy of ${esc(t.def.blurb[0])}</button>`).join("") +
+    saved.custom.map(sp => `<button data-cact="addfrom" data-v="${esc(sp.id)}">Copy of ${esc(sp.name)}</button>`).join("") : "");
+
+  // The selected window.
+  const ws = q(".ws"), head = q(".ws .head"), grid = q(".ws .grid");
+  if (!x) { ws.dataset.c = ""; put(head, ""); put(grid, ""); }
+  else {
+    ws.dataset.c = x.id;
+    const open = isOpen(x), it = items.find(v => v.id === x.id), why = blockOf(open);
+    const p = it.kind === "plugin" ? pluginOf(x) : null;
+    const canCopy = !!(x.def.table || x.def.custom);
+    put(head, `<div><h2>${esc(it.name)}</h2><p class="sub">${esc(it.note)}</p></div>` +
+      (p ? `<button data-act="plugsettings" data-tip="this plugin's page in Plugins">Plugin settings</button>` : "") +
+      (canCopy ? `<button data-cact="copy"${full ? ` disabled data-tip="You can have ${C.MAX_CUSTOM} of your own windows. Remove one first."` : ""}>Make a copy</button>` : "") +
+      (it.kind === "custom" ? `<button data-cact="del">Remove</button>` : "") +
+      `<button data-act="toggle"${!open && why ? ` disabled data-tip="${esc(why)}"` : ""}>${open ? "Hide" : "Show"}</button>`);
+    const show = toggleHtml('data-tog="show"', "Show on screen", "", open, !open && why ? why : "");
+    let body;
+    if (x.def.custom) {
+      body = show + customCard(x.def.spec, full, w.filterOpen === x.id,
+        w.boonOpen && w.boonOpen.id === x.id ? w.boonOpen.boon : 0, w.cardNote && w.cardNote.id === x.id ? w.cardNote.text : "");
+    } else if (x.def.plugin) {
+      const sec = p ? pluginHost.panelModel(p, saved).filter(sc => sc.fullId === x.key) : [];
+      body = show + (sec.length ? plugPanel(sec) : "");
+    } else if (x.def.table) {
+      body = show + `<h3>Columns</h3>` + x.def.cols.filter(k => STATS[k]).map(k =>
+        `<div class="col"><span>${esc(STATS[k].label)}</span></div>`).join("") +
+        `<p class="note">Built-in windows can't be changed. Make a copy to change it.</p>` +
+        (builtinChanged(x) ? `<div class="acts"><button data-cact="defaults" data-tip="its default columns, for the whole squad">Use the defaults</button></div>` : "");
+    } else body = show;
+    put(grid, body);
+  }
+  put(q(".wr .bottom small"), esc(BUILD + " · " + (updateText(ui.update) || "up to date")));
 }
 // A click on a card's control (data-cact) or the Add a window menu.
 function builderAct(hw, b) {
@@ -2430,18 +2487,15 @@ const hub = defineWindow({
       `<span class="grow"></span><span class="kbd">Alt+Shift+M opens and closes this</span>` +
       `<button class="x" data-act="close" data-tip="close (Esc)">${icon("x", 12)}</button></div>` +
       `<main>` +
-      // Windows: today's Windows and Custom windows content, until the new page replaces it
-      `<section data-tab="windows"><div class="cards"></div><div class="acts">` +
-      `<button data-act="layout" data-tip="move windows (Esc or Done to finish)">${icon("maximize-2", 12, "text")}Arrange windows</button>` +
-      `<button data-act="clear" data-tip="blank every window until the next fight">` +
-      `${icon("trash-2", 12, "text")}Clear fight</button><button data-act="clearsession" ` +
-      `data-tip="start the session span of every custom window over">${icon("trash-2", 12, "text")}Clear session</button></div><p class="note win-note"></p>` +
-      `<div class="plugs"><h3>Plugins</h3><div class="pcards"></div></div>` +
-      `<h3>Custom windows</h3><div class="ctbl"><div class="tbls"></div><div class="acts">` +
-      `<button data-act="addtable" data-tip="a blank window, or a copy of one you have">${icon("plus", 12, "text")}Add a window</button>` +
-      `</div><div class="addmenu"></div>` +
-      `<p class="note">Heal columns are complete only for you: the game reports no one else's heals, so ` +
-      `for others they show what passed between them and you (dimmed).</p></div></section>` +
+      // Windows: the list on the left, the selected window's settings and the bottom bar on the right
+      `<section data-tab="windows" class="wsec"><div class="wl"><div class="lst"></div><div class="foot">` +
+      `<button data-act="layout" class="move" data-tip="move windows (Esc or Done to finish)">${icon("maximize-2", 12, "text")}Move windows on screen</button>` +
+      `<button data-act="addtable" class="primary" data-tip="a blank window, or a copy of one you have">+ New window</button>` +
+      `<div class="addmenu"></div></div></div>` +
+      `<div class="wr"><div class="ws"><div class="head"></div><div class="grid"></div></div>` +
+      `<div class="bottom"><button data-act="clear" class="quiet" data-tip="blank every window until the next fight">Clear this fight</button>` +
+      `<button data-act="clearsession" class="quiet" data-tip="start the session span of every custom window over">Clear session</button>` +
+      `<span class="grow"></span><small></small></div></div></section>` +
       // Plugins: today's Store and Plugins content, until the new page replaces it
       `<section data-tab="plugins"><div class="pstore"><div class="store-top"><div class="stabs"></div><span class="grow"></span>` +
       `<span class="sfield"></span>` +
@@ -2526,14 +2580,25 @@ const hub = defineWindow({
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
     q('[data-act="addtable"]').onclick = () => { w.addMenu = !w.addMenu; w.def.render(w); };
-    q(".ctbl").onclick = e => {
-      const b = e.target.closest("[data-cact]");
-      if (b && !b.disabled) builderAct(w, b);
-    };
-    q(".cards").onclick = e => {
-      const t = e.target.closest("[data-w]");
-      const x = t && wins.find(v => v.id === t.dataset.w);
-      if (x) setOpen(x, !isOpen(x));
+    q('section[data-tab="windows"]').onclick = e => {
+      if (plugSettingClick(e)) return;
+      const t = e.target;
+      const sh = t.closest("[data-show]");
+      if (sh) { const x = winById(sh.dataset.show); if (x && !sh.disabled) setOpen(x, true); return; }
+      const row = t.closest(".w[data-w]");
+      if (row) { w.sel = row.dataset.w; renderAll(); return; }
+      const b = t.closest("[data-cact]");
+      if (b) { if (!b.disabled) builderAct(w, b); return; }
+      const x = winById(w.sel);
+      if (!x) return;
+      const act = t.closest("[data-act]"), tog = t.closest('[data-tog="show"]');
+      if (act && act.dataset.act === "plugsettings" && !act.disabled) {
+        const p = pluginOf(x);
+        w.tab = "plugins"; w.storeQuery = p ? String(p.name || p.id) : "";
+        pluginHost.storeOpen(); renderAll();
+      } else if (act && act.dataset.act === "toggle" && !act.disabled) setOpen(x, !isOpen(x));
+      else if (tog && !(!isOpen(x) && axidpsHub.showBlock({open: false,
+        openCount: wins.filter(v => capped(v) && isOpen(v)).length, cap: CAP, atlasFull: wins.some(v => v.overAtlas)}))) setOpen(x, !isOpen(x));
     };
     w.body.querySelectorAll(".pcards").forEach(pc => pc.onclick = e => {
       if (plugSettingClick(e)) return;
@@ -2593,13 +2658,6 @@ const hub = defineWindow({
     hubEl.style.height = hh + "px";
     w.body.querySelectorAll(".tabb").forEach(n => n.classList.toggle("on", n.dataset.tab === w.tab));
     w.body.querySelectorAll("section").forEach(sc => sc.classList.toggle("on", sc.dataset.tab === w.tab));
-    const cardKey = wins.filter(x => x.def.blurb).map(x => x.id + x.def.blurb[0]).join();
-    if (w.cardKey !== cardKey) {
-      w.cardKey = cardKey;
-      w.body.querySelector(".cards").innerHTML = wins.filter(x => x.def.blurb).map(x =>
-        `<div class="wc" data-w="${x.id}">${icon(x.def.blurb[2], 20)}<span class="tog"><i></i></span>` +
-        `<b>${esc(x.def.blurb[0])}</b><small>${esc(x.def.blurb[1])}</small></div>`).join("");
-    }
     // Plugin cards (the host's list), in the Windows and Plugins tabs: name, label, author, version,
     // what it asks for, and why it can't be enabled or its Enable/Disable (and developer mode's
     // Reload) buttons.
@@ -2613,7 +2671,6 @@ const hub = defineWindow({
     const plugKey = JSON.stringify(models);
     if (w.plugKey !== plugKey) {
       w.plugKey = plugKey;
-      w.body.querySelector(".plugs").style.display = models.length ? "" : "none";
       w.body.querySelector(".pblank").style.display = models.length ? "none" : "";
       const cards = models.map(([id, m, panel]) =>
         `<div class="pc" data-p="${esc(id)}"><div class="pc-h"><b>${esc(m.title)}</b>` +
@@ -2628,7 +2685,7 @@ const hub = defineWindow({
         `${m.reason ? `<span class="pl bad">${esc(m.reason)}</span>` : ""}${panel ? plugPanel(panel) : ""}</div>`).join("");
       w.body.querySelectorAll(".pcards").forEach(pc => pc.innerHTML = cards);
     }
-    if (w.tab === "windows") renderBuilder(w);
+    if (w.tab === "windows") renderWindows(w);
     renderStore(w);
     const nUpd = pluginHost.storeModel(pluginHost.store, "", pluginHost.list, "all").counts.updates;
     const pill = w.body.querySelector('.tabb[data-tab="plugins"] .n');
@@ -2640,15 +2697,6 @@ const hub = defineWindow({
       ask.querySelector("p").textContent = w.ask.text;
       ask.querySelector('[data-ask="yes"]').textContent = w.ask.ok;
     }
-    w.body.querySelectorAll(".wc").forEach(t => {
-      const on = isOpen(wins.find(x => x.id === t.dataset.w));
-      t.classList.toggle("on", on);
-      t.querySelector(".tog").classList.toggle("on", on);
-      t.querySelector("canvas").dataset.ink = on ? "accent" : "faint";
-    });
-    const note = w.body.querySelector(".win-note");
-    note.textContent = ui.notice;
-    note.style.display = ui.notice ? "" : "none";
     w.body.querySelectorAll(".th").forEach(t => t.classList.toggle("on", t.dataset.theme === theme.id));
     // A theme's own opacity may sit between the buttons (Midnight's 94%): light the nearest.
     const op = Number(saved.opacity) || 1;
