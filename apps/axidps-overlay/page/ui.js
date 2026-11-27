@@ -181,7 +181,7 @@ const ui = {
 // else its id); plugins: {<plugin id>: {enabled, granted}}; dev: developer mode (the host reads it at
 // start).
 let saved = {v: 1, pos: {}, open: {}, cfg: {}, theme: "midnight", opacity: 0.94, blur: 1, rows: 15, core: {}, app: {},
-  tables: [], custom: [], hideZones: false, compact: false, plugins: {}, dev: false};
+  tables: [], custom: [], hideZones: false, compact: false, plugins: {}, dev: false, storeAutoUpdate: true};
 const wins = [];
 // The live feed's history, for custom windows' spans other than "fight" and their charts
 // (custom.js). Not `history`: that is the page's window.history.
@@ -1478,7 +1478,18 @@ function updateSpec(id, patch) {
 }
 // The hub's name field: focus enters on a click in it (caret at the end) and leaves on Enter
 // (commit), Esc (cancel), a click elsewhere or the hub closing (commit).
+// The Store tab's search box uses the same field (id STORE_SEARCH): it filters as you type, Esc
+// puts back what was there, and Enter or a click elsewhere keeps it.
+const STORE_SEARCH = "store-search";
 function startText(id) {
+  if (id === STORE_SEARCH) {
+    if (ui.text && ui.text.id === id) return;
+    if (ui.text) endText(true);
+    const v = hub.storeQuery || "";
+    ui.text = {id, value: v, caret: v.length, orig: v};
+    renderAll();
+    return;
+  }
   const spec = saved.custom.find(s => s.id === id);
   if (!spec || (ui.text && ui.text.id === id)) return;
   if (ui.text) endText(true);
@@ -1489,6 +1500,11 @@ function endText(commit) {
   const t = ui.text;
   if (!t) return;
   ui.text = null;
+  if (t.id === STORE_SEARCH) {
+    if (!commit) hub.storeQuery = t.orig;
+    renderAll();
+    return;
+  }
   if (commit && t.value !== t.orig) updateSpec(t.id, {name: t.value}); // empty: the default name
   else renderAll();
 }
@@ -1497,6 +1513,13 @@ function textKey(k) {
   const r = axidpsCustom.applyKey(ui.text, k);
   if (r.done) { endText(r.done === "commit"); return; }
   ui.text = Object.assign({}, ui.text, {value: r.value, caret: r.caret});
+  if (ui.text.id === STORE_SEARCH) hub.storeQuery = r.value;
+  renderAll();
+}
+// The hub's question before something that can't be taken back: `text`, a `ok` button that runs
+// `yes`, and Cancel (or Esc, or a click outside the question).
+function hubConfirm(text, ok, yes) {
+  hub.ask = {text: String(text), ok: String(ok), yes};
   renderAll();
 }
 const nameField = spec => {
@@ -1656,6 +1679,7 @@ const TABS = [
   ["tables", "Custom windows", "columns", "Build your own windows from what axidps counts."],
   ["appearance", "Appearance", "layers", "Themes, opacity and blur for every window."],
   ["settings", "Settings", "sliders", "What axidps counts, and how."],
+  ["store", "Store", "plus", "Find plugins and install them."],
   ["plugins", "Plugins", "plug", "Add windows and tools made by others."],
   ["updates", "Updates", "download", "Versions of the axidps parts on this machine."],
 ];
@@ -1903,6 +1927,44 @@ function builderAct(hw, b) {
   }
 }
 
+// A trust badge: Verified, Unverified, DEV or Revoked.
+function badge(label) {
+  const cls = {Verified: "v", Unverified: "u", DEV: "dev", Revoked: "r"}[label] || "u";
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+const STORE_BUTTON = {install: "Install", update: "Update", replace: "Replace", uninstall: "Uninstall"};
+// The Store tab: the search box, the store's note and a card per plugin.
+function renderStore(w) {
+  const t = ui.text && ui.text.id === STORE_SEARCH ? ui.text : null;
+  const query = t ? t.value : (w.storeQuery || "");
+  const m = pluginHost.storeModel(pluginHost.store, query, pluginHost.list);
+  w.body.querySelector("[data-storeauto] .tog").classList.toggle("on", saved.storeAutoUpdate !== false);
+  const key = JSON.stringify([m, t]);
+  if (w.storeKey === key) return;
+  w.storeKey = key;
+  w.body.querySelector(".sfield").innerHTML = t
+    ? `<span class="field focus search" data-search>${esc(t.value.slice(0, t.caret))}<i class="caret"></i>` +
+      `${esc(t.value.slice(t.caret))}</span>`
+    : `<span class="field search${query ? "" : " empty"}" data-search>${esc(query || "Search plugins")}</span>`;
+  const msg = w.body.querySelector(".store-msg");
+  msg.textContent = m.message;
+  msg.style.display = m.message ? "" : "none";
+  const btn = (act, primary) => `<button data-sact="${act}"${primary ? ' class="primary"' : ""}>${STORE_BUTTON[act]}</button>`;
+  w.body.querySelector(".scards").innerHTML = m.cards.map(c => {
+    const acts = c.busy ? `<button disabled>Working…</button>`
+      : c.action === "install" ? btn("install", true)
+      : c.action === "replace" ? btn("replace", false)
+      : c.action === "update" ? btn("uninstall", false) + btn("update", true)
+      : c.action === "installed" ? `<span class="have">Installed</span>` + btn("uninstall", false) : "";
+    return `<div class="pc" data-s="${esc(c.id)}"><div class="pc-h"><b>${esc(c.title)}</b>${badge(c.badge)}` +
+      `<span class="grow"></span>${acts}</div>` +
+      `<small>${esc([c.version && "v" + c.version, c.author && "by " + c.author].filter(Boolean).join(" · "))}</small>` +
+      `${c.description ? `<span class="pd">${esc(c.description)}</span>` : ""}` +
+      `${c.lines.map(l => `<span class="pl">${esc(l)}</span>`).join("")}` +
+      `${c.note ? `<span class="pl${c.bad ? " bad" : " hint"}">${esc(c.note)}</span>` : ""}</div>`;
+  }).join("");
+}
+
 // Everything in one place: a full window over the dimmed game, centred, closed by a click
 // outside it or Esc.
 const hub = defineWindow({
@@ -1951,6 +2013,13 @@ const hub = defineWindow({
       `change, count their errors and add Reload to their cards. The overlay restarts to switch developer ` +
       `mode.</small></div><span class="tog"><i></i></span></div>` +
       `<p class="note dev-note">Developer tools: open about:debugging in Firefox, add 127.0.0.1:6080</p></section>` +
+      // Store: the registry's plugins, a search box, and whether store plugins update by themselves
+      `<section data-tab="store"><div class="store-top"><span class="sfield"></span><span class="grow"></span>` +
+      `<button data-sact="refresh" data-tip="check the store for new plugins and versions">Refresh</button></div>` +
+      `<p class="note store-msg"></p><div class="scards"></div>` +
+      `<div class="opt" data-storeauto><div>Update automatically<small>Store plugins update by themselves ` +
+      `when the new version asks for nothing new. Anything else waits for you to press Update.</small></div>` +
+      `<span class="tog"><i></i></span></div></section>` +
       // Plugins: the same cards as the Windows tab
       `<section data-tab="plugins"><div class="blank pblank"><b>No plugins installed</b>` +
       `Plugins will add their own windows and tools here, next to the built-in ones.</div>` +
@@ -1962,17 +2031,40 @@ const hub = defineWindow({
       `<div class="opt" data-autoupdate><div>Install updates automatically` +
       `<small>New versions install when you close the game.</small></div>` +
       `<span class="tog"><i></i></span></div></section>` +
+      `<div class="ask"><div><p></p><div class="acts"><button data-ask="no">Cancel</button>` +
+      `<button data-ask="yes" class="primary"></button></div></div></div>` +
       `</main></div>`;
     const q = sel => w.body.querySelector(sel);
     // A click anywhere in the hub but the focused name field ends the typing (keeps it) first.
     w.body.addEventListener("click", e => {
       const f = ui.text && e.target.closest && e.target.closest('[data-cact="name"]');
       const card = f && f.closest("[data-c]");
-      if (ui.text && !(card && card.dataset.c === ui.text.id)) endText(true);
+      const search = ui.text && ui.text.id === STORE_SEARCH && e.target.closest && e.target.closest("[data-search]");
+      if (ui.text && !search && !(card && card.dataset.c === ui.text.id)) endText(true);
     }, true);
     q("nav").onclick = e => {
       const t = e.target.closest("[data-tab]");
-      if (t) { w.tab = t.dataset.tab; w.def.render(w); paintIcons(w.el); scheduleReport(); }
+      if (!t) return;
+      w.tab = t.dataset.tab;
+      if (w.tab === "store") pluginHost.storeOpen();
+      w.def.render(w); paintIcons(w.el); scheduleReport();
+    };
+    q(".ask").onclick = e => {
+      const b = e.target.closest("[data-ask]");
+      if (!b && e.target.closest(".ask > div")) return;
+      const a = w.ask;
+      w.ask = null;
+      renderAll();
+      if (a && b && b.dataset.ask === "yes") a.yes();
+    };
+    q('section[data-tab="store"]').onclick = e => {
+      if (e.target.closest("[data-search]")) { startText(STORE_SEARCH); return; }
+      if (e.target.closest("[data-storeauto]")) { saved.storeAutoUpdate = saved.storeAutoUpdate === false; save(); renderAll(); return; }
+      const b = e.target.closest("[data-sact]");
+      if (!b || b.disabled) return;
+      if (b.dataset.sact === "refresh") { pluginHost.storeRefresh(); return; }
+      const c = b.closest("[data-s]");
+      if (c) pluginHost.storeAct(c.dataset.s, b.dataset.sact);
     };
     q('[data-act="layout"]').onclick = () => { ui.session.hub = false; requestEdit(true); renderAll(); };
     q('[data-act="close"]').onclick = () => setOpen(w, false);
@@ -2048,7 +2140,7 @@ const hub = defineWindow({
       w.body.querySelector('.nav[data-tab="plugins"] .n').textContent = models.length;
       const cards = models.map(([id, m]) =>
         `<div class="pc" data-p="${esc(id)}"><div class="pc-h"><b>${esc(m.title)}</b>` +
-        `${m.label ? `<span class="tag">${esc(m.label)}</span>` : ""}<span class="grow"></span>` +
+        `${m.label ? badge(m.label) : ""}<span class="grow"></span>` +
         `${m.reload ? `<button data-pact="reload" data-tip="reload its windows">Reload</button>` : ""}` +
         `${m.action ? `<button data-pact="${m.action}"${m.action === "enable" ? ' class="primary"' : ""}>` +
           `${m.action === "enable" ? "Enable" : "Disable"}</button>` : ""}</div>` +
@@ -2058,6 +2150,13 @@ const hub = defineWindow({
       w.body.querySelectorAll(".pcards").forEach(pc => pc.innerHTML = cards);
     }
     if (w.tab === "tables") renderBuilder(w);
+    renderStore(w);
+    const ask = w.body.querySelector(".ask");
+    ask.classList.toggle("on", !!w.ask);
+    if (w.ask) {
+      ask.querySelector("p").textContent = w.ask.text;
+      ask.querySelector('[data-ask="yes"]').textContent = w.ask.ok;
+    }
     w.body.querySelectorAll(".wc").forEach(t => {
       const on = isOpen(wins.find(x => x.id === t.dataset.w));
       t.classList.toggle("on", on);
@@ -2113,7 +2212,7 @@ window.axidps = {
         opacity: s.opacity ?? t.look[0], blur: s.blur ?? t.look[1], core: s.core || {}, app: s.app || {},
         tables: Array.isArray(s.tables) ? s.tables : [], custom: s.custom, hideZones: !!s.hideZones, compact: !!s.compact,
         plugins: s.plugins && typeof s.plugins === "object" && !Array.isArray(s.plugins) ? s.plugins : {},
-        dev: s.dev === true,
+        dev: s.dev === true, storeAutoUpdate: s.storeAutoUpdate !== false,
         rows: s.rows ?? Math.max(15, ...Object.values(s.cfg || {}).map(c => (c && c.maxRows) || 0))};
     }
     // Details was a window of its own, saved open and placed: now it opens only from a click.
@@ -2133,6 +2232,11 @@ window.axidps = {
   plugins(list) {
     refit();
     pluginHost.setList(list);
+  },
+  // The Store tab's list and state (host: on start, after each fetch, install or uninstall).
+  store(payload) {
+    pluginHost.store = payload && typeof payload === "object" ? payload : null;
+    renderAll();
   },
   // A player plugin's files changed (host, developer mode): reload its frames.
   pluginChanged(id) {
@@ -2174,6 +2278,7 @@ window.axidps = {
   // arrives as a key instead; a click outside then only ends the typing.
   dismiss() {
     if (ui.text) { endText(true); return; }
+    if (hub.ask) { hub.ask = null; renderAll(); return; }
     if (ui.session.hub) setOpen(hub, false);
   },
   // A key for the focused name field (DLL, while the page reports text_focus).
@@ -2186,7 +2291,7 @@ window.axidps = {
   },
 };
 pluginHost.init({hosted: HOSTED, test: TEST, defineWindow, removeWindow, wins, saved: () => saved, ui, toHost, besideMeter,
-  posOf, save, saveNow, renderAll, scheduleReport, look: lookOf, feed: feedView, isOpen});
+  posOf, save, saveNow, renderAll, scheduleReport, look: lookOf, feed: feedView, isOpen, confirm: hubConfirm});
 renderAll();
 
 // index.html?demo: sample data, for working on the page without a game (?demo&edit: edit mode).
@@ -2198,6 +2303,8 @@ if (DEMO.includes("demo")) {
   if (DEMO.includes("hub")) ui.session.hub = true;
   const tb = /tab=(\w+)/.exec(DEMO);
   if (tb) hub.tab = tb[1];
+  // ?demo&...&tab=store: the Store tab with a canned list (pluginHost.sampleStore).
+  if (DEMO.includes("store")) axidps.store(pluginHost.sampleStore());
   for (const k of ["support", "defense", "fight", "timeline", "healing"]) {
     saved.open[k] = true;
   }

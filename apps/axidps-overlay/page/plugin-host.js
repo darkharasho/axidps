@@ -75,10 +75,18 @@
       .concat(net.filter(x => typeof x === "string").map(h => "Talks to " + h));
   }
 
+  // A player plugin's badge, from the host's trust level: Verified, Unverified (also when the host
+  // gives none), DEV (a developer pass) or Revoked; bundled plugins have none.
+  const TRUST_LABEL = {verified: "Verified", unverified: "Unverified", dev: "DEV", revoked: "Revoked"};
+  function trustLabel(p) {
+    if (!p || p.bundled === true || p.trust === "bundled") return null;
+    return own(TRUST_LABEL, p.trust) ? TRUST_LABEL[p.trust] : "Unverified";
+  }
+
   // A plugin's hub card: what it is, what it asks for, and what the player can do with it.
-  // action: "enable" | "disable" | null (an invalid plugin, or one that needs verification);
-  // reason: why it can't be enabled ("" if it can); label: "Unverified" for every player plugin;
-  // reload: developer mode's Reload, for an enabled player plugin.
+  // action: "enable" | "disable" | null (an invalid plugin, one that needs verification or a
+  // revoked one); reason: why it can't be enabled ("" if it can; "Revoked: <why>" when pulled);
+  // label: trustLabel; reload: developer mode's Reload, for an enabled player plugin.
   function cardModel(p, saved) {
     const s = saved && typeof saved === "object" ? saved : {};
     const str = v => typeof v === "string" ? v.slice(0, MAX_TEXT) : "";
@@ -92,9 +100,73 @@
       lines: permissionLines(p),
       action: err ? null : on ? "disable" : "enable",
       reason: err === "needs verification" ? "Needs verification" : err,
-      label: bundled ? null : "Unverified",
+      label: trustLabel(p),
       reload: !err && on && !bundled && s.dev === true,
     };
+  }
+
+  const OFFLINE = "Can't reach the plugin store. Installed plugins still work.";
+  const STORE_TEXT = {
+    loading: "Loading the plugin store…",
+    offline: "Can't reach the plugin store right now. This is the list from last time.",
+    error: "The plugin store sent a list that didn't check out. This is the last good one.",
+  };
+  const HAND_NOTE = "You added a plugin with this id yourself. Replace it with this one to get updates; " +
+    "your copy is kept.";
+
+  // The Store tab from the host's `axidps.store` payload, filtered by `query` (name, author or
+  // description, any case). `list` (the plugin list) adds why an installed plugin was revoked.
+  // Card action: "install" | "update" | "installed" (Uninstall) | "replace" (over the player's own
+  // folder, after asking) | null (needs a newer axidps). note: awaiting review, revoked, the
+  // player's own copy, or the last error (bad: true for those last).
+  function storeModel(store, query, list) {
+    const st = store && typeof store === "object" ? store : {};
+    const state = typeof st.state === "string" ? st.state : "offline";
+    const all = Array.isArray(st.plugins) ? st.plugins.filter(x => x && typeof x === "object"
+      && typeof x.id === "string" && PLUGIN_ID.test(x.id)) : [];
+    const str = (v, n = MAX_TEXT) => typeof v === "string" ? v.slice(0, n) : "";
+    const q = String(query || "").trim().toLowerCase();
+    const hit = x => !q || [x.name, x.author, x.description].some(v => typeof v === "string" && v.toLowerCase().includes(q));
+    const plugins = Array.isArray(list) ? list : [];
+    const cards = all.filter(hit).map(x => {
+      const err = str(x.error, 200);
+      const mine = plugins.find(p => p && p.id === x.id);
+      const revoked = mine && mine.trust === "revoked" ? String(mine.error || "Revoked") : "";
+      const action = x.handInstalled ? "replace" : x.installed ? (x.update ? "update" : "installed")
+        : err === "needs a newer axidps" ? null : "install";
+      const note = revoked || err || (x.handInstalled ? HAND_NOTE : x.awaiting ? "Update awaiting review" : "");
+      return {
+        id: x.id, title: str(x.name) || x.id, author: str(x.author), version: str(x.update || x.installed || x.version),
+        description: str(x.description, 200), badge: x.trust === "verified" ? "Verified" : "Unverified",
+        lines: permissionLines(x), action, note, bad: !!(revoked || err), busy: x.busy === true,
+      };
+    });
+    let message;
+    if (!all.length) message = state === "loading" ? STORE_TEXT.loading : state === "ok" ? "No plugins in the store yet." : OFFLINE;
+    else {
+      const parts = state !== "ok" && STORE_TEXT[state] ? [STORE_TEXT[state]] : [];
+      if (q && !cards.length) parts.push(`No plugins match “${String(query).trim()}”.`);
+      message = parts.join(" ");
+    }
+    return {state, message, cards};
+  }
+
+  // A canned `axidps.store` payload: the browser demo's Store tab (index.html?demo&hub&tab=store).
+  function sampleStore() {
+    const l = (id, name, author, description, extra) => Object.assign({id, name, author, description, icon: "", repo: "",
+      version: "1.0.0", trust: "unverified", awaiting: false, permissions: ["fight"], network: [], installed: null,
+      handInstalled: false, update: null, busy: false}, extra);
+    return {state: "ok", fetched: Date.now(), plugins: [
+      l("kat.boon-board", "Boon Board", "kat", "Your squad's boon uptime, one row per subgroup.",
+        {trust: "verified"}),
+      l("rin.squad-map", "Squad Map", "rin", "Where everyone in your squad is, on a small map.",
+        {permissions: ["squad", "position"], awaiting: true}),
+      l("jo.dps-log", "Fight Log", "jo", "Uploads your fights to a log site when they end.",
+        {trust: "verified", network: ["dps.report"], installed: "1.0.0", update: "1.1.0", version: "1.1.0"}),
+      l("mo.tag-colors", "Tag Colours", "mo", "Commander tags in colours you can tell apart.",
+        {trust: "verified", permissions: ["textures"], installed: "2.0.1", version: "2.0.1"}),
+      l("ash.timer", "Raid Timer", "ash", "Countdowns for raid and strike mechanics.", {handInstalled: true}),
+    ]};
   }
 
   // Move the saved position and open state of Fight, Timeline and Healing from their plugin ids
@@ -324,6 +396,32 @@
       if (enabled && env.hosted) env.renderAll();
       else this.refresh();
     },
+    // The Store tab (ui.js shows `this.store`, the host's last `axidps.store` payload).
+    store: null,
+    storeOpen() { if (this.env) this.env.toHost(JSON.stringify({store: "open"})); },
+    storeRefresh() { if (this.env) this.env.toHost(JSON.stringify({store: "refresh"})); },
+    // A Store card's button. Replace and Uninstall ask first (env.confirm(text, ok label, onYes));
+    // the host refuses anything else that would touch a folder the player added.
+    storeAct(id, act) {
+      const env = this.env;
+      const m = storeModel(this.store, "").cards.find(c => c.id === id);
+      if (!env || !m || m.busy) return;
+      const go = what => env.toHost(JSON.stringify({store: {[what]: id}}));
+      if (act === "install" && m.action === "install") go("install");
+      else if (act === "update" && m.action === "update") go("update");
+      else if (act === "replace" && m.action === "replace") {
+        env.confirm(`Replace the plugin you added yourself with the store version of ${m.title}? ` +
+          "Your copy is kept in the store's replaced folder.", "Replace", () => go("replace"));
+      } else if (act === "uninstall" && (m.action === "installed" || m.action === "update")) {
+        env.confirm(`Uninstall ${m.title}? Its windows and settings go with it.`, "Uninstall", () => {
+          go("uninstall");
+          const saved = env.saved();
+          if (saved.plugins && own(saved.plugins, id)) delete saved.plugins[id];
+          for (const k of Object.keys(saved.cfg || {})) if (k.startsWith(id + "/")) delete saved.cfg[k];
+          env.saveNow();
+        });
+      }
+    },
     // The hub card's Reload (developer mode): rescan, then reload the plugin's frames.
     reload(id) {
       if (!this.env || !this.list.some(x => x && x.id === id)) return;
@@ -374,9 +472,19 @@
         at: this.at(ent),
         mount: win => this.mount(ent, win),
       });
-      if (w.plugin.bundled !== true) {
+      const label = trustLabel(w.plugin);
+      if (label) {
         const b = ent.w.el.querySelector(".bar b");
-        if (b) b.dataset.tip = `${String(w.plugin.name || w.plugin.id).slice(0, MAX_TEXT)} · Unverified`;
+        if (b) b.dataset.tip = `${String(w.plugin.name || w.plugin.id).slice(0, MAX_TEXT)} · ${label}`;
+        // A developer pass: say so on the window itself, not only in the hub.
+        const bar = ent.w.bar || ent.w.el.querySelector(".bar");
+        if (label === "DEV" && bar && typeof bar.querySelector === "function" && !bar.querySelector(".badge.dev")) {
+          const d = document.createElement("span");
+          d.className = "badge dev";
+          d.textContent = "DEV";
+          d.dataset.tip = "loaded with a developer pass";
+          if (b && b.nextSibling) bar.insertBefore(d, b.nextSibling); else bar.appendChild(d);
+        }
       }
       this.entries.push(ent);
       this.debug();
@@ -620,7 +728,7 @@
     },
   };
 
-  const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, migrateSaved, clampSize, accept,
+  const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, trustLabel, storeModel, sampleStore, migrateSaved, clampSize, accept,
     logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, MAX_OPEN};
   Object.assign(host, pure);
   if (typeof window !== "undefined") window.pluginHost = host;
