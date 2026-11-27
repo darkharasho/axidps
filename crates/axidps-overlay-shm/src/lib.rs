@@ -296,7 +296,12 @@ pub struct GameUi {
     /// The compass (minimap) size in pixels, as the game reports it.
     pub compass_w: u16,
     pub compass_h: u16,
+    /// Blish HUD runs: its corner icons sit in a row right after the game's menu icons.
+    pub blish: bool,
 }
+
+/// Bit of the first GameUi word (above `uiState`) set while Blish HUD runs.
+const BLISH_BIT: u32 = 1 << 16;
 
 pub const UI_MAP_OPEN: u32 = 1;
 pub const UI_COMPASS_TOP_RIGHT: u32 = 2;
@@ -308,6 +313,7 @@ impl GameUi {
         GameUi {
             known: f & 1 << 31 != 0,
             ui_state: f & 0xffff,
+            blish: f & BLISH_BIT != 0,
             uisz: u32_at(b, GAMEUI_OFF + 4).min(3) as u8,
             compass_w: c as u16,
             compass_h: (c >> 16) as u16,
@@ -315,7 +321,9 @@ impl GameUi {
     }
     pub fn encode(&self) -> [u32; 3] {
         [
-            if self.known { 1 << 31 } else { 0 } | (self.ui_state & 0xffff),
+            if self.known { 1 << 31 } else { 0 }
+                | if self.blish { BLISH_BIT } else { 0 }
+                | (self.ui_state & 0xffff),
             u32::from(self.uisz.min(3)),
             u32::from(self.compass_w) | u32::from(self.compass_h) << 16,
         ]
@@ -393,6 +401,10 @@ pub fn zones(ui: &GameUi, screen: (i32, i32)) -> Vec<Zone> {
         px(290.0),
     );
     add("menu", "Menu bar", 0, 0, px(320.0), px(42.0));
+    // Blish HUD's corner icons: a row of 32 px icons after the menu, as many as its modules add.
+    if ui.blish {
+        add("blish", "Blish HUD icons", px(320.0), 0, px(32.0 * 12.0), px(42.0));
+    }
     // Wide enough for the squad panel, which is wider than the party one.
     add("party", "Party / squad", 0, px(44.0), px(400.0), px(330.0));
     let target = (px(560.0), px(120.0));
@@ -538,6 +550,7 @@ mod tests {
             uisz: 2,
             compass_w: 362,
             compass_h: 330,
+            blish: true,
         };
         for (i, v) in ui.encode().iter().enumerate() {
             shm[GAMEUI_OFF + 4 * i..GAMEUI_OFF + 4 * i + 4].copy_from_slice(&v.to_le_bytes());
@@ -555,6 +568,7 @@ mod tests {
             uisz: 1,
             compass_w: 360,
             compass_h: 340,
+            blish: false,
         };
         let z = zones(&ui, s);
         let get = |z: &[Zone], id: &str| z.iter().find(|z| z.id == id).unwrap().rect;
@@ -591,6 +605,7 @@ mod tests {
             uisz: 1,
             compass_w: 0,
             compass_h: 0,
+            blish: false,
         };
         let z = zones(&ui, (3440, 1440));
         let get = |id: &str| z.iter().find(|z| z.id == id).unwrap().rect;
@@ -600,6 +615,12 @@ mod tests {
         assert_eq!(get("skills"), Rect::new(1320, 1440 - 175, 800, 175));
         assert_eq!(get("party"), Rect::new(0, 44, 400, 330));
         assert_eq!(get("chat"), Rect::new(0, 1440 - 290, 550, 290));
+        assert!(z.iter().all(|z| z.id != "blish"));
+        let z = zones(&GameUi { blish: true, ..ui }, (3440, 1440));
+        assert_eq!(
+            z.iter().find(|z| z.id == "blish").unwrap().rect,
+            Rect::new(320, 0, 384, 42)
+        );
     }
 
     #[test]
