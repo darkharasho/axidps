@@ -2159,10 +2159,11 @@ const PROF_NAMES = ["", "Guardian", "Warrior", "Engineer", "Ranger", "Thief", "E
 const FILTER_MAX = 9;
 const filterLabel = f => f.startsWith("prof:") ? (PROF_NAMES[Number(f.slice(5))] || f) : f.slice(5);
 const SEG_TEXT = {
-  rows: [["players", "players"], ["total", "total"], ["boons", "boons"]],
-  who: [["squad", "squad"], ["group", "my subgroup"], ["me", "me"]],
-  span: [["fight", "fight"], ["last:10", "10s"], ["last:30", "30s"], ["last:60", "60s"], ["session", "session"]],
-  look: [["table", "table"], ["bars", "bars"], ["number", "number"], ["chart", "chart"]],
+  rows: [["players", "A player"], ["total", "One total"], ["boons", "A boon"]],
+  who: [["squad", "Squad"], ["group", "My subgroup"], ["me", "Just me"]],
+  span: [["fight", "This fight"], ["last:10", "Last 10s"], ["last:30", "Last 30s"], ["last:60", "Last 60s"], ["session", "Whole session"]],
+  look: [["table", "Table"], ["bars", "Bars"], ["number", "One number"], ["chart", "Chart"]],
+  dir: [["desc", "Highest first"], ["asc", "Lowest first"]],
 };
 const AS_TEXT = {total: "total", per_s: "/s", share: "%"};
 // The as toggle's next value: total, /s, % (no % for a number: it would always read 100%).
@@ -2181,46 +2182,46 @@ function filterChoices(spec) {
 const seg = (f, cur, only) => `<div class="seg" data-f="${f}">` + SEG_TEXT[f].filter(([v]) => !only || only.includes(v)).map(([v, t]) =>
   `<button data-cact="set" data-v="${v}"${v === cur ? ' class="on"' : ""}>${t}</button>`).join("") + `</div>`;
 const crow = (label, body) => `<div class="crow"><span>${label}</span><div>${body}</div></div>`;
+const HEAL_KEY = k => /^heal/.test(k) || k === "hps" || k === "barrier";
 
 // Column or subgroup choices a built-in table kept from before custom windows (they can no longer
 // be made, only reset).
 const builtinChanged = t => { const c = t.cfg; return Array.isArray(c.cols) || !!c.groupOnly; };
-// A custom window's card: every part of its spec.
-function customCard(spec, full, filterOpen, boonOpen, note) {
+// A custom window's settings, in two columns: the left says what it counts, the right what it shows.
+function customSettings(spec, full, filterOpen, boonOpen, note, addOpen) {
   const C = axidpsCustom, n = spec.stats.length, chart = spec.look === "chart", boons = spec.rows === "boons";
-  const chips = spec.stats.map((s, i) => {
+  const rows = spec.stats.map((s, i) => {
     const as = STATS[s.key].rate || STATS[s.key].noAs || chart ? "" :
       `<button data-cact="as" class="as" data-tip="total, per second or % of everyone shown">${AS_TEXT[s.as]}</button>`;
-    return `<span class="chip on" data-k="${s.key}" data-i="${i}" data-tip="${esc(statTip(s))}">` +
-      `<button data-cact="left"${i ? "" : " disabled"}>&lsaquo;</button>${esc(STATS[s.key].label)}` +
-      `<button data-cact="right"${i < n - 1 ? "" : " disabled"}>&rsaquo;</button>${as}` +
-      `<button data-cact="rm"${n > 1 ? "" : " disabled"}>&times;</button></span>`;
+    return `<div class="crw" data-k="${esc(s.key)}" data-i="${i}" data-tip="${esc(statTip(s))}">` +
+      `<button class="grip" data-cact="grip" aria-label="Move" data-tip="drag to reorder">&#8942;&#8942;</button>` +
+      `<span class="nm">${esc(STATS[s.key].label)}</span>${as}` +
+      `<button data-cact="rm" aria-label="Remove"${n > 1 ? "" : " disabled"}>&times;</button></div>`;
   }).join("");
-  const addChip = k => `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"` +
-    `${n >= C.MAX_STATS ? " disabled" : ""}>+ ${esc(STATS[k].label.replace(/ \(.*\)$/, ""))}</button></span>`;
+  const addItem = (k, text) => `<div class="pick" data-k="${esc(k)}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"` +
+    `${n >= C.MAX_STATS ? " disabled" : ""}>+ ${esc(text)}</button></div>`;
   const free = k => !spec.stats.some(s => s.key === k);
-  const group = (name, body) => `<span class="grp">${name}</span>${body ? `<div class="chips">${body}</div>` : ""}`;
-  let picker;
-  if (boons) {
-    // A boons window picks measures only: its rows are the boons.
-    picker = Object.keys(STATS).filter(k => STATS[k].kind === "boons" && free(k)).map(addChip).join("");
-  } else {
-    picker = group("Fight", Object.keys(STATS).filter(k => !STATS[k].kind && free(k)).map(addChip).join(""));
-    // Boon stats are not for charts (summing uptime over players over time means nothing).
-    if (!chart) {
-      const names = C.SQUAD_BOONS.map(b => {
-        const k = `boon:${b}:up`;
-        return `<span class="chip${boonOpen === b ? " on" : ""}"><button data-cact="boonopen" data-v="${b}">` +
-          `${esc(STATS[k].label)}${boonOpen === b ? " &times;" : ""}</button></span>`;
-      }).join("");
-      const measures = boonOpen ? ["up", "self", "group", "squad"].map(m => `boon:${boonOpen}:${m}`).filter(free).map(k =>
-        `<span class="chip" data-k="${k}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"` +
-        `${n >= C.MAX_STATS ? " disabled" : ""}>+ ${esc(({up: "Uptime", self: "Self", group: "Group", squad: "Squad"})[STATS[k].measure])}` +
-        `</button></span>`).join("") : "";
-      picker += group("Boons", names) + (boonOpen ? group(`${esc(STATS[`boon:${boonOpen}:up`].label)}: pick a measure`, measures || "") : "");
+  const group = (name, body) => `<span class="grp">${name}</span>` + (body ? `<div class="plist">${body}</div>` : "");
+  let picker = "";
+  if (addOpen) {
+    if (boons) {
+      // A boons window picks measures only: its rows are the boons.
+      picker = Object.keys(STATS).filter(k => STATS[k].kind === "boons" && free(k)).map(k => addItem(k, STATS[k].label.replace(/ \(.*\)$/, ""))).join("");
+    } else {
+      picker = group("Fight", Object.keys(STATS).filter(k => !STATS[k].kind && free(k)).map(k => addItem(k, STATS[k].label.replace(/ \(.*\)$/, ""))).join(""));
+      // Boon stats are not for charts (summing uptime over players over time means nothing).
+      if (!chart) {
+        const names = C.SQUAD_BOONS.map(b => {
+          const k = `boon:${b}:up`;
+          return `<div class="pick${boonOpen === b ? " on" : ""}"><button data-cact="boonopen" data-v="${b}">` +
+            `${esc(STATS[k].label)}${boonOpen === b ? " &times;" : ""}</button></div>`;
+        }).join("");
+        const measures = boonOpen ? ["up", "self", "group", "squad"].map(m => `boon:${boonOpen}:${m}`).filter(free).map(k =>
+          addItem(k, ({up: "Uptime", self: "Self", group: "Group", squad: "Squad"})[STATS[k].measure])).join("") : "";
+        picker += group("Boons", names) + (boonOpen ? group(`${esc(STATS[`boon:${boonOpen}:up`].label)}: pick a measure`, measures || "") : "");
+      }
     }
   }
-  const chipsHtml = `<div class="chips">${chips}</div>` + picker;
   const fl = spec.who.filters;
   const filters = (filterOpen ? filterChoices(spec) : fl).map(f => {
     const on = fl.includes(f);
@@ -2228,23 +2229,28 @@ function customCard(spec, full, filterOpen, boonOpen, note) {
       `${!on && fl.length >= FILTER_MAX ? " disabled" : ""}>${on ? "" : "+ "}${esc(filterLabel(f))}` +
       `${on ? " &times;" : ""}</button></span>`;
   }).join("") + `<span class="chip"><button data-cact="filters"${filterOpen ? ' class="on"' : ""}>` +
-    `${filterOpen ? "done" : "+ spec&hellip;"}</button></span>`;
-  const sortName = spec.sort.key === "name" ? "Name" : spec.sort.key ? STATS[spec.sort.key].label : "Default";
-  return `<div class="tbl cw" data-c="${spec.id}"><div class="tbl-h"><b>${esc(spec.name)}</b><span class="grow"></span>` +
-    `<button data-cact="copy"${full ? " disabled" : ""}>Copy</button><button data-cact="del">Remove</button></div>` +
-    crow("Name", nameField(spec)) +
-    crow("Rows", seg("rows", spec.rows)) +
-    crow("Who", seg("who", spec.who.base) + `<div class="chips">${filters}</div>`) +
-    crow("Span", seg("span", spec.span)) +
+    `${filterOpen ? "Done" : "Only these classes"}</button></span>`;
+  const sortKeys = ["name", ...new Set(spec.stats.map(s => s.key))];
+  const sortBtns = sortKeys.map(k => `<button data-cact="sortkey" data-v="${esc(k)}"${spec.sort.key === k ? ' class="on"' : ""}>` +
+    `${k === "name" ? "Name" : esc(STATS[k].label)}</button>`).join("");
+  const dir = `<div class="seg" data-f="dir">` + SEG_TEXT.dir.map(([v, t]) =>
+    `<button data-cact="sortdir" data-v="${v}"${(v === "asc") === !!spec.sort.asc ? ' class="on"' : ""}>${t}</button>`).join("") + `</div>`;
+  const heal = spec.stats.some(s => HEAL_KEY(s.key));
+  const left = crow("Name", nameField(spec)) +
+    crow("Each row is", seg("rows", spec.rows)) +
+    crow("Who to count", seg("who", spec.who.base) + `<div class="chips">${filters}</div>`) +
+    crow("Count over", seg("span", spec.span)) +
     // A boons window is a table.
-    crow("Look", seg("look", spec.look, boons ? ["table"] : null)) +
-    crow("Stats", chipsHtml) +
+    crow("Show it as", seg("look", spec.look, boons ? ["table"] : null));
+  const right = crow("Columns", `<div class="clist">${rows}</div>` +
+      `<button class="addcol${addOpen ? " on" : ""}" data-cact="addopen">${addOpen ? "Done" : "+ Add a column"}</button>` + picker +
+      (heal ? `<p class="note">The game reports healing only for you and squadmates who share it, so other rows may read low.</p>` : "")) +
     (note ? `<div class="cnote">${esc(note)}</div>` : "") +
-    crow("Sort", `<button data-cact="sortkey" data-tip="sort by the name or one of its stats">${esc(sortName)}</button>` +
-      `<button data-cact="sortdir" data-tip="${spec.sort.asc ? "lowest" : "highest"} first">${spec.sort.asc ? "&uarr;" : "&darr;"}</button>` +
-      `<span class="lbl">Rows</span><div class="step"><button data-cact="limit-">&minus;</button>` +
-      `<b>${spec.limit || "auto"}</b><button data-cact="limit+">+</button></div>`) +
-    `</div>`;
+    crow("Sort by", `<div class="chips sortk">${sortBtns}</div>` + dir) +
+    crow("How many rows", `<div class="step"><button data-cact="limit-" aria-label="Fewer">&minus;</button>` +
+      `<b>${spec.limit || "Auto"}</b><button data-cact="limit+" aria-label="More">+</button></div>`);
+  return `<div class="tbl cw" data-c="${spec.id}"><div class="tbl-h"><b>${esc(spec.name)}</b></div>` +
+    `<div class="cols2"><div class="cl">${left}</div><div class="cr">${right}</div></div></div>`;
 }
 // ---- the Windows tab: every window in a list, the selected one's settings beside it -------------
 
@@ -2318,8 +2324,9 @@ function renderWindows(w) {
     const show = toggleHtml('data-tog="show"', "Show on screen", "", open, !open && why ? why : "");
     let body;
     if (x.def.custom) {
-      body = show + customCard(x.def.spec, full, w.filterOpen === x.id,
-        w.boonOpen && w.boonOpen.id === x.id ? w.boonOpen.boon : 0, w.cardNote && w.cardNote.id === x.id ? w.cardNote.text : "");
+      body = show + customSettings(x.def.spec, full, w.filterOpen === x.id,
+        w.boonOpen && w.boonOpen.id === x.id ? w.boonOpen.boon : 0, w.cardNote && w.cardNote.id === x.id ? w.cardNote.text : "",
+        w.addCol === x.id);
     } else if (x.def.plugin) {
       const sec = p ? pluginHost.panelModel(p, saved).filter(sc => sc.fullId === x.key) : [];
       body = show + (sec.length ? plugPanel(sec) : "");
@@ -2364,6 +2371,7 @@ function builderAct(hw, b) {
     case "del":
       if (hw.filterOpen === id) hw.filterOpen = "";
       if (hw.boonOpen && hw.boonOpen.id === id) hw.boonOpen = null;
+      if (hw.addCol === id) hw.addCol = "";
       return removeCustom(id);
     case "set": {
       const f = b.closest("[data-f]").dataset.f;
@@ -2377,6 +2385,14 @@ function builderAct(hw, b) {
       else if (next && lost && f === "rows" && spec.rows === "boons") note("Those measures are for boons windows only, so they were dropped.");
       else if (next && lost && f === "look" && v === "chart") note("Charts do not show boon stats (uptime summed over players means nothing), so they were dropped.");
       return;
+    }
+    case "addopen":
+      hw.addCol = hw.addCol === id ? "" : id;
+      return hw.def.render(hw);
+    case "move": {
+      const from = Number(b.dataset.from), to = Number(b.dataset.to);
+      if (!(from >= 0 && to >= 0) || from === to) return;
+      return updateSpec(id, {stats: axidpsHub.moveItem(stats, from, to)});
     }
     case "boonopen":
       hw.boonOpen = hw.boonOpen && hw.boonOpen.id === id && hw.boonOpen.boon === Number(v) ? null : {id, boon: Number(v)};
@@ -2398,22 +2414,16 @@ function builderAct(hw, b) {
       if (stats.length < 2 || i < 0) return;
       stats.splice(i, 1);
       return updateSpec(id, {stats});
-    case "left": case "right": {
-      const j = act === "left" ? i - 1 : i + 1;
-      if (i < 0 || j < 0 || j >= stats.length) return;
-      [stats[i], stats[j]] = [stats[j], stats[i]];
-      return updateSpec(id, {stats});
-    }
     case "as":
       if (i < 0) return;
       stats[i].as = nextAs(stats[i].as, spec.look);
       return updateSpec(id, {stats});
     case "sortkey": {
-      const keys = ["name", ...new Set(spec.stats.map(s => s.key))];
-      const key = keys[(keys.indexOf(spec.sort.key) + 1) % keys.length];
+      const key = v === "name" || spec.stats.some(s => s.key === v) ? v : spec.sort.key;
+      if (key === spec.sort.key) return;
       return updateSpec(id, {sort: {key, asc: key === "name"}});
     }
-    case "sortdir": return updateSpec(id, {sort: {key: spec.sort.key, asc: !spec.sort.asc}});
+    case "sortdir": return updateSpec(id, {sort: {key: spec.sort.key, asc: v === "asc"}});
     // From auto, the steps start at Settings' Rows shown; below 1 is auto again.
     case "limit+": return updateSpec(id, {limit: Math.min(MAX_ROWS, (spec.limit || maxRows()) + 1)});
     case "limit-": {
@@ -2580,6 +2590,41 @@ const hub = defineWindow({
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
     q('[data-act="addtable"]').onclick = () => { w.addMenu = !w.addMenu; w.def.render(w); };
+    // Reordering a custom window's columns: press a grip, move over another row, let go.
+    q('section[data-tab="windows"]').addEventListener("pointerdown", e => {
+      const grip = e.target.closest && e.target.closest(".grip");
+      const row = grip && grip.closest(".crw");
+      if (!row || e.button) return;
+      const list = row.parentNode, from = Number(row.dataset.i);
+      let to = from;
+      row.classList.add("drag"); list.classList.add("dragging");
+      const rowAt = ev => {
+        const el = document.elementFromPoint(ev.clientX, ev.clientY);
+        const r = el && el.closest && el.closest(".crw");
+        return r && r.parentNode === list ? r : null;
+      };
+      const move = ev => {
+        const r = rowAt(ev);
+        if (!r) return;
+        to = Number(r.dataset.i);
+        for (const c of list.children) c.classList.toggle("over", c === r && to !== from);
+      };
+      const end = ev => {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", end);
+        document.removeEventListener("pointercancel", end);
+        row.classList.remove("drag"); list.classList.remove("dragging");
+        for (const c of list.children) c.classList.remove("over");
+        if (ev.type === "pointerup" && to !== from) {
+          builderAct(w, {dataset: {cact: "move", from: String(from), to: String(to)}, closest: sel => grip.closest(sel)});
+        }
+      };
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", end);
+      document.addEventListener("pointercancel", end);
+      grip.focus();
+      e.preventDefault();
+    });
     q('section[data-tab="windows"]').onclick = e => {
       if (plugSettingClick(e)) return;
       const t = e.target;
