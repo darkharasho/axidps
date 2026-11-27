@@ -564,6 +564,18 @@ pub enum Event {
     /// sent over the heal relay: `sender` is the peer's agent id. Its relayed heals count over
     /// this combat, as the healing addon counts its peers'. Produced only by core.
     RelayCombat { sender: u32, in_combat: bool },
+    /// Kind 63. A condition damage tick relayed by a peer player: the game's own amount for a
+    /// tick the peer (or its pet or minion, `src`) dealt, as its `BuffDamage` (`value` = health
+    /// plus barrier damage, > 0; `barrier` = the barrier part). `sender` is the peer's agent id;
+    /// `dst` 0 = the target could not be matched to a local agent. Produced only by core.
+    RelayBuffDamage {
+        sender: u32,
+        src: u32,
+        dst: u32,
+        buff: u32,
+        value: i32,
+        barrier: u32,
+    },
     /// Kind 47. A player's guild changed: the 16-byte guild GUID as the game keeps it
     /// (client byte order; all zero = none). Sent on change, so a first read of zero sends
     /// nothing. Core writes it as arcdps's GUILD rows (sc 29) for the squad at log start.
@@ -882,6 +894,7 @@ impl Event {
             Event::GroupKey { .. } => 60,
             Event::RelayHeal { .. } => 61,
             Event::RelayCombat { .. } => 62,
+            Event::RelayBuffDamage { .. } => 63,
         }
     }
 
@@ -1367,6 +1380,21 @@ impl Event {
             Event::RelayCombat { sender, in_combat } => {
                 p.u32(sender).u8(in_combat as u8);
             }
+            Event::RelayBuffDamage {
+                sender,
+                src,
+                dst,
+                buff,
+                value,
+                barrier,
+            } => {
+                p.u32(sender)
+                    .u32(src)
+                    .u32(dst)
+                    .u32(buff)
+                    .i32(value)
+                    .u32(barrier);
+            }
         }
         (self.kind(), p.buf)
     }
@@ -1696,6 +1724,14 @@ impl Event {
                     1 => true,
                     _ => return None,
                 },
+            },
+            63 => Event::RelayBuffDamage {
+                sender: t.u32()?,
+                src: t.u32()?,
+                dst: t.u32()?,
+                buff: t.u32()?,
+                value: t.i32()?,
+                barrier: t.u32()?,
             },
             33 => Event::Glider {
                 id: t.u32()?,
@@ -2320,6 +2356,22 @@ mod tests {
                 sender: 7,
                 in_combat: false,
             },
+            Event::RelayBuffDamage {
+                sender: u32::MAX,
+                src: u32::MAX,
+                dst: u32::MAX,
+                buff: u32::MAX,
+                value: i32::MIN,
+                barrier: u32::MAX,
+            },
+            Event::RelayBuffDamage {
+                sender: 7,
+                src: 8,
+                dst: 0,
+                buff: 736,
+                value: 212,
+                barrier: 30,
+            },
         ]
     }
 
@@ -2364,7 +2416,7 @@ mod tests {
         }
         assert_eq!(
             kinds.into_iter().collect::<Vec<_>>(),
-            (1..=62).collect::<Vec<u16>>()
+            (1..=63).collect::<Vec<u16>>()
         );
     }
 

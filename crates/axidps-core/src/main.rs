@@ -14,8 +14,8 @@ use axidps_core::live::{self, LiveStats, LiveWriter};
 use axidps_core::output::{resolve_log_dir, write_fight};
 use axidps_core::processor::{FightOutcome, Processor};
 use axidps_core::relay::client::{Cmd, Relay};
-use axidps_core::relay::{DEFAULT_RELAY_URL, link};
 use axidps_core::relay::wire::{WireCombat, room_id};
+use axidps_core::relay::{DEFAULT_RELAY_URL, link};
 use axidps_core::replay::{Player, Recorder, Step, apply};
 use axidps_core::rules::{Trigger, WvwRules};
 use axidps_protocol::v2::{Event, RingHost, ring_path};
@@ -121,7 +121,11 @@ fn condi_line(r: &CondiReport) -> String {
         Verdict::Incomplete => "self-check incomplete (formulas or stats missing)".to_string(),
         Verdict::Pass => "self-check pass".to_string(),
         Verdict::Fail { buff, gap_permille } => {
-            format!("self-check FAIL (buff {buff}, gap {}.{}%)", gap_permille / 10, gap_permille % 10)
+            format!(
+                "self-check FAIL (buff {buff}, gap {}.{}%)",
+                gap_permille / 10,
+                gap_permille % 10
+            )
         }
     };
     let sums: Vec<String> = r
@@ -136,9 +140,21 @@ fn condi_line(r: &CondiReport) -> String {
     // The gear model's calibration: POV attributes rebuilt from gear / the game's own.
     let stats = match r.check.pov_stats {
         Some((m, e)) => {
-            let names = [(1, "power"), (2, "precision"), (3, "toughness"), (4, "vitality"), (5, "ferocity"), (6, "healing"), (7, "condi"), (8, "concentration"), (9, "expertise")];
-            let parts: Vec<String> =
-                names.iter().map(|&(i, n)| format!("{n} {}/{}", m[i], e[i])).collect();
+            let names = [
+                (1, "power"),
+                (2, "precision"),
+                (3, "toughness"),
+                (4, "vitality"),
+                (5, "ferocity"),
+                (6, "healing"),
+                (7, "condi"),
+                (8, "concentration"),
+                (9, "expertise"),
+            ];
+            let parts: Vec<String> = names
+                .iter()
+                .map(|&(i, n)| format!("{n} {}/{}", m[i], e[i]))
+                .collect();
             format!("; pov stats from gear/exact: {}", parts.join(", "))
         }
         None => "; pov stats from gear: none".to_string(),
@@ -202,6 +218,8 @@ struct RelayLink {
     room: Option<String>,
     account: Option<String>,
     active: bool,
+    /// Recent agent positions: enemy players in relayed condition ticks are named by place.
+    positions: link::Positions,
 }
 
 impl RelayLink {
@@ -215,6 +233,7 @@ impl RelayLink {
             room: None,
             account: None,
             active: false,
+            positions: link::Positions::default(),
         }
     }
 
@@ -391,6 +410,13 @@ impl App {
             link.last_time = link.last_time.max(*t);
         }
         match s {
+            Step::Push(_, Event::Map { .. }) | Step::Prime(_, Event::Map { .. }) => {
+                link.positions.clear()
+            }
+            Step::Push(t, ev) | Step::Prime(t, ev) => link.positions.note(*t, ev),
+            _ => {}
+        }
+        match s {
             Step::Push(_, Event::GroupKey { key }) | Step::Prime(_, Event::GroupKey { key }) => {
                 link.set_room(room_id(*key));
             }
@@ -405,6 +431,11 @@ impl App {
             Step::Push(_, ev @ Event::Heal { .. }) if link.enabled => {
                 if let Some(h) = link::outgoing(reg, now_unix_ms(), ev) {
                     link.relay.send(Cmd::Heal(h));
+                }
+            }
+            Step::Push(t, ev @ Event::BuffDamage { .. }) if link.enabled => {
+                if let Some(c) = link::outgoing_condi(reg, &link.positions, *t, now_unix_ms(), ev) {
+                    link.relay.send(Cmd::Condi(c));
                 }
             }
             _ => {}
@@ -422,7 +453,8 @@ impl App {
         }
     }
 
-    /// Push the heals peers relayed since the last call, at the local times for their clocks.
+    /// Push the heals and condition ticks peers relayed since the last call, at the local times
+    /// for their clocks.
     fn pump_relay(&mut self) {
         let Some(link) = self.relay.as_ref() else {
             return;
@@ -449,6 +481,10 @@ impl App {
                         .iter()
                         .filter_map(|h| link::incoming(reg, &b.from, h, clock, floor)),
                 )
+                .chain(b.condi.iter().filter_map(|c| {
+                    let pos = &self.relay.as_ref()?.positions;
+                    link::incoming_condi(reg, pos, &b.from, c, clock, floor)
+                }))
                 .collect();
             evs.sort_by_key(|(t, _)| *t);
             for (t, ev) in evs {
@@ -480,7 +516,10 @@ impl App {
                     l.stats.set_counting(live::Counting::from_ui_json(&v));
                     // The overlay's details window: whose breakdown the feed carries.
                     l.stats.set_detail(
-                        v.get("detail").and_then(|d| d.as_str()).filter(|a| !a.is_empty()).map(str::to_owned),
+                        v.get("detail")
+                            .and_then(|d| d.as_str())
+                            .filter(|a| !a.is_empty())
+                            .map(str::to_owned),
                     );
                     if let Some(link) = self.relay.as_mut() {
                         link.set_enabled(relay_enabled(&v));
@@ -945,7 +984,10 @@ mod ui_json_tests {
         let bad = dir.join("bad.json");
         std::fs::write(&bad, "{ not json").unwrap();
         assert!(read_ui_json(&bad).is_none());
-        assert_eq!(read_ui_json(&dir.join("missing.json")), Some(serde_json::Value::Null));
+        assert_eq!(
+            read_ui_json(&dir.join("missing.json")),
+            Some(serde_json::Value::Null)
+        );
         let good = dir.join("good.json");
         std::fs::write(&good, r#"{"core":{"relay":false}}"#).unwrap();
         assert!(!relay_enabled(&read_ui_json(&good).unwrap()));

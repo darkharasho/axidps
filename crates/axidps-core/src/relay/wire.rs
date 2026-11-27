@@ -7,7 +7,12 @@
 //! exit combat, which peers need to count its heals the way the healing addon does; the server
 //! relays any message with `heals`, and older clients ignore `combat`).
 //! Flags: bit0 buff, bit1 downed. Endpoints: player `"acc"`, minion `["owner", species]`,
-//! other `[null, species]`.
+//! other `[null, species]`, and (condition targets only) an unnamed enemy player
+//! `[prof, elite, team, x, y, z]`: its position in whole game units when the tick landed.
+//!
+//! A batch may also carry `"condi":[[t_unix_ms, src, dst, buff, damage, barrier], ..]`: the
+//! sender's own condition ticks (its or its minions'), the game's exact amounts (`damage`
+//! includes `barrier`). Older clients ignore it.
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -32,8 +37,20 @@ pub fn room_id(key: [u8; 16]) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Endpoint {
     Player(String),
-    Minion { owner: String, species: u32 },
-    Other { species: u32 },
+    Minion {
+        owner: String,
+        species: u32,
+    },
+    Other {
+        species: u32,
+    },
+    /// An enemy player, who has no name: matched by build, team and where it was.
+    Foe {
+        prof: u32,
+        elite: u32,
+        team: u32,
+        xyz: [i32; 3],
+    },
 }
 
 impl Endpoint {
@@ -42,6 +59,12 @@ impl Endpoint {
             Endpoint::Player(a) => json!(a),
             Endpoint::Minion { owner, species } => json!([owner, species]),
             Endpoint::Other { species } => json!([null, species]),
+            Endpoint::Foe {
+                prof,
+                elite,
+                team,
+                xyz,
+            } => json!([prof, elite, team, xyz[0], xyz[1], xyz[2]]),
         }
     }
 
@@ -58,6 +81,16 @@ impl Endpoint {
                     }),
                     _ => None,
                 }
+            }
+            Value::Array(p) if p.len() == 6 => {
+                let n = |i: usize| u32::try_from(p[i].as_u64()?).ok();
+                let c = |i: usize| i32::try_from(p[i].as_i64()?).ok();
+                Some(Endpoint::Foe {
+                    prof: n(0)?,
+                    elite: n(1)?,
+                    team: n(2)?,
+                    xyz: [c(3)?, c(4)?, c(5)?],
+                })
             }
             _ => None,
         }
@@ -77,7 +110,7 @@ pub struct WireHeal {
 }
 
 impl WireHeal {
-    fn to_json(&self) -> Value {
+    pub(crate) fn to_json(&self) -> Value {
         let flags = u32::from(self.buff) | (u32::from(self.downed) << 1);
         json!([
             self.t_unix_ms,
@@ -110,6 +143,47 @@ impl WireHeal {
     }
 }
 
+/// A condition tick the sender (or its minion, `src`) dealt to `dst`: `damage` is health plus
+/// barrier damage, `barrier` the barrier part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireCondi {
+    pub t_unix_ms: u64,
+    pub src: Endpoint,
+    pub dst: Endpoint,
+    pub buff: u32,
+    pub damage: u32,
+    pub barrier: u32,
+}
+
+impl WireCondi {
+    pub(crate) fn to_json(&self) -> Value {
+        json!([
+            self.t_unix_ms,
+            self.src.to_json(),
+            self.dst.to_json(),
+            self.buff,
+            self.damage,
+            self.barrier
+        ])
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        let a = v.as_array()?;
+        if a.len() != 6 {
+            return None;
+        }
+        let n = |i: usize| u32::try_from(a[i].as_u64()?).ok();
+        Some(Self {
+            t_unix_ms: a[0].as_u64()?,
+            src: Endpoint::from_json(&a[1])?,
+            dst: Endpoint::from_json(&a[2])?,
+            buff: n(3)?,
+            damage: n(4)?,
+            barrier: n(5)?,
+        })
+    }
+}
+
 /// The sender entered (`in_combat`) or left combat at `t_unix_ms`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WireCombat {
@@ -138,11 +212,12 @@ impl WireCombat {
     }
 }
 
-/// One peer message: who sent it, its heals and its own combat changes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One peer message: who sent it, its heals, condition ticks and its own combat changes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Batch {
     pub from: String,
     pub heals: Vec<WireHeal>,
+    pub condi: Vec<WireCondi>,
     pub combat: Vec<WireCombat>,
 }
 
@@ -150,16 +225,19 @@ pub fn hello(account: &str, client: &str) -> String {
     json!({"v": VERSION, "hello": {"account": account, "client": client}}).to_string()
 }
 
-pub fn batch(from: &str, heals: &[WireHeal], combat: &[WireCombat]) -> String {
+pub fn batch(from: &str, heals: &[WireHeal], condi: &[WireCondi], combat: &[WireCombat]) -> String {
     let heals: Vec<Value> = heals.iter().map(WireHeal::to_json).collect();
     let mut v = json!({"v": VERSION, "from": from, "heals": heals});
+    if !condi.is_empty() {
+        v["condi"] = Value::Array(condi.iter().map(WireCondi::to_json).collect());
+    }
     if !combat.is_empty() {
         v["combat"] = Value::Array(combat.iter().map(|c| c.to_json()).collect());
     }
     v.to_string()
 }
 
-/// A batch's sender, heals and combat changes. `None` for another version, a hello, or
+/// A batch's sender, heals, condition ticks and combat changes. `None` for another version, a hello, or
 /// malformed text; malformed single entries are skipped.
 pub fn parse(text: &str) -> Option<Batch> {
     let v: Value = serde_json::from_str(text).ok()?;
@@ -173,6 +251,11 @@ pub fn parse(text: &str) -> Option<Batch> {
         .iter()
         .filter_map(WireHeal::from_json)
         .collect();
+    let condi = v
+        .get("condi")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(WireCondi::from_json).collect())
+        .unwrap_or_default();
     let combat = v
         .get("combat")
         .and_then(Value::as_array)
@@ -181,6 +264,7 @@ pub fn parse(text: &str) -> Option<Batch> {
     Some(Batch {
         from,
         heals,
+        condi,
         combat,
     })
 }
@@ -206,7 +290,8 @@ pub fn endpoint_of(reg: &Registry, id: u32) -> Option<Endpoint> {
     Some(Endpoint::Other { species: a.species })
 }
 
-/// The local agent id an endpoint names, if it resolves.
+/// The local agent id an endpoint names, if it resolves. A [`Endpoint::Foe`] needs positions:
+/// see `link::Positions::foe`.
 pub fn agent_of(reg: &Registry, e: &Endpoint) -> Option<u32> {
     let player = |acc: &str| {
         reg.live_agents()
@@ -223,6 +308,7 @@ pub fn agent_of(reg: &Registry, e: &Endpoint) -> Option<u32> {
                     .map_or(owner_id, |a| a.id),
             )
         }
+        Endpoint::Foe { .. } => None,
         Endpoint::Other { species } => {
             let mut it = reg.live_agents().filter(|a| a.species == *species);
             let first = it.next()?;
@@ -284,12 +370,13 @@ mod tests {
     #[test]
     fn batch_parse_round_trip() {
         let heals = sample();
-        let text = batch(":a.1", &heals, &[]);
+        let text = batch(":a.1", &heals, &[], &[]);
         assert_eq!(
             parse(&text),
             Some(Batch {
                 from: ":a.1".to_string(),
                 heals,
+                condi: vec![],
                 combat: vec![]
             })
         );
@@ -310,7 +397,7 @@ mod tests {
                 in_combat: false,
             },
         ];
-        let text = batch(":a.1", &[], &combat);
+        let text = batch(":a.1", &[], &[], &combat);
         assert!(text.contains(r#""heals":[]"#) && text.contains(r#""combat":[[10,1],[20,0]]"#));
         let b = parse(&text).unwrap();
         assert_eq!(b.combat, combat);
@@ -325,8 +412,47 @@ mod tests {
     }
 
     #[test]
+    fn condi_round_trip() {
+        let condi = vec![
+            WireCondi {
+                t_unix_ms: 5,
+                src: Endpoint::Player(":a.1".into()),
+                dst: Endpoint::Foe {
+                    prof: 2,
+                    elite: 18,
+                    team: 708,
+                    xyz: [-1200, 35, 7],
+                },
+                buff: 736,
+                damage: 212,
+                barrier: 30,
+            },
+            WireCondi {
+                t_unix_ms: 6,
+                src: Endpoint::Minion {
+                    owner: ":a.1".into(),
+                    species: 77,
+                },
+                dst: Endpoint::Other { species: 5 },
+                buff: 737,
+                damage: 90,
+                barrier: 0,
+            },
+        ];
+        let text = batch(":a.1", &[], &condi, &[]);
+        assert!(text.contains(r#"[2,18,708,-1200,35,7]"#), "{text}");
+        assert!(text.contains(r#""heals":[]"#));
+        assert_eq!(parse(&text).unwrap().condi, condi);
+        // No ticks: no field, as older clients send.
+        assert!(!batch(":a.1", &sample(), &[], &[]).contains("condi"));
+        let bad = json!({"v": 1, "from": ":a.1", "heals": [],
+            "condi": [[1, ":a.1", [1, 2, 3, 4, 5], 1, 2, 0], "x", [1, ":a.1", [null, 5], 1, 2, 0]]});
+        assert_eq!(parse(&bad.to_string()).unwrap().condi.len(), 1);
+    }
+
+    #[test]
     fn parse_rejects_other_versions() {
-        let text = batch(":a.1", &sample(), &[]).replace(r#""v":1"#, r#""v":2"#);
+        let text = batch(":a.1", &sample(), &[], &[]).replace(r#""v":1"#, r#""v":2"#);
         assert_eq!(parse(&text), None);
         assert_eq!(parse(&hello(":a.1", "axidps")), None);
         assert_eq!(parse("not json"), None);

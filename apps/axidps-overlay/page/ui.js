@@ -1285,7 +1285,7 @@ const TABS = [
 const CORE_OPTS = [
   ["wvw_gadgets", "WvW: count siege, gates and walls", "Damage to gadgets in WvW and Armistice Bastion shows in the meter.", true],
   ["wvw_npcs", "WvW: count NPCs", "Guards, lords, supervisors and other NPCs in WvW, and the golems in Armistice Bastion.", true],
-  ["relay", "Share healing with my squad", "Sends your heals to squad and party members running axidps and shows theirs, so everyone sees the group's healing that any axidps user sees.", true],
+  ["relay", "Share healing and condition damage with my squad", "Sends your heals and your exact condition damage to squad and party members running axidps and shows theirs, so everyone sees the group's healing and condition damage that any axidps user sees.", true],
 ];
 function coreOpt(k) {
   const o = CORE_OPTS.find(x => x[0] === k), c = saved.core || {};

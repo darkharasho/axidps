@@ -216,7 +216,8 @@ fn event_ids(ev: &Event) -> Vec<u32> {
         Event::Strike { src, dst, .. } => vec![src, dst],
         Event::BuffDamage { src, dst, .. }
         | Event::Heal { src, dst, .. }
-        | Event::RelayHeal { src, dst, .. } => {
+        | Event::RelayHeal { src, dst, .. }
+        | Event::RelayBuffDamage { src, dst, .. } => {
             [src, dst].into_iter().filter(|&i| i != 0).collect()
         }
         Event::CastStart { agent, target, .. } => {
@@ -665,7 +666,11 @@ impl Ctx<'_> {
     /// The max health arcdps writes: none for players (0), the value for everyone else. The DLL
     /// sends players' real max health for the condition model's health check.
     fn evtc_max(&self, id: u32, max: u32) -> u32 {
-        if self.reg.agent(id).is_some_and(|a| a.kind == AgentKind::Player) {
+        if self
+            .reg
+            .agent(id)
+            .is_some_and(|a| a.kind == AgentKind::Player)
+        {
             0
         } else {
             max
@@ -1121,6 +1126,19 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
     };
     let mut condi_written = 0u32;
     let master_of = |id: u32| reg.agent(id).and_then(|a| a.master);
+    // Peers who relayed their own exact condition ticks this fight: the model estimates none of
+    // theirs (their minions' included).
+    let relayed_condi: BTreeSet<u32> = f
+        .events
+        .iter()
+        .filter_map(|(_, e)| match *e {
+            Event::RelayBuffDamage { sender, .. } => Some(sender),
+            _ => None,
+        })
+        .collect();
+    let estimated = |src: u32| {
+        !relayed_condi.contains(&src) && !master_of(src).is_some_and(|m| relayed_condi.contains(&m))
+    };
     let mut skills = BTreeSet::new();
     for r in stacks.initial(f.start_ms) {
         ids.extend(
@@ -1179,9 +1197,13 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 Event::Strike {
                     dst, value, result, ..
                 } if result <= 7 && value > 0 => health.strike(dst, value),
-                Event::BuffDamage { src, dst, value, .. }
-                    if f.pov.is_some() && (Some(src) == f.pov || master_of(src) == f.pov) =>
-                {
+                Event::BuffDamage {
+                    src, dst, value, ..
+                } if f.pov.is_some() && (Some(src) == f.pov || master_of(src) == f.pov) => {
+                    health.pov_tick(dst, value)
+                }
+                // A peer's exact tick counts as the POV's do.
+                Event::RelayBuffDamage { dst, value, .. } if dst != 0 => {
                     health.pov_tick(dst, value)
                 }
                 _ => {}
@@ -1209,6 +1231,9 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 continue;
             }
             for t in model.tick(&fired, master_of, |id| stacks.active_on(id, fired.time)) {
+                if !estimated(t.src) {
+                    continue;
+                }
                 health.model_tick(t.dst, t.damage);
                 if f.condi_write
                     && let Some(e) = buff_damage_row(
@@ -1516,6 +1541,24 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 skills.insert(buff);
                 events.push(e);
             }
+            // A peer's own exact tick: the same row as the POV's (dropped when its target did not
+            // match an agent here).
+            Event::RelayBuffDamage {
+                src,
+                dst,
+                buff,
+                value,
+                barrier,
+                ..
+            } => {
+                let Some(e) =
+                    buff_damage_row(&ctx, &state, reg, time, src, dst, buff, value, barrier)
+                else {
+                    continue;
+                };
+                skills.insert(buff);
+                events.push(e);
+            }
             Event::Heal {
                 src,
                 dst,
@@ -1636,6 +1679,9 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
             continue;
         }
         for t in model.tick(&fired, master_of, |id| stacks.active_on(id, fired.time)) {
+            if !estimated(t.src) {
+                continue;
+            }
             health.model_tick(t.dst, t.damage);
             if f.condi_write
                 && let Some(e) =
@@ -2461,7 +2507,16 @@ mod tests {
         assert_eq!(max, vec![0]);
         assert_eq!(sc_rows(&l, 8).len(), 3);
         // An NPC (agent 3): a row per change.
-        let n = |t, max| (t, Event::Health { id: 3, pct_x100: 9000, max });
+        let n = |t, max| {
+            (
+                t,
+                Event::Health {
+                    id: 3,
+                    pct_x100: 9000,
+                    max,
+                },
+            )
+        };
         let f = fight(vec![n(1500, 20_000), n(1600, 20_000), n(1700, 25_000)]);
         let l = build_log(&f, &world());
         let a3 = world().addr(3).unwrap();
@@ -3415,6 +3470,39 @@ mod tests {
         for id in [9140, 63351, 72115, 718, 1066, 80252, 12836] {
             assert!(skills.contains(&id), "{id} in the skill table");
         }
+    }
+
+    /// A peer's relayed tick is the same row as the POV's own; one with no local target is not
+    /// written.
+    #[test]
+    fn relayed_condi_ticks_are_rows() {
+        let r = world();
+        let relayed = |dst, value, barrier| Event::RelayBuffDamage {
+            sender: 3,
+            src: 3,
+            dst,
+            buff: 736,
+            value,
+            barrier,
+        };
+        let f = fight(vec![
+            (2000, relayed(1, 200, 30)),
+            (2100, relayed(0, 99, 0)),
+        ]);
+        let l = build_log(&f, &r);
+        let rows: Vec<_> = l
+            .events
+            .iter()
+            .filter(|e| e.is_statechange == 0 && e.buff == 1)
+            .collect();
+        assert_eq!(rows.len(), 1);
+        let t = rows[0];
+        let a = |id| r.addr(id).unwrap();
+        assert_eq!(
+            (t.time, t.src_agent, t.dst_agent, t.buff_dmg, t.overstack),
+            (2000, a(3), a(1), 200, 30)
+        );
+        assert_eq!((t.skillid, t.result, t.is_shields), (736, 14, 1));
     }
 
     fn relay_heal(sender: u32, src: u32, dst: u32, skill: u32, downed: bool) -> Event {

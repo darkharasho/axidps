@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use axidps_protocol::v2::{Event, LogAction};
 
 use crate::buffs::Stacks;
-use crate::condi::Known;
 use crate::casts::Casts;
+use crate::condi::Known;
 use crate::effects::Effects;
 use crate::registry::{AgentInfo, Registry};
 use crate::rules::{Trigger, WvwRules};
@@ -158,6 +158,7 @@ fn named_ids(ev: &Event) -> [Option<u32>; 2] {
         Event::BuffDamage { src, dst, .. }
         | Event::Heal { src, dst, .. }
         | Event::RelayHeal { src, dst, .. } => [nonzero(src), Some(dst)],
+        Event::RelayBuffDamage { src, dst, .. } => [nonzero(src), nonzero(dst)],
         Event::EffectAgent { host, src, .. } => [Some(host), nonzero(src)],
         Event::EffectAgentRemove { host, .. } => [Some(host), None],
         Event::EffectGround { owner, .. }
@@ -419,6 +420,7 @@ impl Processor {
             | Event::BuffDamage { .. }
             | Event::Heal { .. }
             | Event::RelayHeal { .. }
+            | Event::RelayBuffDamage { .. }
             | Event::GroupKey { .. }
             | Event::RelayCombat { .. }
             | Event::LogControl { .. }

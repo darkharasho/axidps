@@ -364,7 +364,9 @@ impl LiveStats {
             return false;
         }
         let dst = match *ev {
-            Event::Strike { dst, .. } | Event::BuffDamage { dst, .. } => dst,
+            Event::Strike { dst, .. }
+            | Event::BuffDamage { dst, .. }
+            | Event::RelayBuffDamage { dst, .. } => dst,
             _ => return false,
         };
         if self.owner(dst) != dst {
@@ -613,25 +615,16 @@ impl LiveStats {
                 buff,
                 value,
                 ..
-            } => {
-                let by = self.owner(src);
-                if value <= 0 || by == self.owner(dst) {
-                    return;
-                }
-                let dmg = u64::from(value.unsigned_abs());
-                if src != 0 {
-                    let a = self.acc.entry(by).or_default();
-                    a.condi = a.condi.saturating_add(dmg);
-                }
-                let d = self.acc.entry(dst).or_default();
-                d.taken = d.taken.saturating_add(dmg);
-                self.add_series(t, if src != 0 { by } else { 0 }, dst, dmg);
-                if src != 0 {
-                    add_skill(&mut self.skills_out, by, buff, dmg);
-                }
-                add_skill(&mut self.skills_in, dst, buff, dmg);
-                self.generation += 1;
-            }
+            } => self.count_condi(t, src, dst, buff, value),
+            // A squadmate's own condition ticks, relayed (kind 63); `dst` 0: no local target.
+            Event::RelayBuffDamage {
+                sender,
+                src,
+                dst,
+                buff,
+                value,
+                ..
+            } if self.pov != Some(sender) => self.count_condi(t, src, dst, buff, value),
             // The local player's heals and barrier, given and received (kind 43).
             Event::Heal {
                 src,
@@ -784,6 +777,9 @@ impl LiveStats {
             } if self.roster.get(&dst).is_some_and(|r| r.0) => return,
             Event::Strike { src, dst, .. } => [Some(src), Some(dst)],
             Event::BuffDamage {
+                src, dst, value, ..
+            }
+            | Event::RelayBuffDamage {
                 src, dst, value, ..
             } if value != 0 => [Some(src), Some(dst)],
             Event::CastStart { agent, .. } => [Some(agent), None],
@@ -1162,7 +1158,9 @@ impl LiveStats {
     fn contrib_event(&mut self, reg: &Registry, t: u64, ev: &Event) {
         match *ev {
             Event::Health { id, pct_x100, .. } => self.health(t, id, pct_x100),
-            Event::Strike { .. } | Event::BuffDamage { .. } if self.state == LiveState::Fight => {
+            Event::Strike { .. } | Event::BuffDamage { .. } | Event::RelayBuffDamage { .. }
+                if self.state == LiveState::Fight =>
+            {
                 let (src, dst, value, down) = match *ev {
                     Event::Strike {
                         src,
@@ -1181,6 +1179,9 @@ impl LiveStats {
                         result == STRIKE_DOWN,
                     ),
                     Event::BuffDamage {
+                        src, dst, value, ..
+                    }
+                    | Event::RelayBuffDamage {
                         src, dst, value, ..
                     } => (src, dst, value, false),
                     _ => return,
@@ -1205,13 +1206,37 @@ impl LiveStats {
         }
     }
 
-    /// `dmg` at game time `t`, dealt by `by` (0: no one to credit) to `dst`.
+    /// A condition tick of `value` at game time `t`, dealt by `src` (0: no one) to `dst` (0: an
+    /// agent unknown here, for a relayed tick).
+    fn count_condi(&mut self, t: u64, src: u32, dst: u32, buff: u32, value: i32) {
+        let by = self.owner(src);
+        if value <= 0 || (dst != 0 && by == self.owner(dst)) {
+            return;
+        }
+        let dmg = u64::from(value.unsigned_abs());
+        if src != 0 {
+            let a = self.acc.entry(by).or_default();
+            a.condi = a.condi.saturating_add(dmg);
+            add_skill(&mut self.skills_out, by, buff, dmg);
+        }
+        if dst != 0 {
+            let d = self.acc.entry(dst).or_default();
+            d.taken = d.taken.saturating_add(dmg);
+            add_skill(&mut self.skills_in, dst, buff, dmg);
+        }
+        self.add_series(t, if src != 0 { by } else { 0 }, dst, dmg);
+        self.generation += 1;
+    }
+
+    /// `dmg` at game time `t`, dealt by `by` (0: no one to credit) to `dst` (0: no one known).
     fn add_series(&mut self, t: u64, by: u32, dst: u32, dmg: u64) {
         let i = (t.saturating_sub(self.start_ms) / BUCKET_MS) as usize;
         if by != 0 {
             add_at(&mut self.series.entry(by).or_default().out, i, dmg);
         }
-        add_at(&mut self.series.entry(dst).or_default().inc, i, dmg);
+        if dst != 0 {
+            add_at(&mut self.series.entry(dst).or_default().inc, i, dmg);
+        }
     }
 
     /// The squad's damage dealt and taken per bucket, through the fight's current duration.
@@ -1380,7 +1405,10 @@ impl LiveStats {
                     *o += v;
                 }
             }
-            for (from, to) in [(&self.skills_out, &mut by_out), (&self.skills_in, &mut by_in)] {
+            for (from, to) in [
+                (&self.skills_out, &mut by_out),
+                (&self.skills_in, &mut by_in),
+            ] {
                 for (&skill, &(d, h)) in from.get(id).into_iter().flatten() {
                     let e = to.entry(skill).or_default();
                     e.0 += d;
@@ -1687,10 +1715,18 @@ mod tests {
         let mut l = LiveStats::new();
         l.set_pov(1);
         l.begin(1_000, 38);
-        feed(&mut l, &r, &[(1_500, local_heal(1, 4, 300)), (1_600, relay(4, 4, 1, 900))]);
+        feed(
+            &mut l,
+            &r,
+            &[(1_500, local_heal(1, 4, 300)), (1_600, relay(4, 4, 1, 900))],
+        );
         l.end(2_000, &r);
         l.begin(5_000, 38);
-        feed(&mut l, &r, &[(5_500, local_heal(1, 4, 40)), (5_600, relay(4, 4, 1, 70))]);
+        feed(
+            &mut l,
+            &r,
+            &[(5_500, local_heal(1, 4, 40)), (5_600, relay(4, 4, 1, 70))],
+        );
         let v = l.snapshot(&r, 0);
         assert_eq!(player(&v, "Char 1").unwrap()["healing"], 40);
         let p4 = player(&v, "Char 4").unwrap();
@@ -1940,15 +1976,24 @@ mod tests {
         );
         l.advance(3000);
         assert!(l.snapshot(&r, 0)["detail"].is_null());
-        let account = l.snapshot(&r, 0)["players"][0]["account"].as_str().unwrap().to_owned();
+        let account = l.snapshot(&r, 0)["players"][0]["account"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         l.set_detail(Some(account.clone()));
         let d = l.snapshot(&r, 0)["detail"].clone();
         assert_eq!(d["account"], account);
         assert_eq!(d["out"], json!([600, 0]));
         assert_eq!(d["in"], json!([0, 230]));
-        assert_eq!(d["skills_out"], json!([{"id": 5, "name": "", "damage": 600, "hits": 2}]));
+        assert_eq!(
+            d["skills_out"],
+            json!([{"id": 5, "name": "", "damage": 600, "hits": 2}])
+        );
         assert_eq!(d["skills_in"][0]["damage"], 200);
-        assert_eq!(d["skills_in"][1], json!({"id": 736, "name": "Bleeding", "damage": 30, "hits": 1}));
+        assert_eq!(
+            d["skills_in"][1],
+            json!({"id": 736, "name": "Bleeding", "damage": 30, "hits": 1})
+        );
         assert_eq!(d["states"], json!([[1800, "down"]]));
         l.end(3000, &r);
         assert_eq!(l.snapshot(&r, 0)["detail"]["out"], json!([600, 0]));
@@ -2201,6 +2246,42 @@ mod tests {
         assert_eq!(p["taken"], 125);
     }
 
+    /// A squadmate's relayed condition ticks (kind 63) fill its `condi`: its minions credit it,
+    /// a tick with no local target still counts, and the POV's own copies are ignored.
+    #[test]
+    fn relayed_condi_counts_for_its_sender() {
+        let r = relay_world();
+        let mut l = LiveStats::new();
+        l.set_pov(1);
+        l.set_master(PET, 6);
+        l.begin(0, 38);
+        let relayed = |sender, src, dst, value| Event::RelayBuffDamage {
+            sender,
+            src,
+            dst,
+            buff: 736,
+            value,
+            barrier: 0,
+        };
+        feed(
+            &mut l,
+            &r,
+            &[
+                (100, relayed(6, 6, ENEMY, 200)),
+                (200, relayed(6, PET, ENEMY, 50)),
+                (300, relayed(6, 6, 0, 25)),
+                (400, relayed(1, 1, ENEMY, 999)),
+                (500, relayed(6, 6, ENEMY, 0)),
+            ],
+        );
+        l.advance(1000);
+        let v = l.snapshot(&r, 0);
+        let p = player(&v, "Char 6").unwrap();
+        assert_eq!(p["condi"], 275);
+        assert_eq!(p["damage"], 275);
+        assert_eq!(player(&v, "Char 1").unwrap()["condi"], 0);
+    }
+
     #[test]
     fn only_squad_members_are_listed() {
         let r = world();
@@ -2323,7 +2404,9 @@ mod tests {
         };
         assert_eq!(
             keys(&v),
-            ["detail", "fight", "healing", "players", "state", "t", "timeline", "v"]
+            [
+                "detail", "fight", "healing", "players", "state", "t", "timeline", "v"
+            ]
         );
         assert_eq!(v["v"], 1);
         assert_eq!(v["t"], 1_700_000_000_123u64);

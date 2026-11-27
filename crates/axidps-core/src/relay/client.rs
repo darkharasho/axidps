@@ -4,7 +4,7 @@
 //! The thread is connected only while there is a room, a known account, and a fight on (or
 //! a fight ended / a heal was sent / a peer batch arrived less than `Timing::idle` ago). It
 //! sends hello first, then at most one batch per `Timing::batch`, each under the server's
-//! size limit. Heals wait at most `Timing::buffer` for a socket. Lost connections are retried
+//! size limit. Heals and condition ticks wait at most `Timing::buffer` for a socket. Lost connections are retried
 //! with backoff 1 s doubling to `Timing::backoff_max` while still wanted.
 
 use std::collections::VecDeque;
@@ -18,7 +18,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{HandshakeError, Message, WebSocket};
 
 use super::wire;
-pub use super::wire::{Batch, WireCombat, WireHeal};
+pub use super::wire::{Batch, WireCombat, WireCondi, WireHeal};
 
 /// The `client` field of hello.
 pub const CLIENT: &str = concat!("axidps-core/", env!("CARGO_PKG_VERSION"));
@@ -41,6 +41,8 @@ pub enum Cmd {
     Active(bool),
     /// A local heal to share.
     Heal(WireHeal),
+    /// A condition tick the POV (or its minion) dealt, to share.
+    Condi(WireCondi),
     /// The POV entered or left combat. The latest state is sent again on every connect, so
     /// peers who join later still know it.
     Combat(WireCombat),
@@ -127,13 +129,30 @@ struct Worker {
     account: Option<String>,
     active: bool,
     last_activity: Option<Instant>,
-    pending: VecDeque<(Instant, WireHeal)>,
+    pending: VecDeque<(Instant, Item)>,
     /// Combat changes not sent yet, and the latest one.
     combat: Vec<WireCombat>,
     last_combat: Option<WireCombat>,
     conn: Option<Conn>,
     backoff: Duration,
     next_attempt: Instant,
+}
+
+/// A heal or condition tick waiting to be sent.
+#[derive(Debug, Clone)]
+enum Item {
+    Heal(WireHeal),
+    Condi(WireCondi),
+}
+
+impl Item {
+    /// Its size in a batch's list, with the separating comma.
+    fn size(&self) -> usize {
+        1 + match self {
+            Item::Heal(h) => h.to_json().to_string().len(),
+            Item::Condi(c) => c.to_json().to_string().len(),
+        }
+    }
 }
 
 fn short(id: &str) -> &str {
@@ -276,7 +295,11 @@ impl Worker {
             }
             Cmd::Heal(h) => {
                 self.last_activity = Some(now);
-                self.pending.push_back((now, h));
+                self.pending.push_back((now, Item::Heal(h)));
+            }
+            Cmd::Condi(c) => {
+                self.last_activity = Some(now);
+                self.pending.push_back((now, Item::Condi(c)));
             }
             Cmd::Combat(c) => {
                 self.last_combat = Some(c);
@@ -388,19 +411,19 @@ impl Worker {
     }
 }
 
-/// Removes from the front of `pending` as many heals as fit in one message beside `combat` and
-/// returns that message. A heal too large to send at all is dropped.
+/// Removes from the front of `pending` as many heals and condition ticks as fit in one message
+/// beside `combat` and returns that message. An item too large to send at all is dropped.
 fn take_batch(
     from: &str,
-    pending: &mut VecDeque<(Instant, WireHeal)>,
+    pending: &mut VecDeque<(Instant, Item)>,
     combat: &[WireCombat],
 ) -> Option<String> {
-    let base = wire::batch(from, &[], combat).len();
-    let mut size = base;
+    // Room for the `"condi":[]` key the first tick adds.
+    const CONDI_KEY: usize = 12;
+    let mut size = wire::batch(from, &[], &[], combat).len() + CONDI_KEY;
     let mut n = 0;
-    for (_, h) in pending.iter() {
-        let add =
-            wire::batch(from, std::slice::from_ref(h), combat).len() - base + usize::from(n > 0);
+    for (_, item) in pending.iter() {
+        let add = item.size();
         if size + add > MAX_MESSAGE {
             break;
         }
@@ -408,12 +431,18 @@ fn take_batch(
         n += 1;
     }
     if n == 0 {
-        // Nothing fits (or nothing is waiting): a heal too large is dropped, combat goes alone.
+        // Nothing fits (or nothing is waiting): an item too large is dropped, combat goes alone.
         pending.pop_front();
-        return (!combat.is_empty()).then(|| wire::batch(from, &[], combat));
+        return (!combat.is_empty()).then(|| wire::batch(from, &[], &[], combat));
     }
-    let heals: Vec<WireHeal> = pending.drain(..n).map(|(_, h)| h).collect();
-    Some(wire::batch(from, &heals, combat))
+    let (mut heals, mut condi) = (Vec::new(), Vec::new());
+    for (_, item) in pending.drain(..n) {
+        match item {
+            Item::Heal(h) => heals.push(h),
+            Item::Condi(c) => condi.push(c),
+        }
+    }
+    Some(wire::batch(from, &heals, &condi, combat))
 }
 
 /// Opens the socket with bounded connect/handshake times, then switches to the short read
@@ -612,7 +641,10 @@ mod tests {
         r.send(Cmd::Heal(heal(1)));
         assert_eq!(s.next(), Ev::Open(format!("/v1/room/{ROOM_A}")));
         assert_eq!(s.next(), Ev::Text(wire::hello(":a.1", CLIENT)));
-        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[heal(1)], &[])));
+        assert_eq!(
+            s.next(),
+            Ev::Text(wire::batch(":a.1", &[heal(1)], &[], &[]))
+        );
         r.send(Cmd::Heal(heal(2)));
         r.send(Cmd::Heal(heal(3)));
         let Ev::Text(t) = s.next() else { panic!() };
@@ -641,12 +673,12 @@ mod tests {
         join(&r, ROOM_A);
         assert!(matches!(s.next(), Ev::Open(_)));
         assert!(matches!(s.next(), Ev::Text(_))); // hello
-        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[], &[enter])));
+        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[], &[], &[enter])));
         r.send(Cmd::Room(Some(ROOM_B.into())));
         assert!(matches!(s.next(), Ev::Closed));
         assert!(matches!(s.next(), Ev::Open(_)));
         assert!(matches!(s.next(), Ev::Text(_))); // hello
-        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[], &[enter])));
+        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[], &[], &[enter])));
     }
 
     #[test]
@@ -656,7 +688,9 @@ mod tests {
         join(&r, ROOM_A);
         assert!(matches!(s.next(), Ev::Open(_)));
         assert!(matches!(s.next(), Ev::Text(_))); // hello
-        s.push.send(wire::batch(":b.2", &[heal(7)], &[])).unwrap();
+        s.push
+            .send(wire::batch(":b.2", &[heal(7)], &[], &[]))
+            .unwrap();
         s.push.send("not json".into()).unwrap();
         let end = Instant::now() + WAIT;
         let mut got = Vec::new();
@@ -669,6 +703,7 @@ mod tests {
             vec![Batch {
                 from: ":b.2".to_string(),
                 heals: vec![heal(7)],
+                condi: vec![],
                 combat: vec![]
             }]
         );
@@ -748,7 +783,10 @@ mod tests {
         assert_eq!(ev, Ev::Open(format!("/v1/room/{ROOM_B}")));
         assert_eq!(s.next(), Ev::Text(wire::hello(":a.1", CLIENT)));
         r.send(Cmd::Heal(heal(2)));
-        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[heal(2)], &[])));
+        assert_eq!(
+            s.next(),
+            Ev::Text(wire::batch(":a.1", &[heal(2)], &[], &[]))
+        );
     }
 
     #[test]
@@ -760,7 +798,10 @@ mod tests {
         r.send(Cmd::Account(":a.1".into()));
         assert_eq!(s.next(), Ev::Open(format!("/v1/room/{ROOM_A}")));
         assert_eq!(s.next(), Ev::Text(wire::hello(":a.1", CLIENT)));
-        assert_eq!(s.next(), Ev::Text(wire::batch(":a.1", &[heal(1)], &[])));
+        assert_eq!(
+            s.next(),
+            Ev::Text(wire::batch(":a.1", &[heal(1)], &[], &[]))
+        );
     }
 
     #[test]
@@ -784,7 +825,7 @@ mod tests {
         assert!(matches!(s.next(), Ev::Open(_)));
         assert!(matches!(s.next(), Ev::Text(_)));
         let want: Vec<WireHeal> = (0..1000).map(|t| heal(1_700_000_000_000 + t)).collect();
-        assert!(wire::batch(":a.1", &want, &[]).len() > MAX_MESSAGE);
+        assert!(wire::batch(":a.1", &want, &[], &[]).len() > MAX_MESSAGE);
         for h in &want {
             r.send(Cmd::Heal(h.clone()));
         }
@@ -796,6 +837,46 @@ mod tests {
             got.extend(wire::parse(&t).unwrap().heals);
             msgs += 1;
         }
+        assert_eq!(got, want);
+        assert!(msgs >= 2);
+    }
+
+    // Heals and condition ticks share the queue and the size limit, in order.
+    #[test]
+    fn condi_ticks_go_out_with_heals() {
+        let s = Server::start();
+        let r = Relay::start_with(s.base(), fast());
+        join(&r, ROOM_A);
+        assert!(matches!(s.next(), Ev::Open(_)));
+        assert!(matches!(s.next(), Ev::Text(_)));
+        let tick = |t: u64| WireCondi {
+            t_unix_ms: t,
+            src: Endpoint::Player(":a.1".into()),
+            dst: Endpoint::Foe {
+                prof: 2,
+                elite: 18,
+                team: 708,
+                xyz: [100_000, -20_000, 3_000],
+            },
+            buff: 736,
+            damage: 1234,
+            barrier: 56,
+        };
+        let want: Vec<WireCondi> = (0..600).map(|t| tick(1_700_000_000_000 + t)).collect();
+        r.send(Cmd::Heal(heal(1)));
+        for c in &want {
+            r.send(Cmd::Condi(c.clone()));
+        }
+        let (mut heals, mut got, mut msgs) = (Vec::new(), Vec::new(), 0);
+        while got.len() < want.len() {
+            let Ev::Text(t) = s.next() else { panic!() };
+            assert!(t.len() <= MAX_MESSAGE, "{}", t.len());
+            let b = wire::parse(&t).unwrap();
+            heals.extend(b.heals);
+            got.extend(b.condi);
+            msgs += 1;
+        }
+        assert_eq!(heals, vec![heal(1)]);
         assert_eq!(got, want);
         assert!(msgs >= 2);
     }
