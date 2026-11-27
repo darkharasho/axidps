@@ -137,12 +137,15 @@ pub fn read_manifest(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Valid, a supported `api`, and no deeper permission: the host serves only these.
+/// Valid, a supported `api`, no deeper permission, and no privileged one unless built in: the
+/// host serves only these.
 pub fn loadable(p: &Plugin) -> bool {
     p.error.is_none()
-        && p.manifest
-            .as_ref()
-            .is_some_and(|m| m.api == SUPPORTED_API && m.deeper().is_empty())
+        && p.manifest.as_ref().is_some_and(|m| {
+            m.api == SUPPORTED_API
+                && m.deeper().is_empty()
+                && (p.bundled || m.privileged().is_empty())
+        })
 }
 
 /// What the player grants a plugin by enabling it: its permissions and one `net:<host>` per
@@ -204,6 +207,9 @@ fn one(p: &Plugin) -> Value {
     let error = match (&p.error, &p.manifest) {
         (Some(e), _) => Some(e.as_str()),
         (None, Some(m)) if m.api != SUPPORTED_API => Some("needs a newer axidps"),
+        (None, Some(m)) if !p.bundled && !m.privileged().is_empty() => {
+            Some("only for built-in plugins")
+        }
         (None, Some(m)) if !m.deeper().is_empty() => Some("needs verification"),
         _ => None,
     };
@@ -325,6 +331,19 @@ mod tests {
             folder: id.into(),
             error: None,
         }
+    }
+
+    #[test]
+    fn privileged_only_loads_bundled() {
+        let b = plugin("axidps.outline", true, &["outline"], &[]);
+        assert!(loadable(&b));
+        assert!(enabled(&b, &Value::Null));
+        let p = plugin("x.outline", false, &["outline"], &[]);
+        assert!(!loadable(&p));
+        assert!(!enabled(&p, &json!({"x.outline": {"enabled": true, "granted": ["outline"]}})));
+        let page = to_page_json(&[b, p]);
+        assert!(page[0].get("error").is_none());
+        assert_eq!(page[1]["error"], "only for built-in plugins");
     }
 
     #[test]
