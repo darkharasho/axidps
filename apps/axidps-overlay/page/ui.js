@@ -163,6 +163,58 @@ function paintIcons(root) {
 
 // ---- state ---------------------------------------------------------------------------------
 
+// A plugin card's settings panel (pluginHost.panelModel): per window, the host's two window
+// options and then the plugin's declared settings. Everything from the manifest goes through esc().
+function plugPanel(sections) {
+  const tog = on => `<span class="tog${on ? " on" : ""}"><i></i></span>`;
+  const opt = (attrs, label, note, on) =>
+    `<div class="opt" ${attrs}><div>${esc(label)}${note ? `<small>${esc(note)}</small>` : ""}</div>${tog(on)}</div>`;
+  return `<div class="pset">` + sections.map(sec => {
+    const full = `data-full="${esc(sec.fullId)}"`;
+    return (sections.length > 1 ? `<h4>${esc(sec.title)}</h4>` : "") +
+      opt(`data-pwin="bar" ${full}`, "Show title bar", "Hides the window's title. Move it in Arrange.", sec.opts.bar) +
+      opt(`data-pwin="clear" ${full}`, "Transparent background", "No background or border behind the plugin.", sec.opts.clear) +
+      sec.fields.map(f => {
+        const at = `${full} data-k="${esc(f.key)}"`;
+        if (f.type === "toggle") return opt(`data-ptog ${at}`, f.label, "", f.value === true);
+        if (f.type === "choice") return `<div class="opt"><div>${esc(f.label)}</div><div class="seg" data-pseg ${at}>` +
+          f.options.map(o => `<button data-v="${esc(o)}"${o === f.value ? ' class="on"' : ""}>${esc(o)}</button>`).join("") +
+          `</div></div>`;
+        return `<div class="opt"><div>${esc(f.label)}</div><div class="step" ${at}>` +
+          `<button data-d="${-f.step}">&minus;</button><b>${esc(String(f.value))}</b>` +
+          `<button data-d="${f.step}">+</button></div></div>`;
+      }).join("");
+  }).join("") + `</div>`;
+}
+// A click inside a settings panel: true if it was one (handled or not).
+function plugSettingClick(e) {
+  const t = e.target;
+  if (!t.closest(".pset")) return false;
+  const pw = t.closest("[data-pwin]");
+  const sec = pw || t.closest("[data-k]");
+  if (!sec) return true;
+  const full = sec.dataset.full;
+  const p = pluginHost.list.find(x => x && typeof x === "object" && full.startsWith(String(x.id) + "/"));
+  const panel = p ? pluginHost.panelModel(p, saved).find(s => s.fullId === full) : null;
+  if (!panel) return true;
+  if (pw) {
+    const name = pw.dataset.pwin;
+    pluginHost.setWindowOpt(full, name, !panel.opts[name]);
+  } else {
+    const f = panel.fields.find(x => x.key === sec.dataset.k);
+    if (!f) return true;
+    if (f.type === "toggle") pluginHost.setSetting(full, f.key, !f.value);
+    else if (f.type === "choice") {
+      const b = t.closest("[data-v]");
+      if (b) pluginHost.setSetting(full, f.key, b.dataset.v);
+    } else {
+      const b = t.closest("[data-d]");
+      if (b) pluginHost.setSetting(full, f.key, f.value + Number(b.dataset.d));
+    }
+  }
+  renderAll();
+  return true;
+}
 const ui = {
   live: null,          // core's live feed
   cleared: false,      // Clear fight (hub): blank until the next fight starts
@@ -170,6 +222,7 @@ const ui = {
   editing: false,      // the DLL's edit mode, as reported by the host
   editSeq: 0,          // our edit requests: odd = on, even = off
   session: {},         // open state of windows that always start closed (the hub, Details)
+  plugOpen: new Set(), // plugin ids whose settings panel is open in the hub (this session only)
   detailFrom: "",      // the window whose player click opened Details (it sits beside it)
   update: null,        // the launcher's self-update status (host, from update-status.json)
   zones: [],           // the game's own UI (host, from MumbleLink): [{id, label, x, y, w, h}]
@@ -1991,9 +2044,14 @@ const hub = defineWindow({
       if (x) setOpen(x, !isOpen(x));
     };
     w.body.querySelectorAll(".pcards").forEach(pc => pc.onclick = e => {
+      if (plugSettingClick(e)) return;
       const b = e.target.closest("[data-pact]"), c = e.target.closest("[data-p]");
       if (!b || !c) return;
-      if (b.dataset.pact === "enable") pluginHost.enable(c.dataset.p);
+      if (b.dataset.pact === "settings") {
+        const id = c.dataset.p;
+        if (!ui.plugOpen.delete(id)) ui.plugOpen.add(id);
+        renderAll();
+      } else if (b.dataset.pact === "enable") pluginHost.enable(c.dataset.p);
       else if (b.dataset.pact === "disable") pluginHost.disable(c.dataset.p);
       else if (b.dataset.pact === "reload") pluginHost.reload(c.dataset.p);
     });
@@ -2041,22 +2099,29 @@ const hub = defineWindow({
     // what it asks for, and why it can't be enabled or its Enable/Disable (and developer mode's
     // Reload) buttons.
     const plist = pluginHost.list.filter(p => p && typeof p === "object");
-    const models = plist.map(p => [String(p.id), pluginHost.cardModel(p, saved)]);
+    const models = plist.map(p => {
+      const m = pluginHost.cardModel(p, saved), id = String(p.id);
+      // The settings panel, for enabled plugins whose cog is open.
+      const panel = m.action === "disable" && ui.plugOpen.has(id) ? pluginHost.panelModel(p, saved) : null;
+      return [id, m, panel];
+    });
     const plugKey = JSON.stringify(models);
     if (w.plugKey !== plugKey) {
       w.plugKey = plugKey;
       w.body.querySelector(".plugs").style.display = models.length ? "" : "none";
       w.body.querySelector(".pblank").style.display = models.length ? "none" : "";
       w.body.querySelector('.nav[data-tab="plugins"] .n').textContent = models.length;
-      const cards = models.map(([id, m]) =>
+      const cards = models.map(([id, m, panel]) =>
         `<div class="pc" data-p="${esc(id)}"><div class="pc-h"><b>${esc(m.title)}</b>` +
         `${m.label ? `<span class="tag">${esc(m.label)}</span>` : ""}<span class="grow"></span>` +
         `${m.reload ? `<button data-pact="reload" data-tip="reload its windows">Reload</button>` : ""}` +
+        `${m.action === "disable" ? `<button data-pact="settings" class="cog${panel ? " on" : ""}" aria-label="Settings" ` +
+          `data-tip="settings">${icon("sliders", 14, panel ? "accent" : "dim")}</button>` : ""}` +
         `${m.action ? `<button data-pact="${m.action}"${m.action === "enable" ? ' class="primary"' : ""}>` +
           `${m.action === "enable" ? "Enable" : "Disable"}</button>` : ""}</div>` +
         `<small>${esc([m.version && "v" + m.version, m.author && "by " + m.author].filter(Boolean).join(" · "))}</small>` +
         `${m.lines.map(l => `<span class="pl">${esc(l)}</span>`).join("")}` +
-        `${m.reason ? `<span class="pl bad">${esc(m.reason)}</span>` : ""}</div>`).join("");
+        `${m.reason ? `<span class="pl bad">${esc(m.reason)}</span>` : ""}${panel ? plugPanel(panel) : ""}</div>`).join("");
       w.body.querySelectorAll(".pcards").forEach(pc => pc.innerHTML = cards);
     }
     if (w.tab === "tables") renderBuilder(w);

@@ -607,3 +607,15 @@ test("add applies saved window options", () => {
   assert.deepStrictEqual(toggles, [["nobar", false], ["clear", true]]);
   assert.strictEqual(ent.w.clear, true);
 });
+
+test("refresh applies window options restored after the window was added", () => {
+  const saved = { cfg: {}, plugins: { "x.y": { enabled: true, granted: ["fight"] } }, open: {} };
+  const { h, ent, toggles } = settingsHost(saved);
+  h.env.renderAll = () => {};
+  toggles.length = 0;
+  saved.pwin = { "x.y/a": { bar: false, clear: true } };
+  h.refresh();
+  assert.strictEqual(h.entries[0], ent, "kept, not re-added");
+  assert.deepStrictEqual(toggles, [["nobar", true], ["clear", true]]);
+  assert.strictEqual(ent.w.clear, true);
+});

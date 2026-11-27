@@ -374,7 +374,7 @@
       for (const ent of this.entries.slice()) {
         const w = this.want.find(x => x.fullId === ent.fullId);
         if (!w || w.alias !== ent.alias || w.win.entry !== ent.win.entry) this.drop(ent);
-        else { ent.plugin = w.plugin; ent.win = w.win; }
+        else { ent.plugin = w.plugin; ent.win = w.win; this.applyOpts(ent); }
       }
       for (const w of this.want) {
         if (this.entries.some(e => e.fullId === w.fullId)) continue;
