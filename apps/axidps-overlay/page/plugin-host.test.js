@@ -418,3 +418,35 @@ test("a frame that stalls while closed and never changed gets nothing extra", ()
   h.handle(e, { axidps: 1, type: "pong", n: 1 });
   assert.deepStrictEqual(kinds(e), [], "nothing missed, nothing resent");
 });
+
+test("accept: textures rules are a bounded list", () => {
+  assert.strictEqual(ph.accept({ axidps: 1, type: "textures", rules: [] }), true);
+  assert.strictEqual(ph.accept({ axidps: 1, type: "textures", rules: [{ target: "mentor" }] }), true);
+  assert.strictEqual(ph.accept({ axidps: 1, type: "textures", rules: {} }), false);
+  assert.strictEqual(ph.accept({ axidps: 1, type: "textures", rules: Array(65).fill({}) }), false);
+  assert.strictEqual(ph.accept({ axidps: 1, type: "textures", rules: [{ s: "x".repeat(17000) }] }), false);
+});
+
+test("mergeTextures: plugins in id order, junk dropped", () => {
+  const merged = ph.mergeTextures({ "z.b": [{ target: "mentor", color: "#fff" }],
+    "a.a": [{ target: "mentor", color: "#000" }, 5, null, { color: "#123" }] });
+  assert.deepStrictEqual(merged, [{ target: "mentor", color: "#000" }, { target: "mentor", color: "#fff" }]);
+});
+
+test("textures: only plugins with the permission reach the host, and their rules go with them", () => {
+  const { h, ent } = feedHost();
+  const sent = [];
+  h.env.toHost = t => sent.push(t);
+  const styler = ent("a.tags", ["textures"]), other = ent("b.meter", ["fight"]);
+  h.handle(other, { axidps: 1, type: "textures", rules: [{ target: "target" }] });
+  assert.strictEqual(sent.length, 1);
+  assert.match(sent[0], /without the textures permission/);
+  h.handle(styler, { axidps: 1, type: "textures", rules: [{ target: "commander.red", color: "#0072b2" }] });
+  assert.deepStrictEqual(JSON.parse(sent[1]), { textures: [{ target: "commander.red", color: "#0072b2" }] });
+  // The same rules again: nothing new sent.
+  h.handle(styler, { axidps: 1, type: "textures", rules: [{ target: "commander.red", color: "#0072b2" }] });
+  assert.strictEqual(sent.length, 2);
+  // The plugin goes away: its rules are cleared on the host.
+  h.drop(styler);
+  assert.deepStrictEqual(JSON.parse(sent[2]), { textures: [] });
+});

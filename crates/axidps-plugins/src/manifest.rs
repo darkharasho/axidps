@@ -58,7 +58,7 @@ pub enum Level {
 pub fn level(name: &str) -> Option<Level> {
     match name {
         "fight" => Some(Level::Basic),
-        "world" | "position" | "squad" | "enemies" => Some(Level::Deeper),
+        "world" | "position" | "squad" | "enemies" | "textures" => Some(Level::Deeper),
         _ => None,
     }
 }
