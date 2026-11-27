@@ -225,6 +225,14 @@ fn remap(x: f32, y: f32, published: Option<&Table>, latest: Option<&Table>) -> (
     )
 }
 
+/// The page call with the game's frame rate, ping and server tick rate (0 = unknown).
+fn perf_call(p: &fmt::Perf) -> String {
+    format!(
+        "window.axidps && window.axidps.perf && window.axidps.perf({{\"fps\":{},\"ping\":{},\"tick_rate\":{}}})",
+        p.fps, p.ping_ms, p.tick_rate
+    )
+}
+
 /// The page call that tells it where the game's UI is: `axidps.gameui([{id, label, x, y, w,
 /// h}])`, or an empty list when that isn't known.
 fn gameui_call(ui: &fmt::GameUi, screen: (u32, u32)) -> String {
@@ -654,6 +662,8 @@ struct App {
     told: Option<(u32, u32, u32)>,
     /// The game UI zones last told to the page (screen size and game UI).
     told_ui: Option<((u32, u32), fmt::GameUi)>,
+    /// The last frame rate, ping and tick rate given to the page.
+    told_perf: Option<fmt::Perf>,
 }
 
 impl App {
@@ -874,6 +884,7 @@ impl App {
                 }
                 self.told = None;
                 self.told_ui = None;
+                self.told_perf = None;
                 self.update.seen = None;
                 self.update.last_check = None;
             }
@@ -900,6 +911,11 @@ impl App {
             if self.told_ui != Some(key) {
                 self.told_ui = Some(key);
                 Self::js(st, gameui_call(&ui, (now.0, now.1)));
+            }
+            let perf = fmt::Perf::read(&shm.borrow().map);
+            if self.told_perf != Some(perf) {
+                self.told_perf = Some(perf);
+                Self::js(st, perf_call(&perf));
             }
             self.live.poll();
             if let Some(json) = self.live.pending.take() {
@@ -1206,6 +1222,7 @@ fn main() -> anyhow::Result<()> {
         restored: false,
         told: None,
         told_ui: None,
+        told_perf: None,
     };
     println!(
         "axidps overlay host: {} -> {} ({})",
