@@ -599,12 +599,13 @@ fn newer(a: &str, b: &str) -> bool {
     }
 }
 
-/// A download from the registry's own releases: nothing that could resolve elsewhere.
+/// A download from the registry's own releases: nothing that could resolve elsewhere. Mirrors
+/// are tagged `<id>@<version>`; the `@` only ever follows the fixed host prefix.
 fn registry_url(url: &str) -> bool {
     url.strip_prefix(PACKAGE_PREFIX).is_some_and(|rest| {
         !rest.is_empty()
             && !rest.contains("..")
-            && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._/+".contains(&b))
+            && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._/+@".contains(&b))
     })
 }
 
@@ -1163,6 +1164,13 @@ mod tests {
 
         for (url, ok) in [
             (format!("{PACKAGE_PREFIX}a-1.0.0/p.zip"), true),
+            (
+                "https://github.com/darkharasho/axidps-plugins/releases/download/tag.colours@0.1.0/tag.colours-0.1.0.zip".into(),
+                true,
+            ),
+            (format!("{PACKAGE_PREFIX}tag.colours%400.1.0/tag.colours-0.1.0.zip"), false),
+            (format!("{PACKAGE_PREFIX}a@1.0.0/../../evil/p.zip"), false),
+            ("https://evil.example/darkharasho/axidps-plugins/releases/download/a@1.0.0/p.zip".into(), false),
             (format!("{PACKAGE_PREFIX}../../evil/p.zip"), false),
             (format!("{PACKAGE_PREFIX}a/p.zip?x=1"), false),
             ("https://github.com/darkharasho/axidps-plugins.evil/releases/download/a".into(), false),
