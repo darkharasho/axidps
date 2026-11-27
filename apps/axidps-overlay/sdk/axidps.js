@@ -79,7 +79,7 @@ b, strong { font-weight: 600; }
   border: 1px solid var(--line-hi); border-radius: var(--rs); white-space: nowrap; pointer-events: none;
   font-size: 11px; z-index: 2147483647; }`;
 
-  const TYPES = ["fight", "look", "edit", "settings"];
+  const TYPES = ["fight", "look", "edit", "settings", "perf"];
   const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
   function str(v) {
     if (typeof v === "string") return v;
@@ -101,7 +101,7 @@ b, strong { font-weight: 600; }
       try { parent.postMessage(Object.assign({axidps: 1, type}, body || {}), "*"); } catch (e) { /* page gone */ }
     };
     const log = (level, msg) => post("log", {level, msg: String(msg).slice(0, 1000)});
-    const handlers = {fight: [], look: [], edit: [], settings: []};
+    const handlers = {fight: [], look: [], edit: [], settings: [], perf: []};
     const last = {};
     let info = null;
     const readyQ = [];
@@ -154,6 +154,7 @@ b, strong { font-weight: 600; }
           break;
         }
         case "edit": emit("edit", !!m.on); break;
+        case "perf": emit("perf", m.perf); break;
         case "settings":
           settings = m.value && typeof m.value === "object" ? m.value : {};
           emit("settings", settings);
@@ -213,7 +214,8 @@ b, strong { font-weight: 600; }
         if (info) call(fn, clone(info)); else readyQ.push(fn);
       },
       // on(type, fn): "fight" (the live feed), "look" (theme and display), "edit" (bool),
-      // "settings" (this window's settings). A handler added late gets the latest value at once.
+      // "settings" (this window's settings), "perf" ({fps, ping, tick_rate}, once a second;
+      // 0 = unknown). A handler added late gets the latest value at once.
       on(type, fn) {
         if (!TYPES.includes(type) || typeof fn !== "function") return;
         handlers[type].push(fn);

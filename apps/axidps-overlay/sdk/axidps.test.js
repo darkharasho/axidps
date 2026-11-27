@@ -61,6 +61,18 @@ test("sdk says hello, then ready and fight reach the plugin", () => {
   assert.strictEqual(late.plugin, "x.y");
 });
 
+test("sdk perf reaches the plugin, and a late handler gets the latest", () => {
+  const w = fakeWin();
+  const sdk = makeSdk(w);
+  let got = null;
+  sdk.on("perf", p => { got = p; });
+  w.fromPage({ axidps: 1, type: "perf", perf: { fps: 60, ping: 80, tick_rate: 25 } });
+  assert.deepStrictEqual(got, { fps: 60, ping: 80, tick_rate: 25 });
+  let late = null;
+  sdk.on("perf", p => { late = p; });
+  assert.deepStrictEqual(late, { fps: 60, ping: 80, tick_rate: 25 });
+});
+
 test("sdk ignores messages not from the page", () => {
   const w = fakeWin();
   const sdk = makeSdk(w);

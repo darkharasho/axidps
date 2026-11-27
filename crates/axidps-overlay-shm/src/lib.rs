@@ -11,6 +11,8 @@
 //!       u32 edit (1 while the DLL is in edit mode)
 //! 12372 DLL -> host: the game's UI from MumbleLink (see `GameUi`): u32 bit 31 known | uiState,
 //!       u32 interface size (0 small .. 3 larger), u16 compass width, u16 compass height
+//! 12384 DLL -> host: performance over the last second (see `Perf`): u32 frames per second,
+//!       u32 ping ms, u32 server ticks per second (each 0 while unknown)
 //! 12416 window table of buffer 0, 13504 of buffer 1 (see `Table`): u32 count, u32 edit_seq,
 //!       u32 table flags (`TABLE_HIDE_ZONES`, `TABLE_TEXT_FOCUS`), u32 pad, then per window name[16],
 //!       i32 atlas x/y/w/h, i32 sx/sy, i32 drag x/y/w/h, u32 flags, u8 radius, u8 blur, u16 pad
@@ -38,6 +40,7 @@ pub const DLL_HB_OFF: usize = 12352;
 pub const SCREEN_OFF: usize = 12360;
 pub const EDIT_OFF: usize = 12368;
 pub const GAMEUI_OFF: usize = 12372;
+pub const PERF_OFF: usize = 12384;
 pub const TABLE_OFF: [usize; 2] = [12416, 13504];
 pub const MAX_WINDOWS: usize = 16;
 pub const WIN_LEN: usize = 64;
@@ -327,6 +330,67 @@ impl GameUi {
             u32::from(self.uisz.min(3)),
             u32::from(self.compass_w) | u32::from(self.compass_h) << 16,
         ]
+    }
+}
+
+/// The game's frame rate, ping and server tick rate, like arcdps's F/P/R line. 0 = unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Perf {
+    pub fps: u32,
+    pub ping_ms: u32,
+    pub tick_rate: u32,
+}
+
+impl Perf {
+    pub fn read(b: &[u8]) -> Self {
+        Perf {
+            fps: u32_at(b, PERF_OFF),
+            ping_ms: u32_at(b, PERF_OFF + 4),
+            tick_rate: u32_at(b, PERF_OFF + 8),
+        }
+    }
+    pub fn encode(&self) -> [u32; 3] {
+        [self.fps, self.ping_ms, self.tick_rate]
+    }
+}
+
+/// Turns presented frames and the latest server tick into a [`Perf`] once a second.
+#[derive(Debug, Default)]
+pub struct PerfCounter {
+    /// Start of the current window (ms) and the server tick then.
+    since: Option<(u64, u32)>,
+    frames: u32,
+}
+
+impl PerfCounter {
+    /// One presented frame at `now_ms`, with the newest server tick (0 = none yet) and ping.
+    /// Returns the second's numbers when one has passed.
+    pub fn frame(&mut self, now_ms: u64, tick: u32, ping_ms: u32) -> Option<Perf> {
+        let Some((t0, tick0)) = self.since else {
+            self.since = Some((now_ms, tick));
+            self.frames = 0;
+            return None;
+        };
+        self.frames += 1;
+        let dt = now_ms.saturating_sub(t0);
+        if dt < 1000 {
+            return None;
+        }
+        let per_s = |n: u64| u32::try_from((n * 1000 + dt / 2) / dt).unwrap_or(u32::MAX);
+        // A tick that is unknown or went backwards (a map change) gives no rate this second.
+        let tick_rate = if tick0 != 0 && tick > tick0 {
+            per_s(u64::from(tick - tick0))
+        } else {
+            0
+        };
+        let perf = Perf {
+            fps: per_s(u64::from(self.frames)),
+            ping_ms,
+            tick_rate,
+        };
+        self.since = Some((now_ms, tick));
+        self.frames = 0;
+        Some(perf)
     }
 }
 
@@ -621,6 +685,45 @@ mod tests {
             z.iter().find(|z| z.id == "blish").unwrap().rect,
             Rect::new(320, 0, 384, 42)
         );
+    }
+
+    #[test]
+    fn perf_counts_a_second() {
+        let mut c = PerfCounter::default();
+        assert_eq!(c.frame(0, 1000, 80), None);
+        // 60 frames over one second, 25 server ticks.
+        let mut out = None;
+        for i in 1..=60u64 {
+            out = c.frame(i * 1000 / 60, 1000 + (i as u32 * 25 / 60), 80);
+            if i < 60 {
+                assert_eq!(out, None);
+            }
+        }
+        assert_eq!(
+            out,
+            Some(Perf {
+                fps: 60,
+                ping_ms: 80,
+                tick_rate: 25
+            })
+        );
+        // A tick reset (map change) gives no rate; no tick yet gives none either.
+        for i in 1..=30u64 {
+            out = c.frame(1000 + i * 1000 / 30, 5, 90);
+        }
+        assert_eq!(out.unwrap().tick_rate, 0);
+        assert_eq!(out.unwrap().fps, 30);
+        let mut shm = vec![0u8; FRAME_OFF];
+        let p = Perf {
+            fps: 60,
+            ping_ms: 80,
+            tick_rate: 25,
+        };
+        for (i, v) in p.encode().iter().enumerate() {
+            shm[PERF_OFF + 4 * i..PERF_OFF + 4 * i + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(Perf::read(&shm), p);
+        assert!(PERF_OFF + 12 <= TABLE_OFF[0]);
     }
 
     #[test]

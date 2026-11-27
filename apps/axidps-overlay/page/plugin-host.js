@@ -451,7 +451,8 @@
           this.post(ent, "look", env.look());
           this.post(ent, "edit", {on: !!env.ui.editing});
           if (this.hasFight(ent)) this.post(ent, "fight", {feed: env.feed()});
-          ent.lookStale = ent.feedStale = false;
+          if (this.lastPerf) this.post(ent, "perf", {perf: this.lastPerf});
+          ent.lookStale = ent.feedStale = ent.perfStale = false;
           break;
         }
         case "resize": {
@@ -518,15 +519,24 @@
       if (!this.fed(ent)) return;
       if (ent.lookStale) this.post(ent, "look", this.env.look());
       if (ent.feedStale && this.hasFight(ent)) this.post(ent, "fight", {feed: this.env.feed()});
-      ent.lookStale = ent.feedStale = false;
+      if (ent.perfStale && this.lastPerf) this.post(ent, "perf", {perf: this.lastPerf});
+      ent.lookStale = ent.feedStale = ent.perfStale = false;
     },
     // A window opened or closed (ui.js, after each render): frames that are fed again catch up.
-    sync() { for (const ent of this.entries) if (ent.lookStale || ent.feedStale) this.catchUp(ent); },
+    sync() { for (const ent of this.entries) if (ent.lookStale || ent.feedStale || ent.perfStale) this.catchUp(ent); },
     // Page state the frames follow (ui.js calls these when it changes).
     fight(feed) {
       for (const ent of this.entries) {
         if (!ent.hello || !this.hasFight(ent)) continue;
         if (this.fed(ent)) this.post(ent, "fight", {feed}); else ent.feedStale = true;
+      }
+    },
+    // The game's frame rate, ping and server tick rate, once a second: no permission needed.
+    perf(p) {
+      this.lastPerf = p;
+      for (const ent of this.entries) {
+        if (!ent.hello) continue;
+        if (this.fed(ent)) this.post(ent, "perf", {perf: p}); else ent.perfStale = true;
       }
     },
     look(l) {

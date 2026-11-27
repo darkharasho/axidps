@@ -223,6 +223,7 @@ don't stop other handlers.
 | `"look"` | `{theme, tokens, style, opacity, compact, rows}` (see [Theming](#theming)). |
 | `"edit"` | `true` while the player is arranging windows. Your frame gets no mouse input then. |
 | `"settings"` | This window's saved settings (`{}` if none). |
+| `"perf"` | The game's performance over the last second, once a second: `{fps, ping, tick_rate}` (frames per second, ping in ms, server ticks per second, normally 25). `0` means not known yet. Needs no permission. |
 
 ### `axidps.settings`
 

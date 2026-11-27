@@ -1,0 +1,11 @@
+{
+  "id": "axidps.perf",
+  "name": "Performance",
+  "version": "1.0.0",
+  "author": "axidps",
+  "api": 1,
+  "windows": [
+    {"id": "perf", "title": "Performance", "entry": "perf.html", "description": "frame rate, ping and server tick rate",
+     "icon": "activity", "open": false, "place": "below-meter"}
+  ]
+}

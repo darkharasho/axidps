@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- Performance: the game's frame rate, ping and server tick rate, one line like arcdps's F/P/R. -->
+<html>
+<head>
+<meta charset="utf-8">
+<script src="/_sdk/axidps.js"></script>
+<style>
+  .line { padding: 4px 10px; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text); }
+  body.compact .line { padding: 2px 6px; font-size: 10.5px; }
+  .line i { font-style: normal; }
+  .line b { color: var(--faint); font-weight: 600; margin-right: 2px; }
+  .line span + span { margin-left: 10px; }
+  .warn { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="line"><span title="Frames per second"><b>F</b><i class="fps">–</i></span><span title="Ping (ms)"><b>P</b><i class="ping">–</i></span><span title="Server ticks per second (normally 25)"><b>R</b><i class="tick">–</i></span></div>
+<script src="perf.js"></script>
+</body>
+</html>

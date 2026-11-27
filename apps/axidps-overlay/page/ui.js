@@ -1529,6 +1529,12 @@ window.axidps = {
     ui.zones = Array.isArray(z) ? z : [];
     renderAll();
   },
+  // The game's frame rate, ping and server tick rate over the last second (host, from the DLL).
+  perf(p) {
+    if (!p || typeof p !== "object") return;
+    const n = v => (Number.isFinite(v) && v >= 0 ? Math.round(v) : 0);
+    pluginHost.perf({fps: n(p.fps), ping: n(p.ping), tick_rate: n(p.tick_rate)});
+  },
   screen(w, h) {
     if (w > 0 && h > 0) ui.screen = [w, h];
     renderAll();
@@ -1666,4 +1672,6 @@ if (DEMO.includes("demo")) {
   };
   for (let i = 0; i < 240; i++) step();
   setInterval(step, 500);
+  setInterval(() => axidps.perf({fps: 55 + Math.round(Math.random() * 10), ping: 90 + Math.round(Math.random() * 40),
+    tick_rate: 24 + Math.round(Math.random() * 2)}), 1000);
 }
