@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The allowlist and private-path half of the public check, so a pull request catches a file
+      # that doesn't belong here. The name half needs a release-env secret and runs in dll-check.
+      - name: Public check (no names)
+        run: python3 -I tools/public-check
+
       # The overlay page's and the plugin SDK's JS tests (Node's built-in runner, no npm install).
       # The shell expands the globs: `node --test <dir>` fails with MODULE_NOT_FOUND on Node 24.
       - uses: actions/setup-node@v4
