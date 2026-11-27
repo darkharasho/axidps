@@ -59,7 +59,7 @@ const axidpsHub = (() => {
   // plugins. Store rows come first, in store order, taking toggle/reason/reload from the installed
   // plugin with the same id; installed plugins with no store card follow, in `installed` order, as
   // local (or bundled) rows, filtered here by name and author. counts ignore `filter`.
-  function pluginRows(storeCards, installed, filter, query) {
+  function pluginRows(storeCards, installed, filter, query, storeReady) {
     const q = String(query || "").trim().toLowerCase();
     const have = new Map((installed || []).map(i => [i.id, i]));
     const inStore = new Set((storeCards || []).map(c => c.id));
@@ -74,7 +74,7 @@ const axidpsHub = (() => {
     });
     const locals = (installed || []).filter(i => !inStore.has(i.id)).map(i => {
       const k = i.card, author = i.bundled ? "axidps" : k.author;
-      return Object.assign({id: i.id, title: k.title, author, local: !i.bundled, description: "",
+      return Object.assign({id: i.id, title: k.title, author, local: !i.bundled && storeReady !== false, description: "",
         version: k.version, trust: "", uses: (k.lines || []).map(text => ({text, deep: false})), store: null,
         remove: false, note: "", bad: false, busy: false, unchecked: false}, base,
       {toggle: k.action, reason: k.reason, reload: k.reload});

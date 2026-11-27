@@ -119,3 +119,11 @@ test("bundled plugins are not local and credit axidps", () => {
   assert.strictEqual(rows[0].author, "axidps");
   assert.strictEqual(rows[0].remove, false);
 });
+
+test("an offline store does not mark installed plugins local", () => {
+  const {rows} = H.pluginRows([], [inst("a.b")], "all", "", false);
+  assert.strictEqual(rows[0].local, false);
+  assert.strictEqual(rows[0].remove, false);
+  assert.strictEqual(rows[0].store, null);
+  assert.strictEqual(H.pluginRows([], [inst("a.b")], "all", "", true).rows[0].local, true);
+});
