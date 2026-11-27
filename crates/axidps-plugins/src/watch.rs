@@ -33,6 +33,10 @@ impl Snapshot {
         };
         for e in rd.filter_map(Result::ok) {
             let path = e.path();
+            // Hidden folders (store install scratch) are never plugins; see `scan`.
+            if e.file_name().as_encoded_bytes().starts_with(b".") {
+                continue;
+            }
             if !std::fs::metadata(&path).is_ok_and(|m| m.is_dir()) {
                 continue;
             }
@@ -157,6 +161,17 @@ mod tests {
                 },
             )]),
         }
+    }
+
+    #[test]
+    fn hidden_folders_are_not_watched() {
+        let t = tempfile::tempdir().unwrap();
+        for f in [".x.old-1", "x.y"] {
+            fs::create_dir(t.path().join(f)).unwrap();
+            fs::write(t.path().join(f).join("a.js"), "1").unwrap();
+        }
+        let s = Snapshot::take(t.path());
+        assert_eq!(s.plugins.keys().collect::<Vec<_>>(), ["x.y"]);
     }
 
     #[test]

@@ -122,6 +122,11 @@ fn scan_dir(dir: &Path, bundled: bool, log: &mut Vec<String>) -> Vec<Plugin> {
     names.sort();
     let mut out = Vec::new();
     for path in names {
+        // Hidden folders are never plugins: the store unpacks into `.<id>.new-*` and moves
+        // the old copy to `.<id>.old-*`, which must not load (or shadow the real folder).
+        if path.file_name().is_some_and(|n| n.as_encoded_bytes().starts_with(b".")) {
+            continue;
+        }
         // `metadata` follows a symlinked folder; a plain file or a dangling link is skipped.
         if !std::fs::metadata(&path).is_ok_and(|m| m.is_dir()) {
             continue;
@@ -289,6 +294,20 @@ mod tests {
         assert_eq!(r.iter().filter(|x| x.error.is_some()).count(), 2);
         let good = r.iter().find(|x| x.folder == "good").unwrap();
         assert!(good.error.is_none() && loadable(good));
+    }
+
+    #[test]
+    fn hidden_folders_are_not_scanned() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path();
+        make(p, ".x.old-1", "good.one");
+        make(p, ".good.one.new-7", "good.one");
+        let real = make(p, "good.one", "good.one");
+        fs::write(real.join("a.html"), "real").unwrap();
+        let r = scan(&p.join("none"), p);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].folder, "good.one");
+        assert!(r[0].error.is_none());
     }
 
     #[test]

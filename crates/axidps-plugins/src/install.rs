@@ -9,7 +9,7 @@ use crate::tree;
 use crate::trust::Trust;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
@@ -169,6 +169,37 @@ pub fn auto_update_ok(installed: &Manifest, old_level: Trust, new: &Version, new
         && new.network.iter().all(|n| installed.network.contains(n))
 }
 
+/// Removes the `.<id>.new-<pid>` and `.<id>.old-<pid>` folders an interrupted install or
+/// uninstall left in `plugins_dir` (links are removed, never followed). Nothing else is
+/// touched. Returns one log line per leftover.
+pub fn sweep(plugins_dir: &Path) -> Vec<String> {
+    let mut log = Vec::new();
+    let Ok(rd) = fs::read_dir(plugins_dir) else { return log };
+    for e in rd.filter_map(Result::ok) {
+        let Ok(name) = e.file_name().into_string() else { continue };
+        if !is_leftover(&name) {
+            continue;
+        }
+        let path = e.path();
+        remove(&path);
+        log.push(match path.symlink_metadata() {
+            Err(_) => crate::logline::clean(&format!("removed leftover install folder {name}")),
+            Ok(_) => crate::logline::clean(&format!("couldn't remove leftover install folder {name}")),
+        });
+    }
+    log
+}
+
+/// `.<id>.new-<digits>` or `.<id>.old-<digits>` with a valid id.
+fn is_leftover(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.') else { return false };
+    [".new-", ".old-"].iter().any(|tag| {
+        rest.rsplit_once(tag).is_some_and(|(id, pid)| {
+            valid_id(id) && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+        })
+    })
+}
+
 /// Deletes a file, link or folder (a link itself, never what it points at); missing is fine.
 fn remove(p: &Path) {
     match p.symlink_metadata() {
@@ -192,6 +223,17 @@ fn check(dir: &Path, id: &str, v: &Version) -> Result<(), String> {
             "the package is {} {}, the index says {id} {}",
             m.id, m.version, v.version
         ));
+    }
+    // The listing's claims are what auto-update decides on, so they must be the manifest's.
+    let same = |a: &[String], b: &[String]| {
+        a.iter().collect::<BTreeSet<_>>() == b.iter().collect::<BTreeSet<_>>()
+    };
+    if !same(&m.permissions, &v.permissions) || !same(&m.network, &v.network) || m.api != v.api {
+        return Err(
+            "the package's manifest asks for different permissions, network hosts or api \
+             than the index lists"
+                .into(),
+        );
     }
     let tree = tree::hex(&tree::hash_dir(dir)?);
     if tree != v.tree {
@@ -338,7 +380,7 @@ mod tests {
             sha256: sha256_hex(zip),
             tree: tree::hex(&tree::hash_files(files)),
             permissions: vec!["fight".into()],
-            network: vec![],
+            network: vec!["api.example.com".into()],
             api: 1,
         }
     }
@@ -503,6 +545,73 @@ mod tests {
 
         assert_eq!(listing(&d.plugins), ["mine"]);
         assert!(Record::load(&d.store).plugins.is_empty());
+    }
+
+    #[test]
+    fn listing_must_match_manifest() {
+        let files = good_files("1.0.0");
+        let zip = zip_of(&files);
+        let good = version_of("1.0.0", &zip, &files);
+        let mut cases = Vec::new();
+        let mut v = good.clone();
+        v.permissions.clear();
+        cases.push(("fewer permissions", v));
+        let mut v = good.clone();
+        v.permissions.push("squad".into());
+        cases.push(("more permissions", v));
+        let mut v = good.clone();
+        v.network.clear();
+        cases.push(("fewer hosts", v));
+        let mut v = good.clone();
+        v.network = vec!["other.example.com".into()];
+        cases.push(("other host", v));
+        let mut v = good.clone();
+        v.api = 2;
+        cases.push(("api", v));
+        for (what, v) in cases {
+            let d = dirs();
+            let e = install(&d.plugins, &d.store, "someone.card", &v, &zip).unwrap_err();
+            assert!(e.contains("than the index lists"), "{what}: {e}");
+            assert_eq!(listing(&d.plugins), ["mine"], "{what}");
+            assert!(Record::load(&d.store).plugins.is_empty(), "{what}");
+        }
+        // Order doesn't matter.
+        let mut files = good_files("1.0.0");
+        files[0].1 = String::from_utf8(manifest("1.0.0"))
+            .unwrap()
+            .replace(r#"["fight"]"#, r#"["squad", "fight"]"#)
+            .into_bytes();
+        let zip = zip_of(&files);
+        let mut v = version_of("1.0.0", &zip, &files);
+        v.permissions = vec!["fight".into(), "squad".into()];
+        let d = dirs();
+        install(&d.plugins, &d.store, "someone.card", &v, &zip).unwrap();
+    }
+
+    #[test]
+    fn sweep_removes_only_leftovers() {
+        let d = dirs();
+        for f in [".someone.card.new-12", ".someone.card.old-3", ".a.b.c.old-1/sub"] {
+            fs::create_dir_all(d.plugins.join(f)).unwrap();
+        }
+        fs::write(d.plugins.join(".x-y.new-9"), "file").unwrap();
+        let keep = [".hidden", ".someone.card.new-", ".someone.card.new-1x", ".Bad.old-1", "someone.card.old-1", "mine"];
+        for f in &keep[..5] {
+            fs::create_dir(d.plugins.join(f)).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            // A leftover that is a link: the link goes, its target stays.
+            std::os::unix::fs::symlink(d.plugins.join("mine"), d.plugins.join(".mine.old-5")).unwrap();
+        }
+        let log = sweep(&d.plugins);
+        let mut want: Vec<String> = keep.iter().map(|s| s.to_string()).collect();
+        want.sort();
+        assert_eq!(listing(&d.plugins), want);
+        assert!(d.plugins.join("mine/a.txt").exists());
+        assert!(log.iter().all(|l| l.starts_with("removed")), "{log:?}");
+        assert_eq!(log.len(), if cfg!(unix) { 5 } else { 4 });
+        assert!(sweep(&d.plugins).is_empty());
     }
 
     #[test]
