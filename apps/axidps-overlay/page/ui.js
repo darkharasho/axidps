@@ -602,7 +602,7 @@ function tableWindow(def) {
 // stays where it happened. Before the fight there was nothing (zeros); after the last bucket
 // nothing is known yet, so the live edge averages what there is. The Timeline and Details charts
 // share it, so the same damage peaks at the same height in both.
-const SMOOTH_HALF = 2;
+const SMOOTH_HALF = 1;
 function smoothRate(series, bucketMs) {
   const n = series.length;
   return series.map((_, i) => {
@@ -705,7 +705,7 @@ defineWindow({
     const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
     const y = v => H - padB - v / top * (H - padB - padT);
     g.strokeStyle = T("line"); g.lineWidth = 1;
-    g.font = "10px " + theme.s.font; g.fillStyle = T("faint");
+    g.font = "10px " + theme.s.font; g.fillStyle = T("text");
     for (const f of [0, 0.5, 1]) {
       const yy = Math.round(y(top * f)) + 0.5;
       g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
@@ -771,7 +771,9 @@ function openDetails(account, from, stat) {
   ui.detailFrom = from ? from.id : "";
   w.cfg.view = view;
   w.cfg.by = "skill";
+  w.sort = null;
   saved.detail = account;
+  saved.detail_skill = 0;
   saveNow();
   w.offset = 0;
   w.drawn = "";
@@ -780,6 +782,7 @@ function openDetails(account, from, stat) {
 function closeDetails() {
   const w = wins.find(v => v.id === "details");
   saved.detail = "";
+  saved.detail_skill = 0;
   saveNow();
   setOpen(w, false);
 }
@@ -866,6 +869,7 @@ function detailView(view, by, d, p) {
   const dmgRows = list => {
     const total = sum(list.map(s => s.damage));
     return {total, rows: list.map(s => ({icon: s.id, name: s.name || `Skill ${s.id}`, v: s.damage,
+      keys: [s.damage, s.damage, s.hits, s.hits ? s.damage / s.hits : 0],
       cells: [fmt(s.damage), share(s.damage, total), int(s.hits), fmt(s.hits ? s.damage / s.hits : 0)]}))};
   };
   const dmgHead = ["Damage", "Share", "Hits", "Per hit"];
@@ -876,7 +880,7 @@ function detailView(view, by, d, p) {
     const {total, rows} = dmgRows(list);
     const series = !d ? [] : view === "damage" ? d.out : view === "condi" ? (d.out_condi || []) : minus(d.out, d.out_condi || []);
     const est = view !== "power" && p && (p.condi_est || 0) > 0;
-    return {series, col: T("good"), head: dmgHead, rows, sum: `${fmt(total)} ${view === "damage" ? "" : view + " "}dealt` +
+    return {series, col: T("good"), head: dmgHead, rows, pick: "out", sum: `${fmt(total)} ${view === "damage" ? "" : view + " "}dealt` +
       (est ? " · condition damage estimated" : ""), empty: `No ${view === "damage" ? "damage" : view + " damage"} dealt this fight`};
   }
   if (view === "taken") {
@@ -896,6 +900,7 @@ function detailView(view, by, d, p) {
       return {series: d ? (out ? d.heal_out : d.heal_in) || [] : [], col: T("accent"), byToggle: true,
         head: ["Healing", "Barrier", "Share"], nameHead: out ? "Healed" : "Healed by",
         rows: list.map(h => ({prof: h.prof, name: h.name || h.account || "Unknown", v: h.healing + h.barrier,
+          keys: [h.healing, h.barrier, h.healing + h.barrier],
           cells: [fmt(h.healing), fmt(h.barrier), share(h.healing + h.barrier, total)]})),
         sum: `${fmt(total)} ${out ? "given" : "received"}` + (partial ? " · only what passed between you" : ""),
         empty: out ? "No healing given this fight" : "No healing received this fight"};
@@ -903,8 +908,9 @@ function detailView(view, by, d, p) {
     const list = d ? (out ? d.heals : d.heals_in) || [] : [];
     const total = sum(list.map(h => h.healing + h.barrier));
     return {series: d ? (out ? d.heal_out : d.heal_in) || [] : [], col: T("accent"), byToggle: true,
-      head: ["Healing", "Barrier", "Share", "Hits"],
+      head: ["Healing", "Barrier", "Share", "Hits"], pick: out ? "heal" : null,
       rows: list.map(h => ({icon: h.id, name: h.name || `Skill ${h.id}`, v: h.healing + h.barrier,
+        keys: [h.healing, h.barrier, h.healing + h.barrier, h.hits],
         cells: [fmt(h.healing), fmt(h.barrier), share(h.healing + h.barrier, total), int(h.hits)]})),
       sum: `${fmt(total)} ${out ? "given" : "received"}` + (partial ? " · only what passed between you" : ""),
       empty: out ? "No healing given this fight" : "No healing received this fight"};
@@ -915,7 +921,7 @@ function detailView(view, by, d, p) {
     const total = sum(list.map(x => x.count));
     return {series: d ? (strips ? d.strip_series : d.cleanse_series) || [] : [], col: T("accent"), perSecond: false,
       head: ["Stacks", "Share"], nameHead: strips ? "Boon" : "Condition",
-      rows: list.map(x => ({icon: x.id, name: x.name || `Buff ${x.id}`, v: x.count, cells: [int(x.count), share(x.count, total)]})),
+      rows: list.map(x => ({icon: x.id, name: x.name || `Buff ${x.id}`, v: x.count, keys: [x.count, x.count], cells: [int(x.count), share(x.count, total)]})),
       sum: `${int(total)} stack${total === 1 ? "" : "s"} ${strips ? "stripped" : "cleansed"}`,
       empty: strips ? "No boons stripped this fight" : "No conditions cleansed this fight"};
   }
@@ -926,7 +932,7 @@ function detailView(view, by, d, p) {
     const ms = p && p.boons && p.boons[b];
     if (!Array.isArray(ms) || !ms.some(v => v > 0)) continue;
     const vals = ["up", "self", "group", "squad"].map((m, i) => C.boonRate(`boon:${b}:${m}`, ms[i], span));
-    rows.push({icon: b, name: STATS[`boon:${b}:up`].label, v: vals[0],
+    rows.push({icon: b, name: STATS[`boon:${b}:up`].label, v: vals[0], keys: vals,
       cells: vals.map((v, i) => C.formatBoon(`boon:${b}:${["up", "self", "group", "squad"][i]}`, v))});
   }
   return {series: null, col: T("accent"), head: ["Uptime", "Self", "Group", "Squad"], nameHead: "Boon", rows,
@@ -952,10 +958,26 @@ defineWindow({
       `<table><colgroup></colgroup><thead><tr></tr></thead><tbody></tbody></table><div class="empty"></div>` +
       `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
     w.body.querySelectorAll("[data-view]").forEach(b => b.onclick = () => {
-      w.cfg.view = b.dataset.view; w.offset = 0; w.drawn = ""; w.drawnTable = ""; save(); w.def.render(w);
+      w.cfg.view = b.dataset.view; w.offset = 0; w.drawn = ""; w.drawnTable = ""; pickSkill(0); save(); w.def.render(w);
     });
+    // A header click sorts by that column (again: the other way); the name column sorts A-Z first.
+    w.body.querySelector("thead").onclick = e => {
+      const th = e.target.closest("th[data-col]");
+      if (!th) return;
+      const col = Number(th.dataset.col), cur = w.sort || {};
+      w.sort = cur.col === col ? {col, asc: !cur.asc} : {col, asc: col < 0};
+      w.offset = 0; w.drawnTable = ""; w.def.render(w);
+    };
+    // A skill row click marks its casts and its damage per second on the chart (again: clears).
+    w.body.querySelector("tbody").onclick = e => {
+      const tr = e.target.closest("tr[data-skill]");
+      if (!tr) return;
+      const id = Number(tr.dataset.skill);
+      pickSkill(saved.detail_skill === id ? 0 : id);
+      w.drawn = ""; w.drawnTable = ""; w.def.render(w);
+    };
     w.body.querySelectorAll("[data-by]").forEach(b => b.onclick = () => {
-      w.cfg.by = b.dataset.by; w.offset = 0; w.drawnTable = ""; save(); w.def.render(w);
+      w.cfg.by = b.dataset.by; w.offset = 0; w.drawnTable = ""; w.drawn = ""; pickSkill(0); save(); w.def.render(w);
     });
     w.compact = saved.compact;
   },
@@ -979,19 +1001,31 @@ defineWindow({
     // The table: columns per view (rebuilt when the view changes).
     const layout = `${view}|${by}|${saved.compact}`;
     if (w.layoutKey !== layout) {
+      if (w.layoutKey && w.layoutKey.split("|")[0] !== view) w.sort = null;
       w.layoutKey = layout;
       w.body.querySelector("colgroup").innerHTML = `<col>` + v.head.map(() => `<col style="width:${px(78)}px">`).join("");
-      w.body.querySelector("thead tr").innerHTML = `<th class="l">${esc(v.nameHead || "Skill")}</th>` +
-        v.head.map(h => `<th>${esc(h)}</th>`).join("");
+      w.body.querySelector("thead tr").innerHTML = `<th class="l" data-col="-1">${esc(v.nameHead || "Skill")}</th>` +
+        v.head.map((h, i) => `<th data-col="${i}">${esc(h)}</th>`).join("");
     }
-    w.offset = Math.max(0, Math.min(w.offset, v.rows.length - DETAIL_ROWS));
-    const shown = v.rows.slice(w.offset, w.offset + DETAIL_ROWS);
-    const top = Math.max(1, ...v.rows.map(r => r.v));
+    // Sorted by the clicked column; the feed's order (largest first) until one is clicked.
+    const so = w.sort;
+    const rows = !so ? v.rows : v.rows.slice().sort((a, b) => {
+      const d = so.col < 0 ? String(a.name).localeCompare(String(b.name))
+        : (Number(a.keys && a.keys[so.col]) || 0) - (Number(b.keys && b.keys[so.col]) || 0);
+      return so.asc ? d : -d;
+    });
+    w.body.querySelectorAll("th[data-col]").forEach(th => th.classList.toggle("sort", !!so && Number(th.dataset.col) === so.col));
+    const pick = v.pick && rows.some(r => r.icon === saved.detail_skill) ? saved.detail_skill : 0;
+    w.offset = Math.max(0, Math.min(w.offset, rows.length - DETAIL_ROWS));
+    const shown = rows.slice(w.offset, w.offset + DETAIL_ROWS);
+    const top = Math.max(1, ...rows.map(r => r.v));
     const html = shown.map(r => {
       const frac = (Math.max(0, r.v) / top * 100).toFixed(1);
       const col = r.prof !== undefined ? PROF[r.prof] || PROF[0] : v.col;
       const lead = r.icon !== undefined ? iconImg(r.icon) : "";
-      return `<tr class="p"><td class="l name" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
+      const sel = v.pick && r.icon !== undefined;
+      return `<tr class="p${sel && r.icon === pick ? " sel" : ""}"${sel ? ` data-skill="${r.icon}"` : ""}>` +
+        `<td class="l name" style="border-left-color:${col};background:${rowBar(col, frac)}">` +
         `${lead}${esc(r.name)}</td>` + r.cells.map(c => `<td>${esc(c)}</td>`).join("") + `</tr>`;
     }).join("");
     if (w.drawnTable !== html) { w.drawnTable = html; w.body.querySelector("tbody").innerHTML = html; }
@@ -999,17 +1033,25 @@ defineWindow({
     empty.style.display = shown.length ? "none" : "block";
     empty.textContent = !want ? "Click a player's number in a window" : !d ? (ui.live && ui.live.state === "idle"
       ? emptyText() : "Loading…") : v.empty;
-    w.body.querySelector(".sum").textContent = d ? v.sum : "";
+    const pickRow = pick && rows.find(r => r.icon === pick);
+    const nCasts = pick && d && Array.isArray(d.casts) ? d.casts.filter(c => c[1] === pick).length : 0;
+    w.body.querySelector(".sum").textContent = !d ? "" : pickRow
+      ? `${pickRow.name}: ${nCasts ? `${int(nCasts)} cast${nCasts === 1 ? "" : "s"}` : "no casts (it comes from another skill or a trait)"}`
+      : v.sum + (v.pick ? " · click a skill for its casts" : "");
     w.body.querySelector(".scroll").textContent = v.rows.length > DETAIL_ROWS
       ? `${w.offset + 1}-${Math.min(v.rows.length, w.offset + DETAIL_ROWS)} of ${v.rows.length} (wheel)` : "";
     const cv = w.body.querySelector("canvas");
     cv.style.display = v.series ? "block" : "none";
-    if (v.series) drawDetail(w, d, v.series, v.col, view, v.perSecond !== false);
+    if (v.series) drawDetail(w, d, v.series, v.col, view, v.perSecond !== false, pick ? {id: pick, of: v.pick} : null);
   },
 });
 // The chart: the view's amount per second (smoothRate, as the Timeline), downs and deaths marked.
-function drawDetail(w, d, series, col, view, perSecond) {
-  const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${view}|${theme.id}|${theme.s.font}|${saved.compact}`;
+function drawDetail(w, d, series, col, view, perSecond, pick) {
+  // The selected skill: its amount per bucket (once the core sends it) and its cast starts.
+  const sk = pick && d && d.skill && d.skill.id === pick.id ? d.skill[pick.of] || [] : null;
+  const casts = pick && d && Array.isArray(d.casts) ? d.casts.filter(c => c[1] === pick.id).map(c => c[0]) : [];
+  const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${view}|${theme.id}|${theme.s.font}|${saved.compact}` +
+    `|${pick ? pick.id : ""}|${JSON.stringify(sk)}|${casts.length}`;
   if (w.drawn === key) return;
   w.drawn = key;
   const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
@@ -1017,11 +1059,12 @@ function drawDetail(w, d, series, col, view, perSecond) {
   g.clearRect(0, 0, W, H);
   const bucket = (d && d.bucket_ms) || 1000;
   const a = smoothRate(series, perSecond ? bucket : 1000);
-  const n = a.length, top = Math.max(1, ...a);
+  const bars = sk ? sk.map(v => (Number(v) || 0) * 1000 / bucket) : [];
+  const n = a.length, top = Math.max(1, ...a, ...bars);
   const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
   const y = v => H - padB - v / top * (H - padB - padT);
   g.strokeStyle = T("line"); g.lineWidth = 1;
-  g.font = "10px " + theme.s.font; g.fillStyle = T("faint");
+  g.font = "10px " + theme.s.font; g.fillStyle = T("text");
   for (const f of [0, 0.5, 1]) {
     const yy = Math.round(y(top * f)) + 0.5;
     g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
@@ -1044,13 +1087,34 @@ function drawDetail(w, d, series, col, view, perSecond) {
     g.beginPath(); g.moveTo(xx, padT); g.lineTo(xx, H - padB); g.stroke();
   }
   g.setLineDash([]);
-  g.fillStyle = alpha(col, 0.18);
+  g.fillStyle = alpha(col, pick ? 0.08 : 0.18);
   g.beginPath(); g.moveTo(x(0), y(0));
   a.forEach((v, i) => g.lineTo(x(i), y(v)));
   g.lineTo(x(n - 1), y(0)); g.closePath(); g.fill();
-  g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath();
+  g.strokeStyle = pick ? alpha(col, 0.45) : col; g.lineWidth = 1.5; g.beginPath();
   a.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
   g.stroke();
+  if (!pick) return;
+  // The skill's own amount each second, as bars (not smoothed), under its cast marks.
+  const bw = Math.max(1, (W - padL - padR) / Math.max(1, n - 1) - 1);
+  g.fillStyle = T("accent");
+  bars.forEach((v, i) => {
+    if (v <= 0 || i >= n) return;
+    const yy = y(v);
+    g.fillRect(Math.round(x(i) - bw / 2), yy, Math.max(1, Math.round(bw)), H - padB - yy);
+  });
+  // A cast: a tick along the top.
+  g.strokeStyle = T("title"); g.lineWidth = 1;
+  for (const at of casts) {
+    const xx = Math.round(x(Math.min(n - 1, at / bucket))) + 0.5;
+    g.beginPath(); g.moveTo(xx, padT); g.lineTo(xx, padT + 7); g.stroke();
+  }
+}
+// The skill the Details chart marks (saved: the core sends its numbers per second).
+function pickSkill(id) {
+  if ((saved.detail_skill || 0) === id) return;
+  saved.detail_skill = id;
+  saveNow();
 }
 
 // ---- custom windows (saved.custom: the player's specs; see custom.js) ------------------------
@@ -1130,7 +1194,7 @@ function drawChart(w, spec) {
   const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
   const y = v => H - padB - v / top * (H - padB - padT);
   g.strokeStyle = T("line"); g.lineWidth = 1;
-  g.font = "10px " + theme.s.font; g.fillStyle = T("faint");
+  g.font = "10px " + theme.s.font; g.fillStyle = T("text");
   for (const fr of [0, 0.5, 1]) {
     const yy = Math.round(y(top * fr)) + 0.5;
     g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
@@ -2150,6 +2214,11 @@ if (DEMO.includes("demo")) {
       strips: [{id: 740, name: "Might", count: 41}, {id: 1187, name: "Quickness", count: 17}, {id: 717, name: "Protection", count: 12},
         {id: 1122, name: "Stability", count: 9}],
       cleanses: [{id: 736, name: "Bleeding", count: 55}, {id: 737, name: "Burning", count: 23}, {id: 721, name: "Crippled", count: 7}],
+      casts: [5690, 5671, 5681, 5675, 5683, 5661, 5687, 9083, 9158].flatMap((id, j) =>
+        tl.out.map((_, i) => i).filter(i => (i + j * 3) % (6 + j) === 0).map(i => [i * 1000 + 200, id])),
+      skill: saved.detail_skill ? {id: saved.detail_skill,
+        out: tl.out.map((_, i) => (i % 6) < 2 ? Math.round(9000 + 4000 * Math.sin(i)) : 0),
+        heal: tl.out.map((_, i) => (i % 5) < 2 ? 1500 : 0)} : null,
       strip_series: tl.out.map((_, i) => (i * 7) % 5 === 0 ? 3 : i % 4 === 0 ? 1 : 0),
       cleanse_series: tl.out.map((_, i) => (i * 3) % 7 === 0 ? 4 : i % 5 === 0 ? 2 : 0)};
     axidps.update({v: 1, t: Date.now(), state: "fight", fight: {duration_ms: ms, map: 38}, players: ps,
