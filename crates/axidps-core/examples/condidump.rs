@@ -26,7 +26,7 @@ fn main() {
             let mine: Vec<_> = fi
                 .stacks
                 .iter()
-                .filter(|&&(s, b, _)| s == pov && (b == 736 || b == 723))
+                .filter(|&&(s, b, _, _)| s == pov && (b == 736 || b == 723))
                 .collect();
             if mine.is_empty() || shown > 60 {
                 continue;
@@ -35,7 +35,7 @@ fn main() {
             let kind = known.damage_kind();
             let st = known.stats(pov).copied();
             let mut sum = 0.0;
-            for &&(_, b, lvl) in &mine {
+            for &&(_, b, lvl, _) in &mine {
                 if let (Some(k), Some(mods), Some(st)) = (kind, known.modifiers(b), st) {
                     for m in mods.iter().filter(|m| m.target == k) {
                         sum += eval(m, lvl, &st).unwrap_or(f32::NAN);

@@ -44,8 +44,11 @@ pub struct Stack {
 pub struct Fired {
     pub target: u32,
     pub time: u64,
-    /// `(src, buff, level)` per active stack, one entry per stack.
-    pub stacks: Vec<(u32, u32, u8)>,
+    /// `(src, buff, level, ms)` per active stack, one entry per stack. `ms` is how much of the
+    /// second up to the tick the stack was on (1000 for a full second): the game deals a
+    /// condition's damage per second of duration, so a stack that lands or ends mid-second
+    /// deals that part of a tick, and arcdps's estimates do the same.
+    pub stacks: Vec<(u32, u32, u8, u16)>,
 }
 
 impl Stack {
@@ -119,6 +122,12 @@ fn remove_row(now: u64, dst: u32, remover: u32, inst: u32, s: &Stack, kind: u8) 
 /// arcdps's condition tick period.
 const TICK_MS: u64 = 1000;
 
+/// How many ms of the tick's second `(from, at]` a stack on from `applied` to `end` covered.
+fn on_ms(from: u64, at: u64, applied: u64, end: u64) -> u16 {
+    let ms = end.min(at).saturating_sub(applied.max(from));
+    u16::try_from(ms.min(TICK_MS)).unwrap_or(1000)
+}
+
 /// Buff whose presence on the target marks an apply `is_offcycle`.
 const OFFCYCLE_MARKER: u32 = 0xf65c;
 
@@ -171,7 +180,12 @@ impl Stacks {
                     if starts_tick(s.buff) && s.applied < at && s.remaining(from) > 0 {
                         ticking = true;
                         if self.record {
-                            fired.push((s.src, s.buff, s.level));
+                            let end = if s.duration >= INFINITE {
+                                at
+                            } else {
+                                s.start.saturating_add(u64::from(s.duration))
+                            };
+                            fired.push((s.src, s.buff, s.level, on_ms(from, at, s.applied, end)));
                         }
                     }
                 }
@@ -182,7 +196,7 @@ impl Stacks {
                 let (t, src, buff, level, applied, end) = self.ended[i];
                 if t == agent && end <= at {
                     if end > from && applied < at {
-                        fired.push((src, buff, level));
+                        fired.push((src, buff, level, on_ms(from, at, applied, end)));
                         ticking = true;
                     }
                     self.ended.swap_remove(i);
@@ -589,6 +603,44 @@ mod tests {
         );
         s.advance(10_000);
         assert_eq!(fired_times(&mut s), vec![(1000, 1), (2000, 1), (3000, 1)]);
+    }
+
+    #[test]
+    fn fired_stacks_carry_the_part_of_the_second_they_were_on() {
+        // Bleeding from 0 (ticks at 1000, 2000, ...); a second stack lands at 1400 and is
+        // removed at 2700; the first runs out at 3200.
+        let mut s = Stacks::default();
+        s.record_ticks();
+        s.apply(0, &apply(5, 7, 736, 1, 3200, true));
+        s.apply(1400, &apply(5, 8, 736, 2, 5000, true));
+        s.apply(
+            2700,
+            &Event::BuffRemove {
+                dst: 5,
+                remover: 0,
+                inst: 2,
+            },
+        );
+        s.advance(5000);
+        let got: Vec<(u64, Vec<(u32, u16)>)> = s
+            .take_fired()
+            .iter()
+            .map(|f| {
+                (
+                    f.time,
+                    f.stacks.iter().map(|&(src, _, _, ms)| (src, ms)).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1000, vec![(7, 1000)]),
+                (2000, vec![(7, 1000), (8, 600)]),
+                (3000, vec![(7, 1000), (8, 700)]),
+                (4000, vec![(7, 200)]),
+            ]
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ fn main() {
     let sweep = |stacks: &mut axidps_core::buffs::Stacks,
                      model: &mut BTreeMap<u32, Vec<u64>>| {
         for fi in stacks.take_fired() {
-            if fi.time >= fight.start_ms && fi.stacks.iter().any(|&(s, b, _)| s == pov && b == 736)
+            if fi.time >= fight.start_ms && fi.stacks.iter().any(|&(s, b, _, _)| s == pov && b == 736)
             {
                 model.entry(fi.target).or_default().push(fi.time);
             }
