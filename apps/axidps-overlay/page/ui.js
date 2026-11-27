@@ -2435,30 +2435,40 @@ function builderAct(hw, b) {
 const PLUGIN_FILTERS = [["all", "Everything"], ["installed", "Installed"], ["updates", "Has an update"]];
 const PLUGIN_BUTTON = {install: "Install", update: "Update", replace: "Replace yours"};
 const PLUGIN_TRUST = {verified: "v", unverified: "u", revoked: "r"};
+const filterOf = f => PLUGIN_FILTERS.some(x => x[0] === f) ? f : "all";
 const UNCHECKED = "Not checked yet. Nobody has looked at what this plugin does.";
 // The Plugins tab: one list of everything, from the store and from this computer. A filter column on
 // the left (with counts), the search box and Refresh above the rows, and one row per plugin with a
-// trust bar at its left edge. Returns the rows' counts, for the tab's update pill.
+// trust bar at its left edge. Returns the number of updates over everything, for the tab's pill.
 function renderPlugins(w) {
   const t = ui.text && ui.text.id === STORE_SEARCH ? ui.text : null;
   const query = t ? t.value : (w.storeQuery || "");
   const list = pluginHost.list.filter(p => p && typeof p === "object");
   const sm = pluginHost.storeModel(pluginHost.store, query, list, "all");
   const installed = list.map(p => ({id: String(p.id), card: pluginHost.cardModel(p, saved), bundled: p.bundled === true}));
-  const pm = axidpsHub.pluginRows(sm.cards, installed, w.storeFilter, query, sm.state === "ok");
-  const filter = PLUGIN_FILTERS.some(f => f[0] === w.storeFilter) ? w.storeFilter : "all";
+  const ready = sm.state === "ok";
+  const pm = axidpsHub.pluginRows(sm.cards, installed, w.storeFilter, query, ready);
+  // The pill counts over everything: no search, no filter.
+  const nUpdates = axidpsHub.pluginRows(pluginHost.storeModel(pluginHost.store, "", list, "all").cards,
+    installed, "all", "", ready).counts.updates;
+  // With no rows, say why for this filter and search (storeModel's own words).
+  const empty = pm.rows.length ? "" : pluginHost.storeModel(pluginHost.store, query, list, filterOf(w.storeFilter)).message
+    || (query.trim() ? `No plugins match “${query.trim()}”.`
+      : filterOf(w.storeFilter) === "installed" ? "Nothing installed yet."
+      : filterOf(w.storeFilter) === "updates" ? "Everything is up to date." : "No plugins here yet.");
+  const filter = filterOf(w.storeFilter);
   w.body.querySelector("[data-storeauto] .tog").classList.toggle("on", saved.storeAutoUpdate !== false);
-  const key = JSON.stringify([pm, filter, sm.message, sm.state, t]);
-  if (w.storeKey === key) return pm.counts;
+  const key = JSON.stringify([pm, filter, empty, sm.message, sm.state, t, nUpdates]);
+  if (w.storeKey === key) return nUpdates;
   w.storeKey = key;
   w.body.querySelector(".pfilters").innerHTML = PLUGIN_FILTERS.map(([f, label]) =>
-    `<div class="pf${filter === f ? " on" : ""}" data-sfilter="${f}">${esc(label)} <i>${pm.counts[f === "all" ? "all" : f]}</i></div>`).join("");
+    `<div class="pf${filter === f ? " on" : ""}" data-sfilter="${f}">${esc(label)} <i>${pm.counts[f]}</i></div>`).join("");
   w.body.querySelector(".sfield").innerHTML = t
     ? `<span class="field focus search" data-search>${esc(t.value.slice(0, t.caret))}<i class="caret"></i>` +
       `${esc(t.value.slice(t.caret))}</span>`
     : `<span class="field search${query ? "" : " empty"}" data-search>${esc(query || "Search plugins")}</span>`;
   const msg = w.body.querySelector(".store-msg");
-  const text = !pm.rows.length ? sm.message : sm.state !== "ok" && sm.cards.length ? sm.message : "";
+  const text = !pm.rows.length ? empty : sm.state !== "ok" && sm.cards.length ? sm.message : "";
   msg.textContent = text;
   msg.style.display = text ? "" : "none";
   const btn = (attr, act, label, cls) => `<button data-${attr}="${act}"${cls ? ` class="${cls}"` : ""}>${esc(label)}</button>`;
@@ -2482,9 +2492,9 @@ function renderPlugins(w) {
       `${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}` +
       `${uses ? `<div class="uses">${uses}</div>` : ""}` +
       `${r.unchecked ? `<div class="snote bad">${esc(UNCHECKED)}</div>` : ""}` +
-      `${r.note ? `<div class="snote${r.bad ? " bad" : ""}">${esc(r.note)}</div>` : ""}</div>`;
+      `${r.note && r.note !== r.reason ? `<div class="snote${r.bad ? " bad" : ""}">${esc(r.note)}</div>` : ""}</div>`;
   }).join("");
-  return pm.counts;
+  return nUpdates;
 }
 
 // Everything in one place: a full window over the dimmed game, centred, closed by a click
@@ -2702,7 +2712,7 @@ const hub = defineWindow({
     w.body.querySelectorAll(".tabb").forEach(n => n.classList.toggle("on", n.dataset.tab === w.tab));
     w.body.querySelectorAll("section").forEach(sc => sc.classList.toggle("on", sc.dataset.tab === w.tab));
     if (w.tab === "windows") renderWindows(w);
-    const nUpd = renderPlugins(w).updates;
+    const nUpd = renderPlugins(w);
     const pill = w.body.querySelector('.tabb[data-tab="plugins"] .n');
     pill.textContent = nUpd === 1 ? "1 update" : nUpd + " updates";
     pill.style.display = nUpd ? "" : "none";
