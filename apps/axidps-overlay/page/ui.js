@@ -1000,9 +1000,13 @@ defineWindow({
     const p = players().find(x => x.account === want);
     const name = d ? d.name : p ? p.name : want;
     const spec = d ? d.spec : p && p.spec;
+    // The player's profession colour paints the name, the bars and the chart (else the view's).
+    const prof = d && d.prof !== undefined ? d.prof : p ? p.prof : undefined;
+    const cls = prof !== undefined && PROF[prof] ? PROF[prof] : null;
     w.body.querySelector(".who").innerHTML = (spec ? `<img src="icons/${encodeURIComponent(spec)}.png" alt="">` : "") +
-      `<b>${esc(name)}</b><small>${esc(want)}</small>`;
+      `<b${cls ? ` style="color:${cls}"` : ""}>${esc(name)}</b><small>${esc(want)}</small>`;
     const v = detailView(view, by, d, p);
+    if (cls) v.col = cls;
     w.body.querySelector(".seg.by").style.visibility = v.byToggle ? "visible" : "hidden";
     // The table: columns per view (rebuilt when the view changes).
     const layout = `${view}|${by}|${saved.compact}`;
@@ -1104,7 +1108,7 @@ function drawDetail(w, d, series, col, view, perSecond, pick) {
   if (!pick) return;
   // The skill's own amount each second, as bars (not smoothed), under its cast marks.
   const bw = Math.max(1, (W - padL - padR) / Math.max(1, n - 1) - 1);
-  g.fillStyle = T("accent");
+  g.fillStyle = col;
   bars.forEach((v, i) => {
     if (v <= 0 || i >= n) return;
     const yy = y(v);
