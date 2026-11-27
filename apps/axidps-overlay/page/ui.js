@@ -1604,12 +1604,12 @@ if (DEMO.includes("demo")) {
   }
   // The host's zones for 2560x1440 at normal interface size, compass at the bottom right.
   axidps.gameui([{id: "minimap", label: "Minimap", x: 2200, y: 1064, w: 360, h: 376},
-    {id: "skills", label: "Skill bar", x: 735, y: 1265, w: 1090, h: 175},
-    {id: "chat", label: "Chat (default size)", x: 0, y: 1150, w: 520, h: 290},
+    {id: "skills", label: "Skill bar", x: 880, y: 1265, w: 800, h: 175},
+    {id: "chat", label: "Chat (default size)", x: 0, y: 1150, w: 550, h: 290},
     {id: "menu", label: "Menu bar", x: 0, y: 0, w: 320, h: 42},
-    {id: "party", label: "Party", x: 0, y: 44, w: 250, h: 330},
+    {id: "party", label: "Party / squad", x: 0, y: 44, w: 400, h: 330},
     {id: "target", label: "Target", x: 1000, y: 0, w: 560, h: 120},
-    {id: "tracker", label: "Event tracker", x: 2240, y: 190, w: 320, h: 360}]);
+    {id: "tracker", label: "Event tracker", x: 2240, y: 0, w: 320, h: 560}]);
   const names = ["Sentinel Vael", "Darkpaw", "Ironwake", "Morrow Kestrel", "Brannoc", "Ysolde Tam",
     "Oren", "Lys Harrow", "Quill", "Thessaly", "Corvin Ash", "Mira", "Dunmore", "Saffi", "Rook",
     "Talon", "Wren"];
