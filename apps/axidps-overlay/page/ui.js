@@ -234,7 +234,8 @@ const ui = {
 // else its id); plugins: {<plugin id>: {enabled, granted}}; dev: developer mode (the host reads it at
 // start); pwin: {<plugin window full id>: {bar, clear}}, the host's own options for that window.
 let saved = {v: 1, pos: {}, open: {}, cfg: {}, theme: "midnight", opacity: 0.94, blur: 1, rows: 15, core: {}, app: {},
-  tables: [], custom: [], hideZones: false, compact: false, plugins: {}, pwin: {}, dev: false, storeAutoUpdate: true};
+  tables: [], custom: [], hideZones: false, compact: false, plugins: {}, pwin: {}, dev: false, storeAutoUpdate: true,
+  merge: false, groups: []};
 const wins = [];
 // The live feed's history, for custom windows' spans other than "fight" and their charts
 // (custom.js). Not `history`: that is the page's window.history.
@@ -284,7 +285,7 @@ function setDev(on) {
 //       mount(w), render(w), tool(w, id)}
 function defineWindow(def) {
   const el = document.createElement("div");
-  el.className = "win" + (def.ed ? " ed" : "") + (def.bare ? " bare" : "") + (def.modal ? " modal" : "");
+  el.className = "win" + (def.ed ? " ed" : "") + (def.bare ? " bare" : "") + (def.modal ? " modal" : "") + (def.group ? " group" : "");
   el.dataset.id = def.id;
   const tools = (def.tools || []).map(t =>
     `<button data-tool="${t.id}" data-tip="${esc(t.tip)}">${esc(t.label)}</button>`).join("");
@@ -324,7 +325,7 @@ function isOpen(w) { return wantsOpen(w) && !w.overCap && !w.overAtlas; }
 const MAX_OPEN = 16;
 const CAP = MAX_OPEN - 2;
 const CAP_NOTE = `${MAX_OPEN} windows are open; close one first`;
-const capped = w => !w.def.session && !w.def.editOnly;
+const capped = w => !w.def.session && !w.def.editOnly && !w.inGroup;
 // Windows open without a setOpen (defaults, a restored layout, plugin windows) past the cap count
 // as closed, the later ones first, and the hub says so.
 function applyCap() {
@@ -363,6 +364,7 @@ function setOpen(w, on) {
 }
 function posOf(w) {
   if (w.def.fixed) return w.def.at(ui.screen, w.el);
+  if (w.inGroup && groups.has(w.inGroup)) return memberPos(w);
   const p = saved.pos[w.key];
   if (Array.isArray(p) && p.length === 2) return p;
   return w.def.at ? w.def.at(ui.screen, w.el) : [80, 80];
@@ -390,7 +392,7 @@ function covers(w) {
   return ui.zones.filter(z => overlap(r, z));
 }
 // Windows the player arranges (not the edit-mode tools or the hub).
-const movable = () => wins.filter(w => !w.def.editOnly && !w.def.fixed && !w.def.session);
+const movable = () => wins.filter(w => !w.def.editOnly && !w.def.fixed && !w.def.session && !w.inGroup);
 // Move `w` to the nearest spot that covers no game UI (and preferably no other window): next to
 // each covered area, then next to the areas those spots cover. Returns false if none fits.
 function unblock(w) {
@@ -420,6 +422,7 @@ function requestEdit(on) {
 
 function renderAll() {
   if (ui.text && !isOpen(hub)) endText(true); // the hub closed: keep what was typed
+  layoutGroups();
   applyCap();
   document.body.classList.toggle("editing", ui.editing);
   document.body.classList.toggle("compact", !!saved.compact);
@@ -477,7 +480,7 @@ function report() {
   }
   const windows = [];
   for (const w of wins) {
-    if (!isOpen(w)) continue;
+    if (!isOpen(w) || w.inGroup) continue;
     const r = w.el.getBoundingClientRect();
     const [sx, sy] = posOf(w);
     // Bare windows, and plugin windows set transparent, get no rounded blurred backdrop.
@@ -485,18 +488,407 @@ function report() {
     // No drag zone: windows are locked in place and move only in edit mode (Arrange).
     windows.push({name: w.id, ax: Math.floor(r.left), ay: Math.floor(r.top),
       w: Math.ceil(r.width), h: Math.ceil(r.height), sx: Math.round(sx), sy: Math.round(sy),
-      drag: [0, 0, 0, 0], r: flat ? 0 : theme.s.r,
+      // A merged window drags by its bar; a press elsewhere pulls a table off. A torn-off table
+      // takes the drag over from its grab point until the DLL reports it (FLAG_GRAB).
+      drag: w.grab ? [w.grab[0], w.grab[1], 0, 0]
+        : w.def.group && ui.editing ? [0, 0, Math.ceil(r.width), w.bar.offsetHeight] : [0, 0, 0, 0],
+      r: flat ? 0 : theme.s.r,
       blur: flat ? 0 : w.def.modal ? Math.max(2, blurLevel()) : blurLevel(),
-      flags: (w.def.ed ? 1 : 0) | (w.def.modal ? 2 : 0)});
+      flags: (w.def.ed ? 1 : 0) | (w.def.modal ? 2 : 0) | (w.def.group ? FLAG_GROUP : 0) | (w.grab ? FLAG_GRAB : 0)});
   }
   // Never more than the DLL's table holds; the interactive and modal windows go first.
   if (windows.length > MAX_OPEN) {
-    const first = windows.filter(x => x.flags), rest = windows.filter(x => !x.flags);
+    const first = windows.filter(x => x.flags & 3), rest = windows.filter(x => !(x.flags & 3));
     windows.splice(0, windows.length, ...first.concat(rest).slice(0, MAX_OPEN));
   }
   const msg = JSON.stringify({windows, edit_seq: ui.editSeq, hide_zones: !!saved.hideZones,
     text_focus: !!ui.text && isOpen(hub)});
   if (msg !== lastReport) { lastReport = msg; toHost(msg); }
+}
+
+// ---- merged windows (Settings: Merge windows that snap together) ---------------------------
+//
+// saved.groups: [{id, cells: [{k, r, c}]}], k a member window's key. A merged window is a window
+// of its own ("g<id>") whose grid holds its members' elements; each member's bar is its table's
+// header. Only the merged window reaches the DLL (FLAG_GROUP, its bar the drag zone): in Arrange a
+// press on a table pulls it, and past TEAR px it tears off into its own window (FLAG_GRAB hands
+// the drag over). While a window is dragged the DLL reports where (`dragging`), and the window it
+// would join opens a slot for it; dropping there merges.
+const FLAG_GROUP = 4, FLAG_GRAB = 8;
+const XM = axidpsMerge;
+const mergeable = w => !!w && !w.def.group && (w.def.table || w.def.custom);
+const groups = new Map(); // id -> group window
+const groupOf = w => w && w.inGroup ? groups.get(w.inGroup) : null;
+const memberWin = k => wins.find(w => w.key === k);
+// The drag in progress: {name, key (of the dock), d (dock), gid (target), temp (made for the preview)}.
+let mdrag = null, mpull = null, sawDragging = false;
+
+// A frame-by-frame tween (Servo has no Element.animate): fn(frame) -> style props, set each frame
+// and cleared at the end. A new tween on the same element cancels the last.
+function play(el, frames, ms, fn, done) {
+  if (el._tw) el._tw();
+  let raf = 0, t0 = 0, keys = [];
+  const set = st => { keys = Object.keys(st); Object.assign(el.style, st); };
+  const end = () => { cancelAnimationFrame(raf); el._tw = null; for (const k of keys) el.style[k] = ""; if (done) done(); };
+  const step = t => {
+    if (!t0) t0 = t;
+    const f = Math.min(1, (t - t0) / ms) * (frames.length - 1), i = Math.floor(f), a = frames[i], b = frames[Math.min(i + 1, frames.length - 1)];
+    const q = f - i;
+    set(fn({p: a.p + (b.p - a.p) * q, v: a.v + (b.v - a.v) * q}));
+    if (f >= frames.length - 1) { end(); return; }
+    raf = requestAnimationFrame(step);
+  };
+  el._tw = () => { cancelAnimationFrame(raf); el._tw = null; for (const k of keys) el.style[k] = ""; };
+  set(fn(frames[0]));
+  raf = requestAnimationFrame(step);
+}
+const spring = (el, fn, done) => play(el, XM.SPR, XM.SPR_MS, fn, done);
+const glide = (el, fn, done) => play(el, XM.GL, XM.GL_MS, fn, done);
+const ORIGIN = {left: "right center", right: "left center", top: "center bottom", bottom: "center top"};
+
+function groupWindow(id) {
+  const w = defineWindow({id: "g" + id, title: "", group: true, open: true,
+    mount(w) { w.body.innerHTML = `<div class="mgrid"></div>`; w.grid = w.body.firstChild; },
+    render(w) {
+      const titles = w.cells.filter(x => !x.ghost).map(x => memberWin(x.k)).filter(Boolean).map(m => m.def.title);
+      w.bar.querySelector("b").textContent = titles.join(" + ");
+      w.el.querySelector(":scope > .edit b").textContent = titles.join(" + ");
+    }});
+  w.gid = id;
+  w.cells = [];
+  groups.set(id, w);
+  return w;
+}
+
+// Put a group's members (and a preview's ghost) into its grid.
+function layGroup(g, cells) {
+  g.cells = cells;
+  const keep = new Set();
+  for (const x of cells) {
+    let el;
+    if (x.ghost) {
+      el = g.grid.querySelector(".ghost") || g.grid.appendChild(Object.assign(document.createElement("div"), {className: "ghost"}));
+      el.style.width = x.w + "px"; el.style.height = x.h + "px";
+      const n = (dr, dc) => cells.some(y => !y.ghost && y.r === x.r + dr && y.c === x.c + dc);
+      el.className = "ghost" + (n(0, -1) ? " e-l" : "") + (n(0, 1) ? " e-r" : "") + (n(-1, 0) ? " e-t" : "") + (n(1, 0) ? " e-b" : "");
+    } else {
+      const m = memberWin(x.k);
+      if (!m) continue;
+      m.inGroup = g.gid;
+      el = m.el;
+      if (el.parentNode !== g.grid) g.grid.appendChild(el);
+      el.classList.add("cell");
+      el.querySelector(".edit small").textContent = "drag to pull off";
+    }
+    el.style.gridArea = `${x.r + 1} / ${x.c + 1}`;
+    keep.add(el);
+  }
+  for (const el of [...g.grid.children]) if (!keep.has(el)) release(el);
+}
+// A member element leaves its group's grid for the atlas.
+function release(el) {
+  if (el.classList.contains("ghost")) { el.remove(); return; }
+  const m = wins.find(w => w.el === el);
+  el.classList.remove("cell");
+  el.style.gridArea = "";
+  const s = el.querySelector(".edit small");
+  if (s) s.textContent = "drag to move";
+  document.getElementById("atlas").appendChild(el);
+  if (m) m.inGroup = 0;
+}
+// A member's screen position: its group's, plus where it sits in the group.
+function memberPos(m) {
+  const g = groupOf(m), [gx, gy] = posOf(g), a = g.el.getBoundingClientRect(), b = m.el.getBoundingClientRect();
+  return [gx + b.left - a.left, gy + b.top - a.top];
+}
+// Every member gets its own place where it sits now, and the group goes.
+function dissolve(g) {
+  for (const x of g.cells) {
+    const m = !x.ghost && memberWin(x.k);
+    if (m && m.inGroup === g.gid) saved.pos[m.key] = memberPos(m).map(Math.round);
+  }
+  for (const el of [...g.grid.children]) release(el);
+  groups.delete(g.gid);
+  delete saved.pos[g.key]; delete saved.open[g.key];
+  removeWindow(g);
+}
+
+// Make the group windows match saved.groups (and the option), before each render.
+function layoutGroups() {
+  if (!saved.merge) {
+    if (mdrag) endPreview();
+    for (const g of [...groups.values()]) dissolve(g);
+    saved.groups = [];
+    return;
+  }
+  // Members closed from the hub leave; a group left with one dissolves.
+  const ok = k => { const m = memberWin(k); return mergeable(m) && wantsOpen(m); };
+  const before = JSON.stringify(saved.groups || []);
+  for (const g of saved.groups || []) if (Array.isArray(g.cells)) g.cells = g.cells.filter(x => x && ok(x.k));
+  const live = XM.normalizeGroups(saved.groups, ok);
+  for (const g of [...groups.values()]) {
+    if (mdrag && mdrag.temp && mdrag.gid === g.gid) continue;
+    if (!live.some(x => x.id === g.gid)) dissolve(g);
+  }
+  for (const s of live) {
+    const g = groups.get(s.id) || groupWindow(s.id);
+    if (!(mdrag && mdrag.gid === s.id)) layGroup(g, s.cells);
+  }
+  saved.groups = live;
+  if (JSON.stringify(live) !== before) save();
+}
+
+// ---- dragging: where the dragged window would join ----
+
+function blockOf(w) {
+  if (w.def.group) return w.cells.filter(x => !x.ghost).map(x => ({k: x.k, r: x.r, c: x.c}));
+  return [{k: w.key, r: 0, c: 0}];
+}
+// A window's (or group's) tables in screen space, for dockAt.
+function targetOf(t) {
+  const [px, py] = posOf(t), a = t.el.getBoundingClientRect();
+  const scr = r => ({x: px + r.left - a.left, y: py + r.top - a.top, w: r.width, h: r.height});
+  if (!t.def.group) return {id: t.id, cells: [{k: t.key, r: 0, c: 0}], rects: {[t.key]: scr(t.el.getBoundingClientRect())}, grid: null};
+  const rects = {};
+  for (const x of t.cells) { const m = !x.ghost && memberWin(x.k); if (m) rects[x.k] = scr(m.el.getBoundingClientRect()); }
+  // Track sizes from the members (each column as wide as its widest table).
+  const real = t.cells.filter(x => !x.ghost && rects[x.k]), gr = t.grid.getBoundingClientRect();
+  const nc = Math.max(0, ...real.map(x => x.c + 1)), nr = Math.max(0, ...real.map(x => x.r + 1));
+  const cols = Array.from({length: nc}, (_, c) => Math.max(0, ...real.filter(x => x.c === c).map(x => rects[x.k].w)));
+  const rows = Array.from({length: nr}, (_, r) => Math.max(0, ...real.filter(x => x.r === r).map(x => rects[x.k].h)));
+  return {id: t.id, cells: real.map(x => ({k: x.k, r: x.r, c: x.c})), rects, grid: Object.assign(scr(gr), {cols, rows})};
+}
+// Element rects before a change, to animate from.
+const rectsIn = el => new Map([...el.querySelectorAll(".mgrid > *")].map(e => [e, e.getBoundingClientRect()]));
+// After a change: members slide from where they were, a new slot opens from the edge it joins,
+// the window's size follows. `hero`: elements that spring and squash instead (attach, detach).
+function animateGroup(g, before, side, hero, boxBefore) {
+  for (const el of g.grid.children) {
+    const b = before.get(el), a = el.getBoundingClientRect();
+    const horiz = side ? side === "left" || side === "right" : true;
+    if (!b) {
+      if (el.classList.contains("ghost")) {
+        const h = side === "left" || side === "right" || side === "fill" || !side;
+        glide(el, ({p}) => ({transform: h ? `scaleX(${Math.max(0, p)})` : `scaleY(${Math.max(0, p)})`, transformOrigin: ORIGIN[side] || "center"}));
+      }
+      continue;
+    }
+    const dx = b.left - a.left, dy = b.top - a.top, isHero = hero && hero.has(el);
+    if (Math.abs(dx) + Math.abs(dy) < 1 && !isHero) continue;
+    (isHero ? spring : glide)(el, ({p, v}) => ({
+      transform: `translate(${dx * (1 - p)}px,${dy * (1 - p)}px)${isHero ? " " + XM.squish(horiz, v, 0.12) : ""}`,
+      transformOrigin: isHero ? ORIGIN[side] || "center" : "", zIndex: isHero ? "6" : "2"}));
+  }
+  const a = g.el.getBoundingClientRect();
+  if (boxBefore && (Math.abs(a.width - boxBefore.width) >= 1 || Math.abs(a.height - boxBefore.height) >= 1)) {
+    // The border is outside the content box: tween the content size.
+    const bw = a.width - g.el.clientWidth, bh = a.height - g.el.clientHeight;
+    glide(g.el, ({p}) => {
+      scheduleReport(); // the DLL's quad follows the size each frame
+      return {width: boxBefore.width - bw + (a.width - boxBefore.width) * p + "px",
+        height: boxBefore.height - bh + (a.height - boxBefore.height) * p + "px", boxSizing: "content-box"};
+    }, scheduleReport);
+  }
+}
+
+// Undo the preview: the ghost goes; a group made only for it gives its one window back.
+function endPreview() {
+  const d = mdrag;
+  mdrag = null;
+  const dragged = d && wins.find(w => w.id === d.name);
+  if (dragged) dragged.el.classList.remove("docking");
+  const g = d && d.gid && groups.get(d.gid);
+  if (!g) return;
+  const before = rectsIn(g.el), box = g.el.getBoundingClientRect();
+  if (d.temp) { dissolveTemp(g); return; }
+  const s = (saved.groups || []).find(x => x.id === g.gid);
+  if (s) layGroup(g, s.cells);
+  animateGroup(g, before, d.d && d.d.side, null, box);
+}
+// A preview's one-window group: the window goes back where it was, unmoved.
+function dissolveTemp(g) {
+  for (const el of [...g.grid.children]) release(el);
+  groups.delete(g.gid);
+  delete saved.pos[g.key]; delete saved.open[g.key];
+  removeWindow(g);
+  renderAll();
+}
+const nextGroupId = () => Math.max(0, ...(saved.groups || []).map(g => g.id), ...groups.keys()) + 1;
+
+function onDragging(name, x, y, gx, gy) {
+  const w = wins.find(v => v.id === name);
+  if (w && w.grab) { w.grab = null; mpull = null; scheduleReport(); } // the DLL took the hand-off
+  if (!saved.merge || !ui.editing || !w || !(mergeable(w) || w.def.group) || w.inGroup) return;
+  const px = x + gx, py = y + gy;
+  // Inside the open slot (with a little slack): stay.
+  if (mdrag && mdrag.name === name && mdrag.gid) {
+    const g = groups.get(mdrag.gid), gh = g && g.grid.querySelector(".ghost");
+    if (gh) {
+      const [ox, oy] = posOf(g), a = g.el.getBoundingClientRect(), r = gh.getBoundingClientRect();
+      const sx = ox + r.left - a.left, sy = oy + r.top - a.top;
+      if (px > sx - 14 && px < sx + r.width + 14 && py > sy - 14 && py < sy + r.height + 14) return;
+    }
+  }
+  const targets = wins.filter(t => t !== w && isOpen(t) && !t.inGroup && (t.def.group ? !(mdrag && mdrag.temp && mdrag.gid === t.gid) : mergeable(t)))
+    .map(targetOf);
+  // A preview's own group stands for its one window.
+  if (mdrag && mdrag.temp && groups.get(mdrag.gid)) {
+    const g = groups.get(mdrag.gid), k = g.cells.find(c => !c.ghost).k, m = memberWin(k);
+    targets.push({id: m.id, cells: [{k, r: 0, c: 0}], rects: {[k]: targetOf(g).rects[k]}, grid: null});
+  }
+  let d = XM.dockAt(px, py, targets, XM.BAND);
+  const tw = d && wins.find(v => v.id === d.id);
+  const block = blockOf(w);
+  const key = d ? `${d.id}|${d.k || d.r + "," + d.c}|${d.side}` : "";
+  if (mdrag && mdrag.name === name && mdrag.key === key) return;
+  // Leaving the slot: close it first.
+  const sameTemp = mdrag && mdrag.temp && tw && !tw.def.group && groupOf(tw) && groupOf(tw).gid === mdrag.gid;
+  if (mdrag && !sameTemp) endPreview();
+  if (!d) { mdrag = null; return; }
+  let g = tw.def.group ? tw : groupOf(tw), temp = false;
+  if (!g) {
+    // A plain window: a group of one for the preview, where the window is.
+    const at = posOf(tw);
+    g = groupWindow(nextGroupId());
+    saved.pos[g.key] = at.map(Math.round);
+    layGroup(g, [{k: tw.key, r: 0, c: 0}]);
+    // Placed so the window's table stays exactly where it was (the merged window's bar above it).
+    const a = g.el.getBoundingClientRect(), b = tw.el.getBoundingClientRect();
+    saved.pos[g.key] = [Math.round(at[0] - (b.left - a.left)), Math.round(at[1] - (b.top - a.top))];
+    temp = true;
+  } else if (sameTemp) temp = true;
+  const real = g.cells.filter(c => !c.ghost);
+  const cell = d.side === "fill" ? {r: d.r, c: d.c} : real.find(c => c.k === d.k);
+  const bw = w.el.getBoundingClientRect();
+  const ghost = XM.compact(block).map(b => Object.assign({}, b, {k: "ghost:" + b.k, ghost: true}));
+  // One ghost cell for the whole block, sized like the dragged window.
+  const plan = cell && XM.place(real, cell.r, cell.c, d.side, ghost);
+  if (!plan) { w.el.classList.remove("docking"); if (temp) dissolveTemp(g); mdrag = null; return; }
+  const ghosts = plan.filter(c => c.ghost), g0 = ghosts[0];
+  const r0 = Math.min(...ghosts.map(c => c.r)), c0 = Math.min(...ghosts.map(c => c.c));
+  const cells = plan.filter(c => !c.ghost).concat([{k: "ghost", ghost: true, r: r0, c: c0, w: bw.width, h: bw.height,
+    rs: Math.max(...ghosts.map(c => c.r)) - r0 + 1, cs: Math.max(...ghosts.map(c => c.c)) - c0 + 1}]);
+  mdrag = {name, key, d, gid: g.gid, temp, plan, block};
+  const before = rectsIn(g.el), box = g.el.getBoundingClientRect();
+  layGroup(g, cells);
+  const gh = g.grid.querySelector(".ghost");
+  if (gh && g0) gh.style.gridArea = `${r0 + 1} / ${c0 + 1} / span ${cells.at(-1).rs} / span ${cells.at(-1).cs}`;
+  w.el.classList.add("docking");
+  renderAll();
+  animateGroup(g, before, d.side, null, box);
+}
+
+// Without drag progress (an older DLL): try the dropped window's edges, just inside each, as the
+// pointer; a window snapped beside a table has that edge within the dock band.
+function dockOnDrop(w) {
+  if (!saved.merge || !ui.editing || !w || !(mergeable(w) || w.def.group) || w.inGroup) return;
+  const W = w.el.offsetWidth, H = w.el.offsetHeight, [x, y] = posOf(w);
+  for (const [gx, gy] of [[6, H / 2], [W - 6, H / 2], [W / 2, 6], [W / 2, H - 6]]) {
+    onDragging(w.id, x, y, Math.round(gx), Math.round(gy));
+    if (mdrag) return;
+  }
+}
+
+// The drop: with a slot open, the window (or group) joins; otherwise nothing changes here.
+function onDropped(w) {
+  if (!mdrag || !w || mdrag.name !== w.id) { if (mdrag) endPreview(); return false; }
+  const d = mdrag, g = groups.get(d.gid);
+  mdrag = null;
+  w.el.classList.remove("docking");
+  if (!g) return false;
+  // Where the dropped tables were on screen, to fly in from.
+  const [dx0, dy0] = posOf(w), wa = w.el.getBoundingClientRect();
+  const from = new Map();
+  const ms = w.def.group ? w.cells.filter(x => !x.ghost).map(x => memberWin(x.k)) : [w];
+  for (const m of ms) { const r = m.el.getBoundingClientRect(); from.set(m.key, [dx0 + r.left - wa.left, dy0 + r.top - wa.top, r.width, r.height]); }
+  const cells = d.plan.map(c => c.ghost ? {k: c.k.slice(6), r: c.r, c: c.c} : {k: c.k, r: c.r, c: c.c});
+  if (w.def.group) {
+    for (const el of [...w.grid.children]) release(el);
+    groups.delete(w.gid);
+    delete saved.pos[w.key]; delete saved.open[w.key];
+    removeWindow(w);
+  }
+  saved.groups = (saved.groups || []).filter(x => x.id !== g.gid && (!w.gid || x.id !== w.gid)).concat([{id: g.gid, cells}]);
+  layGroup(g, cells);
+  renderAll();
+  // The absorbed tables spring in from where they were dropped, squashing against the edge.
+  const [gx, gy] = posOf(g), ga = g.el.getBoundingClientRect();
+  const hero = new Set(ms.map(m => m.el)), before = new Map();
+  for (const m of ms) {
+    const f = from.get(m.key), r = m.el.getBoundingClientRect();
+    before.set(m.el, {left: r.left + (f[0] - (gx + r.left - ga.left)), top: r.top + (f[1] - (gy + r.top - ga.top))});
+  }
+  for (const el of g.grid.children) if (!before.has(el)) before.set(el, el.getBoundingClientRect());
+  const side = d.d.side === "fill" ? null : d.d.side;
+  animateGroup(g, before, side, hero, null);
+  spring(g.grid, ({p}) => ({transform: `scale(${1 + 0.008 * Math.sin(Math.min(1, p) * Math.PI)})`}));
+  save();
+  return true;
+}
+
+// ---- pulling a table off a merged window ----
+
+function pullXf(dx, dy) {
+  const d = Math.hypot(dx, dy) || 1, f = Math.min(d, XM.TEAR) / XM.TEAR, m = 0.35 * d * (1 - 0.3 * f);
+  const ux = dx / d, uy = dy / d, st = 1 + 0.08 * f, h = Math.abs(ux) > Math.abs(uy);
+  return {transform: `translate(${ux * m}px,${uy * m}px) ${h ? `scale(${st},${2 - st})` : `scale(${2 - st},${st})`}`,
+    transformOrigin: h ? (ux > 0 ? "left center" : "right center") : (uy > 0 ? "center top" : "center bottom"), h};
+}
+function onPull(name, x, y) {
+  const g = wins.find(v => v.id === name);
+  if (!g || !g.def.group || !ui.editing) return;
+  if (!mpull) {
+    const a = g.el.getBoundingClientRect();
+    const m = g.cells.map(c => !c.ghost && memberWin(c.k)).filter(Boolean).find(m => {
+      const r = m.el.getBoundingClientRect();
+      return x >= r.left - a.left && x < r.right - a.left && y >= r.top - a.top && y < r.bottom - a.top;
+    });
+    mpull = {g, m, x0: x, y0: y};
+    if (m && m.el._tw) m.el._tw();
+    return;
+  }
+  const p = mpull;
+  if (!p.m || p.torn) return;
+  const dx = x - p.x0, dy = y - p.y0, t = pullXf(dx, dy);
+  p.dx = dx; p.dy = dy;
+  p.m.el.style.transform = t.transform; p.m.el.style.transformOrigin = t.transformOrigin; p.m.el.style.zIndex = "6";
+  if (Math.hypot(dx, dy) <= XM.TEAR) return;
+  // Torn off: its own window under the pointer, the drag handed to it.
+  p.torn = true;
+  const m = p.m, [ox, oy] = posOf(g), r = m.el.getBoundingClientRect();
+  const before = rectsIn(g.el), box = g.el.getBoundingClientRect();
+  m.el.style.transform = ""; m.el.style.transformOrigin = ""; m.el.style.zIndex = "";
+  const gxy = [Math.round(r.width / 2), 12];
+  const s = saved.groups.find(v => v.id === g.gid);
+  s.cells = XM.removeKey(s.cells, m.key);
+  // Where the others sit now, before the grid closes the gap.
+  const stay = s.cells.map(c => memberWin(c.k)).filter(Boolean).map(o => [o, memberPos(o).map(Math.round)]);
+  release(m.el);
+  saved.pos[m.key] = [Math.round(ox + x - gxy[0]), Math.round(oy + y - gxy[1])];
+  m.grab = gxy;
+  if (s.cells.length < 2) {
+    saved.groups = saved.groups.filter(v => v !== s);
+    dissolve(g);
+    for (const [o, at] of stay) saved.pos[o.key] = at;
+  } else {
+    layGroup(g, s.cells);
+    animateGroup(g, before, null, null, box);
+  }
+  save();
+  renderAll();
+  const side = t.h ? (dx > 0 ? "left" : "right") : (dy > 0 ? "top" : "bottom");
+  spring(m.el, ({v}) => ({transform: XM.squish(side === "left" || side === "right", v, 0.12), transformOrigin: ORIGIN[side]}));
+  if (m.bar) glide(m.bar, ({p}) => ({opacity: String(Math.min(1, p * 1.5))}));
+}
+function onPullEnd() {
+  const p = mpull;
+  mpull = null;
+  for (const w of wins) if (w.grab) { w.grab = null; scheduleReport(); }
+  if (!p || !p.m || p.torn) return;
+  // Back into place with the spring, from however far it was stretched.
+  const el = p.m.el, dx = p.dx || 0, dy = p.dy || 0;
+  el.style.zIndex = "";
+  spring(el, ({p: k}) => { const t = pullXf(dx * (1 - k), dy * (1 - k)); return {transform: t.transform, transformOrigin: t.transformOrigin}; });
 }
 
 // Tooltips for [data-tip], drawn inside the hovered window (only window rects reach the game).
@@ -2070,6 +2462,9 @@ const hub = defineWindow({
       `<b class="rows-n"></b>${[1, 5].map(d => `<button data-rows="${d}">+${d}</button>`).join("")}</div></div>` +
       `<div class="opt" data-compact><div>Compact<small>Smaller rows, text and columns, so each window takes less room.</small></div>` +
       `<span class="tog"><i></i></span></div>` +
+      `<div class="opt" data-merge><div>Merge windows that snap together<small>In Arrange, drop a table window ` +
+      `against another to join them into one window; pull a table's header to take it out again.</small></div>` +
+      `<span class="tog"><i></i></span></div>` +
       `<h3>Combat</h3>` +
       CORE_OPTS.map(([k, label, detail]) => `<div class="opt" data-opt="${k}"><div>${esc(label)}<small>${esc(detail)}</small></div>` +
         `<span class="tog"><i></i></span></div>`).join("") +
@@ -2177,6 +2572,7 @@ const hub = defineWindow({
       const st = e.target.closest("[data-rows]");
       if (st) { saved.rows = Math.max(1, Math.min(MAX_ROWS, maxRows() + Number(st.dataset.rows))); save(); renderAll(); return; }
       if (e.target.closest("[data-compact]")) { saved.compact = !saved.compact; save(); renderAll(); return; }
+      if (e.target.closest("[data-merge]")) { saved.merge = !saved.merge; save(); renderAll(); return; }
       if (e.target.closest("[data-dev]")) { setDev(!saved.dev); return; }
       const o = e.target.closest("[data-opt]");
       if (!o) return;
@@ -2259,6 +2655,7 @@ const hub = defineWindow({
       o.querySelector(".tog").classList.toggle("on", coreOpt(o.dataset.opt)));
     w.body.querySelector(".rows-n").textContent = maxRows();
     w.body.querySelector("[data-compact] .tog").classList.toggle("on", !!saved.compact);
+    w.body.querySelector("[data-merge] .tog").classList.toggle("on", !!saved.merge);
     w.body.querySelector("[data-dev] .tog").classList.toggle("on", saved.dev === true);
     w.body.querySelector(".dev-note").style.display = saved.dev === true ? "" : "none";
     w.body.querySelector("[data-autoupdate] .tog").classList.toggle("on", autoUpdate());
@@ -2295,6 +2692,7 @@ window.axidps = {
         plugins: s.plugins && typeof s.plugins === "object" && !Array.isArray(s.plugins) ? s.plugins : {},
         pwin: s.pwin && typeof s.pwin === "object" && !Array.isArray(s.pwin) ? s.pwin : {},
         dev: s.dev === true, storeAutoUpdate: s.storeAutoUpdate !== false,
+        merge: s.merge === true, groups: Array.isArray(s.groups) ? s.groups : [],
         rows: s.rows ?? Math.max(15, ...Object.values(s.cfg || {}).map(c => (c && c.maxRows) || 0))};
     }
     // Details was a window of its own, saved open and placed: now it opens only from a click.
@@ -2346,6 +2744,7 @@ window.axidps = {
   },
   edit(on) {
     ui.editing = !!on;
+    if (!on) { if (mdrag) endPreview(); onPullEnd(); }
     if ((ui.editSeq & 1) !== (on ? 1 : 0)) ui.editSeq++; // follow the DLL (Esc, hotkey)
     renderAll();
   },
@@ -2353,9 +2752,18 @@ window.axidps = {
   moved(name, x, y) {
     const w = wins.find(v => v.id === name);
     saved.pos[w ? w.key : name] = [Math.round(x), Math.round(y)];
+    if (w && w.grab) w.grab = null;
+    if (mpull && mpull.torn) mpull = null;
+    if (!mdrag && !sawDragging) dockOnDrop(w); // a DLL that never says where the drag is
+    onDropped(w); // dropped into an open slot: merged (saves)
     save();
     renderAll();
   },
+  // Edit mode, while the DLL drags a window: where it is now, and the grab point inside it.
+  dragging(name, x, y, gx, gy) { sawDragging = true; onDragging(name, x, y, gx, gy); },
+  // A pull on a merged window: the pointer, window-local; pullEnd at the release.
+  pull(name, x, y) { onPull(name, x, y); },
+  pullEnd() { onPullEnd(); },
   // A click outside the hub, or Esc (the DLL's modal handling). While the name field has focus Esc
   // arrives as a key instead; a click outside then only ends the typing.
   dismiss() {

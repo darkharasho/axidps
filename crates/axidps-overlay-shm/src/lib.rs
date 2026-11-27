@@ -55,6 +55,35 @@ pub const FLAG_EDIT_INTERACTIVE: u32 = 1;
 /// Window flag: modal (the hub). Outside edit mode the DLL dims the game behind it, gives it all
 /// input, and turns a click outside it or Esc into a `kind::DISMISS`.
 pub const FLAG_MODAL: u32 = 2;
+/// Window flag: several windows merged into one (the page's merge option). In edit mode a press
+/// inside its `drag` rect (its title bar) drags it as usual; a press anywhere else starts a pull:
+/// the DLL leaves the window where it is and sends `kind::PULL` on each move and `kind::PULL_END` at
+/// the release, never `kind::MOVED`.
+pub const FLAG_GROUP: u32 = 4;
+/// Window flag: during a pull, take over the drag. The DLL drags this window from the grab point
+/// (`drag.x`, `drag.y`, window-local) as if the press had been on it. Ignored outside a pull.
+pub const FLAG_GRAB: u32 = 8;
+
+/// `kind::DRAG`'s `button`: the grab point inside the dragged window, each half clamped to 0-65535.
+pub fn pack_grab(gx: i32, gy: i32) -> u32 {
+    let c = |v: i32| v.clamp(0, 0xffff) as u32;
+    c(gx) | c(gy) << 16
+}
+pub fn unpack_grab(b: u32) -> (i32, i32) {
+    ((b & 0xffff) as i32, (b >> 16) as i32)
+}
+
+/// During a pull on window `pulled`, the window that takes the drag over: the first other window
+/// with `FLAG_GRAB`, as (key, grab x, grab y). `windows` = (key, flags, drag zone).
+pub fn grab_target(
+    windows: impl IntoIterator<Item = (u64, u32, Rect)>,
+    pulled: u64,
+) -> Option<(u64, i32, i32)> {
+    windows
+        .into_iter()
+        .find(|&(k, f, _)| k != pulled && f & FLAG_GRAB != 0)
+        .map(|(k, _, d)| (k, d.x, d.y))
+}
 
 /// Table flag: don't draw the game's UI areas in edit mode (the Layout window's switch). Clear
 /// in tables from hosts that predate it, so those show them.
@@ -80,6 +109,13 @@ pub mod kind {
     /// A key while a text field has focus: name = the character (UTF-8) or one of Backspace,
     /// Delete, ArrowLeft, ArrowRight, Home, End, Enter, Escape.
     pub const KEY: u32 = 9;
+    /// A window is being dragged (edit mode): x/y = its position now (snapped), name = the window,
+    /// button = the grab point (`pack_grab`). Sent when the position changes.
+    pub const DRAG: u32 = 10;
+    /// A pull on a `FLAG_GROUP` window: x/y = the pointer, window-local; name = the window.
+    pub const PULL: u32 = 11;
+    /// The pull ended with the button's release without a hand-off (x/y unused, 0).
+    pub const PULL_END: u32 = 12;
 }
 
 fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -540,6 +576,23 @@ pub fn keep_on_screen(x: i32, y: i32, w: i32, h: i32, sw: i32, sh: i32, keep: i3
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grab_target_finds_the_hand_off() {
+        let r = |x, y| Rect::new(x, y, 0, 0);
+        let ws = [(1u64, FLAG_GROUP, r(0, 0)), (2, 0, r(0, 0)), (3, FLAG_GRAB, r(171, 12))];
+        assert_eq!(grab_target(ws, 1), Some((3, 171, 12)));
+        // The pulled window itself never takes it; nothing flagged: none.
+        assert_eq!(grab_target([(1u64, FLAG_GROUP | FLAG_GRAB, r(5, 5))], 1), None);
+        assert_eq!(grab_target([(2u64, 0, r(0, 0))], 1), None);
+    }
+
+    #[test]
+    fn grab_packs_round_trip() {
+        assert_eq!(unpack_grab(pack_grab(5, 300)), (5, 300));
+        assert_eq!(unpack_grab(pack_grab(0, 0)), (0, 0));
+        assert_eq!(unpack_grab(pack_grab(-4, 70_000)), (0, 65535), "clamped");
+    }
+
     use super::*;
 
     #[test]

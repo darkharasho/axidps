@@ -156,6 +156,24 @@ fn wheel_delta_y(notches: f32) -> f64 {
     f64::from(notches) * 76.0
 }
 
+/// The page call for an input from the DLL that isn't a pointer event (those go to Servo).
+fn input_js(i: &fmt::Input) -> Option<String> {
+    let name = || serde_json::to_string(i.name()).unwrap_or_default();
+    Some(match i.kind {
+        fmt::kind::MOVED => format!("axidps.moved({}, {}, {})", name(), i.x, i.y),
+        fmt::kind::DRAG => {
+            let (gx, gy) = fmt::unpack_grab(i.button);
+            format!("axidps.dragging({}, {}, {}, {gx}, {gy})", name(), i.x, i.y)
+        }
+        fmt::kind::PULL => format!("axidps.pull({}, {}, {})", name(), i.x, i.y),
+        fmt::kind::PULL_END => format!("axidps.pullEnd({}, {}, {})", name(), i.x, i.y),
+        fmt::kind::DISMISS => "axidps.dismiss()".into(),
+        fmt::kind::KEY => format!("axidps.key({})", name()),
+        fmt::kind::LEGACY_POS => format!("axidps.legacy({}, {})", i.x, i.y),
+        _ => return None,
+    })
+}
+
 /// The page's window report: `{"windows":[{name, ax, ay, w, h, sx, sy, drag:[x,y,w,h], flags,
 /// r (corner radius), blur (0-3)}],
 /// "edit_seq": n, "hide_zones": bool, "text_focus": bool}`.
@@ -880,25 +898,12 @@ impl App {
                     p.into(),
                     servo::Modifiers::default(),
                 )),
-                fmt::kind::MOVED if loaded => {
-                    let name = serde_json::to_string(i.name()).unwrap_or_default();
-                    Self::js(st, format!("axidps.moved({name}, {}, {})", i.x, i.y));
+                _ => {
+                    if loaded && let Some(js) = input_js(&i) {
+                        Self::js(st, js);
+                    }
                     continue;
                 }
-                fmt::kind::DISMISS if loaded => {
-                    Self::js(st, "axidps.dismiss()".into());
-                    continue;
-                }
-                fmt::kind::KEY if loaded => {
-                    let name = serde_json::to_string(i.name()).unwrap_or_default();
-                    Self::js(st, format!("axidps.key({name})"));
-                    continue;
-                }
-                fmt::kind::LEGACY_POS if loaded => {
-                    Self::js(st, format!("axidps.legacy({}, {})", i.x, i.y));
-                    continue;
-                }
-                _ => continue,
             };
             st.webview.notify_input_event(ev);
         }
@@ -1317,6 +1322,26 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn input_js_forwards_page_calls() {
+        let named = |k, n: &str, x, y, b| {
+            let mut i = fmt::Input::new(k, b, x, y, 0.0);
+            i = i.named(n);
+            input_js(&i)
+        };
+        assert_eq!(named(fmt::kind::MOVED, "meter", 10.0, 20.0, 0).as_deref(), Some(r#"axidps.moved("meter", 10, 20)"#));
+        assert_eq!(
+            named(fmt::kind::DRAG, "meter", 10.0, -20.0, fmt::pack_grab(5, 300)).as_deref(),
+            Some(r#"axidps.dragging("meter", 10, -20, 5, 300)"#)
+        );
+        assert_eq!(named(fmt::kind::PULL, "g1", 3.0, 4.0, 0).as_deref(), Some(r#"axidps.pull("g1", 3, 4)"#));
+        assert_eq!(named(fmt::kind::PULL_END, "g1", 3.0, 4.0, 0).as_deref(), Some(r#"axidps.pullEnd("g1", 3, 4)"#));
+        assert_eq!(named(fmt::kind::DISMISS, "", 0.0, 0.0, 0).as_deref(), Some("axidps.dismiss()"));
+        assert_eq!(named(fmt::kind::KEY, "a\"", 0.0, 0.0, 0).as_deref(), Some(r#"axidps.key("a\"")"#));
+        assert_eq!(named(fmt::kind::LEGACY_POS, "", 7.0, 8.0, 0).as_deref(), Some("axidps.legacy(7, 8)"));
+        assert_eq!(named(fmt::kind::MOVE, "", 1.0, 1.0, 0), None);
+    }
+
     use super::*;
 
     fn table(wins: &[(&str, i32, i32, i32, i32)]) -> Table {
