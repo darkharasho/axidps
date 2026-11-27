@@ -478,6 +478,10 @@ impl App {
                 if let Some(v) = read_ui_json(path) {
                     l.settings_mtime = mtime;
                     l.stats.set_counting(live::Counting::from_ui_json(&v));
+                    // The overlay's details window: whose breakdown the feed carries.
+                    l.stats.set_detail(
+                        v.get("detail").and_then(|d| d.as_str()).filter(|a| !a.is_empty()).map(str::to_owned),
+                    );
                     if let Some(link) = self.relay.as_mut() {
                         link.set_enabled(relay_enabled(&v));
                     }

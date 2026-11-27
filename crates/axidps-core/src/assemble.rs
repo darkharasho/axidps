@@ -240,7 +240,7 @@ fn event_ids(ev: &Event) -> Vec<u32> {
 }
 
 /// The name arcdps writes for `id` (from the owner's arcdps logs), or "" when unknown.
-fn skill_name(id: u32) -> &'static str {
+pub fn skill_name(id: u32) -> &'static str {
     SKILL_NAMES
         .binary_search_by_key(&id, |&(i, _)| i)
         .ok()
