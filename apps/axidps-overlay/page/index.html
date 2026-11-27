@@ -127,6 +127,19 @@
   body.editing .win.group > .edit small { display: none; }
   body.editing .mgrid > .win.cell .edit { border-radius: 0; }
   .win.docking { opacity: .55; }
+  .lay.banner { padding: 8px 12px 10px; }
+  .lay .bn { display: flex; align-items: center; gap: 10px; }
+  .lay .bn .bt { color: var(--accent); font-size: 14px; white-space: nowrap; }
+  .lay .bn .bh { color: var(--dim); font-size: 12px; }
+  .lay .bn .bh b { color: var(--text); }
+  .lay .bn button { flex: none; }
+  .lay .bn button.on { border-color: var(--accent-line); color: var(--accent); }
+  .lay .more { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .lay .more .zl { border-top: 0; margin-top: 4px; }
+  .win.jointarget { outline: 2px solid var(--good); outline-offset: 1px; }
+  .mgrid > .ghost { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .ghost .joinhint { background: var(--bg); color: var(--good); border: 1px solid var(--good); border-radius: 10px;
+    padding: 2px 10px; font-size: 12px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .lay p { margin: 0 0 10px; color: var(--dim); }
   .lay label { display: flex; align-items: center; gap: 10px; height: 26px; }
   .lay label small { color: var(--faint); margin-left: auto; font-variant-numeric: tabular-nums; }

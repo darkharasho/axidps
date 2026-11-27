@@ -570,6 +570,8 @@ function layGroup(g, cells) {
       el.style.width = x.w + "px"; el.style.height = x.h + "px";
       const n = (dr, dc) => cells.some(y => !y.ghost && y.r === x.r + dr && y.c === x.c + dc);
       el.className = "ghost" + (n(0, -1) ? " e-l" : "") + (n(0, 1) ? " e-r" : "") + (n(-1, 0) ? " e-t" : "") + (n(1, 0) ? " e-b" : "");
+      const hint = mdrag && mdrag.gid === g.gid && mdrag.title ? "Let go to join " + esc(mdrag.title) : "";
+      if (el.dataset.hint !== hint) { el.dataset.hint = hint; el.innerHTML = hint ? `<span class="joinhint">${hint}</span>` : ""; }
     } else {
       const m = memberWin(x.k);
       if (!m) continue;
@@ -691,9 +693,11 @@ function animateGroup(g, before, side, hero, boxBefore) {
 }
 
 // Undo the preview: the ghost goes; a group made only for it gives its one window back.
+const clearJoinMark = () => document.querySelectorAll(".jointarget").forEach(e => e.classList.remove("jointarget"));
 function endPreview() {
   const d = mdrag;
   mdrag = null;
+  clearJoinMark();
   const dragged = d && wins.find(w => w.id === d.name);
   if (dragged) dragged.el.classList.remove("docking");
   const g = d && d.gid && groups.get(d.gid);
@@ -767,7 +771,10 @@ function onDragging(name, x, y, gx, gy) {
   const r0 = Math.min(...ghosts.map(c => c.r)), c0 = Math.min(...ghosts.map(c => c.c));
   const cells = plan.filter(c => !c.ghost).concat([{k: "ghost", ghost: true, r: r0, c: c0, w: bw.width, h: bw.height,
     rs: Math.max(...ghosts.map(c => c.r)) - r0 + 1, cs: Math.max(...ghosts.map(c => c.c)) - c0 + 1}]);
-  mdrag = {name, key, d, gid: g.gid, temp, plan, block};
+  const first = real[0] && memberWin(real[0].k);
+  mdrag = {name, key, d, gid: g.gid, temp, plan, block, title: first ? first.def.title : ""};
+  clearJoinMark();
+  g.el.classList.add("jointarget");
   const before = rectsIn(g.el), box = g.el.getBoundingClientRect();
   layGroup(g, cells);
   const gh = g.grid.querySelector(".ghost");
@@ -793,6 +800,7 @@ function onDropped(w) {
   if (!mdrag || !w || mdrag.name !== w.id) { if (mdrag) endPreview(); return false; }
   const d = mdrag, g = groups.get(d.gid);
   mdrag = null;
+  clearJoinMark();
   w.el.classList.remove("docking");
   if (!g) return false;
   // Where the dropped tables were on screen, to fly in from.
@@ -1987,19 +1995,21 @@ function trackCharts() {
 
 // Shown only in edit mode; interactive there (the DLL drags every other window by any point).
 defineWindow({
-  id: "layout", title: "Arrange windows", editOnly: true, ed: true,
-  at: ([sw, sh]) => [Math.round(sw / 2 - 160), Math.round(sh * 0.16)],
+  id: "layout", title: "Moving windows", editOnly: true, ed: true, fixed: true, bare: true,
+  at: ([sw]) => [Math.round(sw / 2 - 260), 16],
   mount(w) {
-    w.body.innerHTML = `<div class="lay" style="width:320px"><p>Drag any window to move it; it snaps to ` +
-      `the screen edges, other windows and the game's own UI (the orange areas). Windows stay locked ` +
-      `in place outside this mode.</p><div class="list"></div>` +
+    w.body.innerHTML = `<div class="lay banner" style="width:520px"><div class="bn"><b class="bt">Moving windows</b>` +
+      `<span class="bh"></span><span class="grow"></span>` +
+      `<button data-act="more" data-tip="show the other controls">More</button>` +
+      `<button class="primary" data-act="done">Done</button></div>` +
+      `<div class="more"><div class="list"></div>` +
       `<label data-act="zones" class="zl"><span class="tog"><i></i></span>Show the game's UI<small></small></label>` +
       `<div class="row"><button data-act="unblock" data-tip="move windows off the minimap, skill bar, chat and the rest">` +
       `Move off game UI</button><span class="grow"></span>` +
-      `<button data-act="reset" data-tip="put every window back in its default place">Reset</button>` +
-      `<button class="primary" data-act="done">Done</button></div></div>`;
+      `<button data-act="reset" data-tip="put every window back in its default place">Reset</button></div></div></div>`;
     const q = sel => w.body.querySelector(sel);
     q('[data-act="done"]').onclick = () => requestEdit(false);
+    q('[data-act="more"]').onclick = () => { w.more = !w.more; renderAll(); };
     q('[data-act="reset"]').onclick = () => { saved.pos = {}; save(); renderAll(); };
     q('[data-act="zones"]').onclick = () => { saved.hideZones = !saved.hideZones; save(); renderAll(); };
     q('[data-act="unblock"]').onclick = () => {
@@ -2014,7 +2024,9 @@ defineWindow({
     };
   },
   render(w) {
-    w.state.textContent = `${ui.screen[0]} x ${ui.screen[1]}`;
+    w.body.querySelector(".bh").innerHTML = "<b>Drag</b> a window to move it" + (saved.merge ? " · <b>Drop</b> a table on another to join them" : "");
+    w.body.querySelector(".more").style.display = w.more ? "" : "none";
+    w.body.querySelector('[data-act="more"]').classList.toggle("on", !!w.more);
     w.body.querySelector(".list").innerHTML = wins.filter(x => x.def.blurb).map(x => {
       const c = covers(x);
       const note = !isOpen(x) ? "hidden" : c.length ? "covers " + c.map(z => z.label.replace(/ \(.*/, "")).join(", ")
@@ -2605,7 +2617,7 @@ const hub = defineWindow({
       const c = b.closest("[data-s]");
       if (c) pluginHost.storeAct(c.dataset.s, b.dataset.sact);
     };
-    q('[data-act="layout"]').onclick = () => { ui.session.hub = false; requestEdit(true); renderAll(); };
+    q('[data-act="layout"]').onclick = () => { ui.session.hub = false; ui.fromHub = true; requestEdit(true); renderAll(); };
     q('[data-act="close"]').onclick = () => setOpen(w, false);
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
@@ -2826,7 +2838,13 @@ window.axidps = {
   },
   edit(on) {
     ui.editing = !!on;
-    if (!on) { if (mdrag) endPreview(); onPullEnd(); }
+    if (!on) {
+      if (mdrag) endPreview();
+      onPullEnd();
+      // Entered from the hub's button: the hub comes back on the Windows tab (once).
+      if (ui.fromHub) { ui.session.hub = true; hub.tab = "windows"; }
+    }
+    if (!on || !ui.editing) ui.fromHub = false;
     if ((ui.editSeq & 1) !== (on ? 1 : 0)) ui.editSeq++; // follow the DLL (Esc, hotkey)
     renderAll();
   },
