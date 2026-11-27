@@ -176,3 +176,18 @@ test("tipPos keeps the tooltip inside an autosized 150x50 frame", () => {
   // No room below but room above: above it.
   assert.deepStrictEqual(tipPos({ left: 50, top: 150, width: 50, height: 40, bottom: 190 }, 30, 20, 150, 200), [60, 128]);
 });
+
+test("sdk textures", () => {
+  const w = fakeWin();
+  const sdk = makeSdk(w);
+  assert.ok(sdk.textures.targets.includes("commander.red"));
+  sdk.textures.set([{ target: "commander.red", color: "#d55e00" }, { target: "nope" }]);
+  const last = () => w.posted[w.posted.length - 1].m;
+  assert.deepStrictEqual(last(), { axidps: 1, type: "textures", rules: [{ target: "commander.red", color: "#d55e00" }] });
+  sdk.textures.clear();
+  assert.deepStrictEqual(last(), { axidps: 1, type: "textures", rules: [] });
+  const n = w.posted.length;
+  sdk.textures.set("nope");
+  assert.strictEqual(w.posted[w.posted.length - 1].m.type, "log", "a bad call only logs");
+  assert.strictEqual(w.posted.length, n + 1);
+});

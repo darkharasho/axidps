@@ -12,6 +12,7 @@
 //! While the DLL heartbeat is stale (no game) nothing is painted.
 
 mod scheme;
+mod textures;
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -403,6 +404,8 @@ struct Delegate {
     save: RefCell<Option<String>>,
     /// The page switched developer mode (`{"dev": bool}`).
     dev: Cell<Option<bool>>,
+    /// The merged texture styling rules of plugins granted `textures` (`{"textures": [...]}`).
+    textures: RefCell<Option<Vec<axidps_overlay_shm::texstyle::Rule>>>,
 }
 
 impl WebViewDelegate for Delegate {
@@ -475,6 +478,9 @@ impl WebViewDelegate for Delegate {
         }
         if let Some(d) = v.get("dev").and_then(|x| x.as_bool()) {
             self.dev.set(Some(d));
+        }
+        if let Some(t) = v.get("textures") {
+            *self.textures.borrow_mut() = Some(textures::rules(t));
         }
         // `?test` pages only (tools/overlay-fake-dll.py): the plugin windows' status and error
         // counts, as one log line.
@@ -645,6 +651,8 @@ struct App {
     dev_changes: Option<mpsc::Receiver<(String, bool)>>,
     waker: Waker,
     shm: RefCell<Shm>,
+    /// The texture styling rules file (beside the frame file).
+    textures: Option<textures::File>,
     start: Instant,
     state: Option<Running>,
     live: LiveFeed,
@@ -788,7 +796,15 @@ impl App {
             .borrow()
             .atomic(fmt::HOST_HB_OFF)
             .store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+        if let Some(t) = &mut self.textures {
+            t.heartbeat();
+        }
         let Some(st) = &self.state else { return };
+        if let (Some(rules), Some(t)) = (st.delegate.textures.borrow_mut().take(), &mut self.textures)
+        {
+            println!("texture rules: {}", rules.len());
+            t.set(&rules);
+        }
         let shm = &self.shm;
         let loaded = st.delegate.loaded.get();
         if let Some(d) = st
@@ -1183,6 +1199,10 @@ fn main() -> anyhow::Result<()> {
         _ => None,
     };
     let shm = Shm::create(&shm_path)?;
+    let tex_path = shm_path.with_file_name("axidps-texstyle");
+    let textures = textures::File::create(&tex_path)
+        .inspect_err(|e| println!("texture rules file {}: {e}", tex_path.display()))
+        .ok();
     // A heartbeat left over from an earlier game session must not count as a live game.
     let hb0 = shm.atomic(fmt::DLL_HB_OFF).load(Ordering::Relaxed);
     let mut app = App {
@@ -1198,6 +1218,7 @@ fn main() -> anyhow::Result<()> {
         dev_changes,
         waker,
         shm: RefCell::new(shm),
+        textures,
         start: Instant::now(),
         state: None,
         live: LiveFeed {

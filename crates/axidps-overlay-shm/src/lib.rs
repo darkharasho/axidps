@@ -22,6 +22,8 @@
 //! Every multi-byte value is little-endian. Only the window rects of a buffer are meaningful;
 //! the rest of the atlas is undefined.
 
+pub mod texstyle;
+
 pub const MAGIC: u32 = 0x5645_4f41; // public-check:ok
 pub const VERSION: u32 = 3;
 pub const MAX_W: u32 = 2048;

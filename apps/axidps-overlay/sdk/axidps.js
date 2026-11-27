@@ -87,6 +87,14 @@ b, strong { font-weight: 600; }
     try { const j = JSON.stringify(v); return j === undefined ? String(v) : j; } catch (e) { return String(v); }
   }
 
+  // The game icons a `textures` rule can name (the wire list, axidps_overlay_shm::texstyle).
+  const TEXTURE_TARGETS = ["commander.red", "commander.orange", "commander.yellow", "commander.green",
+    "commander.cyan", "commander.blue", "commander.purple", "commander.magenta", "commander.white",
+    "squad.commander", "squad.lieutenant", "mentor", "marker.arrow", "marker.circle", "marker.heart",
+    "marker.square", "marker.star", "marker.spiral", "marker.triangle", "marker.cross",
+    "selection.orange", "selection.blue", "selection.green", "selection.red", "target",
+    "target.personal", "target.combined", "target.attack", "target.attack-selected"];
+  const MAX_TEXTURE_RULES = 64;
   // The largest settings object the page saves, in bytes of JSON (the page's MAX_SETTINGS).
   const MAX_SETTINGS = 16384;
   function utf8Len(s) {
@@ -240,6 +248,24 @@ b, strong { font-weight: 600; }
           settings = clone(obj);
           post("settings", {value: clone(settings)});
         },
+      },
+      // Restyling the game's own icons. Needs the `textures` permission; without it the page
+      // ignores these. set(rules) replaces this plugin's rules (see docs/plugins/README.md for a
+      // rule's fields); clear() removes them. Rules stay while the plugin is enabled.
+      textures: {
+        targets: TEXTURE_TARGETS.slice(),
+        set(rules) {
+          if (!Array.isArray(rules)) { log("error", "textures.set needs an array of rules"); return; }
+          const ok = rules.filter(r => r && typeof r === "object" && TEXTURE_TARGETS.includes(r.target));
+          if (ok.length !== rules.length) log("warn", `textures.set: ${rules.length - ok.length} rules without a known target dropped`);
+          if (ok.length > MAX_TEXTURE_RULES) log("warn", `textures.set: only the first ${MAX_TEXTURE_RULES} rules are used`);
+          let copy;
+          try { copy = JSON.parse(JSON.stringify(ok.slice(0, MAX_TEXTURE_RULES))); } catch (e) {
+            log("error", "textures.set: the rules can't be sent as JSON"); return;
+          }
+          post("textures", {rules: copy});
+        },
+        clear() { post("textures", {rules: []}); },
       },
       window: {
         setTitle(text) { post("title", {text: String(text ?? "").slice(0, 80)}); },

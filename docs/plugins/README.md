@@ -149,7 +149,7 @@ The folder's name doesn't matter; the manifest's `id` does. The folder may not h
 | `version` | yes | A semantic version, like `1.0.0`. |
 | `author` | no | Shown on the hub card. |
 | `api` | yes | Must be `1`. Any other number lists the plugin as "needs a newer axidps" and it doesn't load. |
-| `permissions` | no | A list from `fight` (basic) and `world`, `position`, `squad`, `enemies` (deeper). Any other name makes the plugin invalid. See [Permissions](#permissions). |
+| `permissions` | no | A list from `fight` (basic) and `world`, `position`, `squad`, `enemies`, `textures` (deeper). Any other name makes the plugin invalid. See [Permissions](#permissions). |
 | `network` | no | Host names your plugin may reach over HTTPS on port 443, like `api.example.com`, or `*.example.com` for any subdomain (not the bare domain). No scheme, port or path. Public names only: no IP addresses, no single-label names like `localhost`, no `*.com`, and nothing under `.localhost`, `.local`, `.lan`, `.internal` or `.home.arpa`. |
 | `windows` | yes | 1 to 4 windows. |
 
@@ -176,6 +176,7 @@ Text the page shows (titles, names, statuses) is cut to 80 characters.
 | `position` | deeper | "Reads your position and camera" |
 | `squad` | deeper | "Reads your squad and party" |
 | `enemies` | deeper | "Reads enemy players seen in combat" |
+| `textures` | deeper | "Changes how the game's icons look (commander tags, markers, targets)" |
 
 Each `network` host adds the line "Talks to <domain>".
 
@@ -185,8 +186,8 @@ off until they click Enable again.
 
 Only `fight` works today. A plugin that names a deeper permission is listed with
 "Needs verification" and is never loaded. Deeper permissions will need the axidps team's review
-of the plugin, which arrives with the plugin store in a later release; none of them has an API
-yet.
+of the plugin, which arrives with the plugin store in a later release. `textures` has its API
+([`axidps.textures`](#axidpstextures)); the others don't have one yet.
 
 Every plugin you install yourself shows the label "Unverified" on its hub card and in its
 window's title-bar tooltip. Bundled plugins show no label. Verification also arrives with the
@@ -245,6 +246,53 @@ only storage a plugin has.
   first, or the next body size change replaces it.
 - `axidps.window.tip(el, text)`: show `text` as a tooltip when the mouse is over `el`. A
   `data-tip="..."` attribute on any element does the same.
+
+### `axidps.textures`
+
+Needs the `textures` permission. Restyles the game's own icons: recolours them, outlines them,
+puts a ring behind them, scales or fades them. axidps finds the icons in the game's textures and
+does the drawing; your plugin only says how each one should look.
+
+- `axidps.textures.targets`: the icons a rule can name: `commander.red`, `commander.orange`,
+  `commander.yellow`, `commander.green`, `commander.cyan`, `commander.blue`, `commander.purple`,
+  `commander.magenta`, `commander.white`, `squad.commander`, `squad.lieutenant`, `mentor`,
+  `marker.arrow`, `marker.circle`, `marker.heart`, `marker.square`, `marker.star`,
+  `marker.spiral`, `marker.triangle`, `marker.cross`, `selection.orange`, `selection.blue`,
+  `selection.green`, `selection.red`, `target`, `target.personal`, `target.combined`,
+  `target.attack`, `target.attack-selected`. One target covers every version of that icon (on
+  the world, the cat-shaped commander tag, the minimap).
+- `axidps.textures.set(rules)`: replace your plugin's rules (at most 64). Rules stay while your
+  plugin is enabled, so set them again whenever your settings load or change.
+- `axidps.textures.clear()`: remove your plugin's rules.
+
+A rule: every field but `target` is optional, and values outside their range are clamped.
+
+| Field | Values | Default | |
+| --- | --- | --- | --- |
+| `target` | a name from `targets` | | The icon. |
+| `mode` | `keep`, `oklab`, `blend`, `luminance`, `solid` | `keep` | How the icon's colours become `color`. `oklab` keeps its shading around the new colour's lightness; `blend` keeps its lightness and takes the new colour's hue; `luminance` multiplies its brightness by the colour; `solid` fills it flat. `keep` leaves the colours alone. |
+| `color` | `"#rrggbb"`, `"#rgb"`, `"#rrggbbaa"` or `[r, g, b]` | white | The new colour. |
+| `brightness` | 0 to 3 | 1 | Multiplies the result. |
+| `contrast` | -0.3 to 0.3 | 0 | `oklab` only: flattens or deepens the shading. |
+| `keepExtremes` | 0 to 1 | 0.8 | `oklab` only: how much of the icon's own highlights and shadows survive. |
+| `normalize` | true, false | true | `oklab` only: lifts the darkest shading a little. |
+| `outline` | `{style, width, color, outer, softness, minimap}` or absent | none | Drawn under the icon. `style`: `round`, `diamond` (pointed corners) or `double` (the colour inside, `outer` beyond). `width`: pixels of a 128 px icon, 0 to 16 (default 4). `outer`: a colour, or `"auto"` (black or white, whichever stands out). `softness`: 0.5 to 8, higher is a harder edge (default 3). `minimap`: the width on minimap icons, pixels of a 32 px icon, 0 to 4 (default 1). |
+| `ring` | `{radius, thickness, color, outline}` or absent | none | A ring behind the icon. `radius` and `thickness` are fractions of half the icon's width (defaults 0.45 and 0.08). `outline`: a colour, `"auto"`, or absent for none. Not drawn on minimap icons. |
+| `scale` | 0.5 to 2 | 1 | Size about the centre (not on minimap icons). |
+| `offsetY` | -0.5 to 0.5 | 0 | Moves the icon down by this fraction of its height. |
+| `opacity` | 0 to 1 | 1 | 0 hides the icon. |
+
+```js
+axidps.textures.set([
+  {target: "commander.red", mode: "oklab", color: "#d55e00",
+   outline: {style: "round", width: 6, color: "#ffffff"}},
+  {target: "marker.star", ring: {color: "#000000", outline: "auto"}},
+]);
+```
+
+When two plugins style the same icon, the one whose id sorts last wins. axidps leaves icons alone
+while the Commander Tag Accessibility addon is loaded, since it restyles the same icons. The list
+of icon textures matches the one that addon uses, with thanks.
 
 ### Helpers
 
@@ -398,6 +446,7 @@ Frame to page:
 | `settings` | `value` | Save this object as the window's settings (at most 16 KB as JSON). |
 | `log` | `level`, `msg` | `"warn"` or `"error"`, and the message. |
 | `pong` | `n` | The answer to `ping`. |
+| `textures` | `rules` | This plugin's icon rules (at most 64; only with the `textures` permission). |
 
 Page to frame:
 

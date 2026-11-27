@@ -20,7 +20,9 @@
     "download", "columns", "plus"];
   const PERMISSION_TEXT = {fight: "Reads your fight data", world: "Draws over the game world",
     position: "Reads your position and camera", squad: "Reads your squad and party",
-    enemies: "Reads enemy players seen in combat"};
+    enemies: "Reads enemy players seen in combat",
+    textures: "Changes how the game's icons look (commander tags, markers, targets)"};
+  const MAX_TEXTURE_RULES = 64;
   const PLUGIN_ID = /^[a-z0-9.-]{3,48}$/, WINDOW_ID = /^[a-z0-9-]+$/;
   const own = (o, k) => !!o && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k);
 
@@ -147,8 +149,29 @@
       }
       case "log": return (m.level === "warn" || m.level === "error") && typeof m.msg === "string";
       case "pong": return num(m.n);
+      case "textures": {
+        if (!Array.isArray(m.rules) || m.rules.length > MAX_TEXTURE_RULES) return false;
+        try {
+          const j = JSON.stringify(m.rules);
+          return typeof j === "string" && utf8Len(j) <= MAX_SETTINGS;
+        } catch (e) {
+          return false;
+        }
+      }
       default: return false;
     }
+  }
+
+  // Every plugin's texture rules as one list for the host: plugins in id order, so when two name
+  // the same icon the result doesn't depend on load order (the later one wins on the host).
+  function mergeTextures(byPlugin) {
+    const out = [];
+    for (const id of Object.keys(byPlugin).sort()) {
+      for (const r of byPlugin[id]) {
+        if (r && typeof r === "object" && !Array.isArray(r) && typeof r.target === "string") out.push(r);
+      }
+    }
+    return out;
   }
 
   // A log limiter for one plugin: `limit` lines per `span` ms. gate(now) -> {pass, dropped (this
@@ -373,6 +396,10 @@
     },
     drop(ent) {
       if (ent.cw) this.sources.delete(ent.cw);
+      // The plugin's last window is gone (disabled or removed): its rules go too.
+      if (this.textures && !this.entries.some(e => e !== ent && e.plugin.id === ent.plugin.id)) {
+        this.setTextures(ent.plugin.id, []);
+      }
       if (ent.w) this.env.removeWindow(ent.w);
       const i = this.entries.indexOf(ent);
       if (i >= 0) this.entries.splice(i, 1);
@@ -497,7 +524,29 @@
         }
         case "pong":
           break;
+        case "textures": {
+          if (!this.hasTextures(ent)) {
+            env.toHost(JSON.stringify({log: {plugin: ent.plugin.id, level: "warn",
+              msg: "textures.set without the textures permission; ignored"}}));
+            return;
+          }
+          this.setTextures(ent.plugin.id, m.rules);
+          break;
+        }
       }
+    },
+    hasTextures(ent) {
+      return Array.isArray(ent.plugin.permissions) && ent.plugin.permissions.includes("textures");
+    },
+    // One plugin's rules changed (an empty list removes them): send the merged list if it differs.
+    setTextures(id, rules) {
+      if (!this.textures) this.textures = {};
+      if (Array.isArray(rules) && rules.length) this.textures[id] = rules;
+      else delete this.textures[id];
+      const msg = JSON.stringify({textures: mergeTextures(this.textures)});
+      if (msg === this.texturesSent) return;
+      this.texturesSent = msg;
+      if (this.env) this.env.toHost(msg);
     },
     pingAll(now) {
       for (const ent of this.entries) {
@@ -554,6 +603,8 @@
     changed(id) {
       for (const ent of this.entries) {
         if (ent.plugin.id !== id || !ent.frame) continue;
+        // The reloaded page sets its rules again.
+        if (this.textures) this.setTextures(id, []);
         ent.hello = false;
         ent.helloAt = 0;
         ent.seen = Date.now();
@@ -570,7 +621,7 @@
   };
 
   const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, migrateSaved, clampSize, accept,
-    logGate, resizeGate, route, overCap, nameTaken, errorBadge, MAX_OPEN};
+    logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, MAX_OPEN};
   Object.assign(host, pure);
   if (typeof window !== "undefined") window.pluginHost = host;
   if (typeof module !== "undefined" && module.exports) module.exports = Object.assign({host}, pure);

@@ -34,6 +34,11 @@ pub fn overlay_frames_path(host: RingHost) -> PathBuf {
     shared_file(host, "axidps-overlay")
 }
 
+/// The texture styling rules (host-to-game, `axidps_overlay_shm::texstyle`) for `host`.
+pub fn texstyle_path(host: RingHost) -> PathBuf {
+    shared_file(host, "axidps-texstyle")
+}
+
 /// The live stats feed the overlay meter reads, for `host`.
 pub fn live_feed_path(host: RingHost) -> PathBuf {
     shared_file(host, "axidps-live.json")
