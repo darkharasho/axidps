@@ -5,6 +5,7 @@
 .github/workflows/cache-warm.yml
 .github/private-ref
 .gitignore
+.gitattributes
 Cargo.toml
 Cargo.lock
 package.json
