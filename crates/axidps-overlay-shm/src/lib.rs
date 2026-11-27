@@ -55,6 +55,23 @@ pub const FLAG_EDIT_INTERACTIVE: u32 = 1;
 /// Window flag: modal (the hub). Outside edit mode the DLL dims the game behind it, gives it all
 /// input, and turns a click outside it or Esc into a `kind::DISMISS`.
 pub const FLAG_MODAL: u32 = 2;
+/// Window flag: several windows merged into one (the page's merge option). In edit mode a press
+/// inside its `drag` rect (its title bar) drags it as usual; a press anywhere else starts a pull:
+/// the DLL leaves the window where it is and sends `kind::PULL` on each move and `kind::PULL_END` at
+/// the release, never `kind::MOVED`.
+pub const FLAG_GROUP: u32 = 4;
+/// Window flag: during a pull, take over the drag. The DLL drags this window from the grab point
+/// (`drag.x`, `drag.y`, window-local) as if the press had been on it. Ignored outside a pull.
+pub const FLAG_GRAB: u32 = 8;
+
+/// `kind::DRAG`'s `button`: the grab point inside the dragged window, each half clamped to 0-65535.
+pub fn pack_grab(gx: i32, gy: i32) -> u32 {
+    let c = |v: i32| v.clamp(0, 0xffff) as u32;
+    c(gx) | c(gy) << 16
+}
+pub fn unpack_grab(b: u32) -> (i32, i32) {
+    ((b & 0xffff) as i32, (b >> 16) as i32)
+}
 
 /// Table flag: don't draw the game's UI areas in edit mode (the Layout window's switch). Clear
 /// in tables from hosts that predate it, so those show them.
@@ -80,6 +97,13 @@ pub mod kind {
     /// A key while a text field has focus: name = the character (UTF-8) or one of Backspace,
     /// Delete, ArrowLeft, ArrowRight, Home, End, Enter, Escape.
     pub const KEY: u32 = 9;
+    /// A window is being dragged (edit mode): x/y = its position now (snapped), name = the window,
+    /// button = the grab point (`pack_grab`). Sent when the position changes.
+    pub const DRAG: u32 = 10;
+    /// A pull on a `FLAG_GROUP` window: x/y = the pointer, window-local; name = the window.
+    pub const PULL: u32 = 11;
+    /// The pull ended with the button's release (x/y as `PULL`) without a hand-off.
+    pub const PULL_END: u32 = 12;
 }
 
 fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -540,6 +564,13 @@ pub fn keep_on_screen(x: i32, y: i32, w: i32, h: i32, sw: i32, sh: i32, keep: i3
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grab_packs_round_trip() {
+        assert_eq!(unpack_grab(pack_grab(5, 300)), (5, 300));
+        assert_eq!(unpack_grab(pack_grab(0, 0)), (0, 0));
+        assert_eq!(unpack_grab(pack_grab(-4, 70_000)), (0, 65535), "clamped");
+    }
+
     use super::*;
 
     #[test]
