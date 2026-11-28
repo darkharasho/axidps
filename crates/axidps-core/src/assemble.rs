@@ -1739,6 +1739,41 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
     let rank: BTreeMap<u32, usize> = order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
     let mut ids: Vec<u32> = ids.into_iter().collect();
     ids.sort_by_key(|id| (rank.get(id).copied().unwrap_or(usize::MAX), *id));
+    // A team row for every agent in the table, as arcdps writes one whenever it starts tracking
+    // an agent. One that despawned before the fight and acts in it without an add (the poll
+    // did not read it again: WvW enemies after a loading screen, 2026-11-27) has none from the
+    // snapshot or an add; its last known team goes just before its first row after the header
+    // (at the snapshot's start if none). An agent whose team was never seen gets none.
+    let mut teamed: BTreeSet<u64> = events
+        .iter()
+        .filter(|e| e.is_statechange == TEAM_CHANGE)
+        .map(|e| e.src_agent)
+        .collect();
+    let mut team_rows: Vec<(usize, EvtcEvent)> = Vec::new();
+    for &id in &ids {
+        let team = reg.agent(id).and_then(|a| a.team);
+        let (Some(addr), Some(team)) = (ctx.addr(id), team) else {
+            continue;
+        };
+        if !teamed.insert(addr) {
+            continue;
+        }
+        let inst = id as u16;
+        // The header rows (the POV's included) stay in arcdps's order.
+        let (at, time) = events[snapshot_rows..]
+            .iter()
+            .position(|e| {
+                (e.src_agent == addr && e.src_instid == inst)
+                    || (e.dst_agent == addr && e.dst_instid == inst)
+            })
+            .map(|i| i + snapshot_rows)
+            .map_or((snapshot_rows, f.start_ms), |i| (i, events[i].time));
+        team_rows.extend(ctx.team(time, id, team).map(|e| (at, e)));
+    }
+    team_rows.sort_by_key(|&(at, _)| std::cmp::Reverse(at));
+    for (at, e) in team_rows {
+        events.insert(at, e);
+    }
     for id in ids {
         let Some(addr) = ctx.addr(id) else { continue };
         let info = reg.agent(id).cloned().unwrap_or_else(|| AgentInfo {
@@ -2618,6 +2653,85 @@ mod tests {
             sc_rows(&l, 22)
                 .iter()
                 .any(|e| e.src_agent == a3 && e.value == 9 && e.time == 2000)
+        );
+    }
+
+    /// An enemy player (id 6, team 9) added and despawned before the fight: not in the start
+    /// snapshot, and no add comes again (seen live 2026-11-27 after a loading screen: the
+    /// DLL's poll never re-read the enemies, but their tags, strikes and positions came).
+    fn despawned_enemy() -> Registry {
+        let mut r = world();
+        feed(
+            &mut r,
+            &[
+                Event::AgentAdd {
+                    id: 6,
+                    kind: AgentKind::Player,
+                    prof: 4,
+                    elite: 0,
+                    species: 0,
+                    team: 9,
+                    subgroup: 0,
+                    wvw_rank: 0,
+                    wvw_rank_def: 0,
+                },
+                Event::AgentRemove { id: 6 },
+            ],
+        );
+        feed(&mut r, &name_events(6, NameField::Character, "Gold Assaulter"));
+        r
+    }
+
+    #[test]
+    fn agent_acting_without_an_add_gets_its_team_row_first() {
+        let r = despawned_enemy();
+        let tag = Event::Tag {
+            id: 6,
+            tag: 3,
+            commander: false,
+        };
+        let f = fight(vec![(2000, tag), (3000, strike(6, 1, 10)), (4000, tag)]);
+        let l = build_log(&f, &r);
+        let a6 = r.addr(6).unwrap();
+        let teams: Vec<_> = sc_rows(&l, 22)
+            .iter()
+            .filter(|e| e.src_agent == a6)
+            .map(|e| (e.time, e.value))
+            .collect();
+        assert_eq!(teams, vec![(2000, 9)]);
+        // Before the agent's first row.
+        let first = l
+            .events
+            .iter()
+            .position(|e| e.src_agent == a6 || e.dst_agent == a6)
+            .unwrap();
+        assert_eq!(l.events[first].is_statechange, 22);
+    }
+
+    #[test]
+    fn every_agent_in_the_table_has_a_team_row() {
+        // Squad member 8 despawned before the fight and has no row in it, but the squad puts
+        // it in the table: its team is written at the start.
+        let mut r = despawned_enemy();
+        feed(&mut r, &[add(8, 2), Event::AgentRemove { id: 8 }]);
+        feed(&mut r, &name_events(8, NameField::Account, "mate.1234"));
+        let mut f = fight(vec![(3000, strike(1, 6, 10))]);
+        f.start_snapshot = vec![r.agent(1).unwrap().clone()];
+        f.squad_seen.insert(8);
+        let l = build_log(&f, &r);
+        let a8 = r.addr(8).unwrap();
+        assert!(l.agents.iter().any(|a| a.addr == a8), "squad member in the table");
+        for a in l.agents.iter().filter(|a| a.is_elite != u32::MAX) {
+            assert!(
+                sc_rows(&l, 22).iter().any(|e| e.src_agent == a.addr),
+                "no team row for {}",
+                a.addr
+            );
+        }
+        assert!(
+            sc_rows(&l, 22)
+                .iter()
+                .any(|e| e.src_agent == a8 && e.value == 1 && e.time == 1000)
         );
     }
 
