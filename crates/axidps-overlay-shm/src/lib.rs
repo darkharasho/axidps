@@ -340,10 +340,14 @@ pub struct GameUi {
     pub compass_h: u16,
     /// Blish HUD runs: its corner icons sit in a row right after the game's menu icons.
     pub blish: bool,
+    /// Nexus is loaded: its quick-access icons sit in the same row as Blish's.
+    pub nexus: bool,
 }
 
 /// Bit of the first GameUi word (above `uiState`) set while Blish HUD runs.
 const BLISH_BIT: u32 = 1 << 16;
+/// Bit of the first GameUi word set while Nexus is loaded.
+const NEXUS_BIT: u32 = 1 << 17;
 
 pub const UI_MAP_OPEN: u32 = 1;
 pub const UI_COMPASS_TOP_RIGHT: u32 = 2;
@@ -356,6 +360,7 @@ impl GameUi {
             known: f & 1 << 31 != 0,
             ui_state: f & 0xffff,
             blish: f & BLISH_BIT != 0,
+            nexus: f & NEXUS_BIT != 0,
             uisz: u32_at(b, GAMEUI_OFF + 4).min(3) as u8,
             compass_w: c as u16,
             compass_h: (c >> 16) as u16,
@@ -365,6 +370,7 @@ impl GameUi {
         [
             if self.known { 1 << 31 } else { 0 }
                 | if self.blish { BLISH_BIT } else { 0 }
+                | if self.nexus { NEXUS_BIT } else { 0 }
                 | (self.ui_state & 0xffff),
             u32::from(self.uisz.min(3)),
             u32::from(self.compass_w) | u32::from(self.compass_h) << 16,
@@ -507,6 +513,10 @@ pub fn zones(ui: &GameUi, screen: (i32, i32)) -> Vec<Zone> {
     // Blish HUD's corner icons: a row of 32 px icons after the menu, as many as its modules add.
     if ui.blish {
         add("blish", "Blish HUD icons", px(320.0), 0, px(32.0 * 12.0), px(42.0));
+    }
+    // Nexus's quick-access row: one icon per addon with a shortcut, in the same slot.
+    if ui.nexus {
+        add("nexus", "Nexus quick access", px(320.0), 0, px(32.0 * 12.0), px(42.0));
     }
     // Wide enough for the squad panel, which is wider than the party one.
     add("party", "Party / squad", 0, px(44.0), px(400.0), px(330.0));
@@ -671,12 +681,21 @@ mod tests {
             compass_w: 362,
             compass_h: 330,
             blish: true,
+            nexus: false,
         };
         for (i, v) in ui.encode().iter().enumerate() {
             shm[GAMEUI_OFF + 4 * i..GAMEUI_OFF + 4 * i + 4].copy_from_slice(&v.to_le_bytes());
         }
         assert_eq!(GameUi::read(&shm), ui);
         assert_eq!(GameUi::read(&vec![0u8; FRAME_OFF]), GameUi::default());
+        // Nexus has a bit of its own, independent of Blish's.
+        for (blish, nexus) in [(false, true), (true, true)] {
+            let ui = GameUi { blish, nexus, ..ui };
+            for (i, v) in ui.encode().iter().enumerate() {
+                shm[GAMEUI_OFF + 4 * i..GAMEUI_OFF + 4 * i + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            assert_eq!(GameUi::read(&shm), ui);
+        }
     }
 
     #[test]
@@ -689,6 +708,7 @@ mod tests {
             compass_w: 360,
             compass_h: 340,
             blish: false,
+            nexus: false,
         };
         let z = zones(&ui, s);
         let get = |z: &[Zone], id: &str| z.iter().find(|z| z.id == id).unwrap().rect;
@@ -726,6 +746,7 @@ mod tests {
             compass_w: 0,
             compass_h: 0,
             blish: false,
+            nexus: false,
         };
         let z = zones(&ui, (3440, 1440));
         let get = |id: &str| z.iter().find(|z| z.id == id).unwrap().rect;
@@ -735,12 +756,22 @@ mod tests {
         assert_eq!(get("skills"), Rect::new(1320, 1440 - 175, 800, 175));
         assert_eq!(get("party"), Rect::new(0, 44, 400, 330));
         assert_eq!(get("chat"), Rect::new(0, 1440 - 290, 550, 290));
-        assert!(z.iter().all(|z| z.id != "blish"));
+        assert!(z.iter().all(|z| z.id != "blish" && z.id != "nexus"));
         let z = zones(&GameUi { blish: true, ..ui }, (3440, 1440));
         assert_eq!(
             z.iter().find(|z| z.id == "blish").unwrap().rect,
             Rect::new(320, 0, 384, 42)
         );
+        assert!(z.iter().all(|z| z.id != "nexus"));
+        // Nexus's quick-access icons take the same slot.
+        let z = zones(&GameUi { nexus: true, ..ui }, (3440, 1440));
+        assert_eq!(
+            z.iter().find(|z| z.id == "nexus").unwrap().rect,
+            Rect::new(320, 0, 384, 42)
+        );
+        assert!(z.iter().all(|z| z.id != "blish"));
+        let z = zones(&GameUi { blish: true, nexus: true, ..ui }, (3440, 1440));
+        assert!(z.iter().any(|z| z.id == "blish") && z.iter().any(|z| z.id == "nexus"));
     }
 
     #[test]

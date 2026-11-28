@@ -2144,13 +2144,13 @@ const launcher = defineWindow({
   id: "launcher", title: "axidps button", open: true, bare: true,
   // The slot after the game's last menu icon: its icons are 32 wide at the top edge at "normal"
   // interface size, so the menu zone (320 wide at normal) ends where the next slot starts.
-  // Blish HUD puts its own icons in that slot, so with it running the button goes just right of
-  // the target bar at the top centre, where Blish's row never reaches.
+  // Blish HUD and Nexus put their own icons in that slot, so with either running the button goes
+  // just right of the target bar at the top centre, where their rows never reach.
   at: () => {
     const m = ui.zones.find(z => z.id === "menu");
     const k = m ? m.w / 320 : 1, pad = (32 * k - 32) / 2;
     const t = ui.zones.find(z => z.id === "target");
-    if (t && ui.zones.some(z => z.id === "blish")) return [Math.round(t.x + t.w + 8 * k), Math.max(0, Math.round(pad))];
+    if (t && ui.zones.some(z => z.id === "blish" || z.id === "nexus")) return [Math.round(t.x + t.w + 8 * k), Math.max(0, Math.round(pad))];
     return [Math.round((m ? m.w : 320) + pad), Math.max(0, Math.round(pad))];
   },
   mount(w) {
