@@ -245,7 +245,7 @@ const ui = {
   screen: [2560, 1440],
   hubMoved: null,      // where the hub was dragged to (this session; null = centred), and when
   hubMovedAt: 0,
-  popout: null,        // a plugin page popped out of the hub (session only): {fullId, moved: null | [x, y]}
+  popout: null,        // a plugin page popped out of the hub (session only): {fullId, moved: null | [x, y], anchor}
   popMovedAt: 0,       // when the popped hub was last dropped (its double-click), apart from the full hub's
   editing: false,      // the DLL's edit mode, as reported by the host
   editSeq: 0,          // our edit requests: odd = on, even = off
@@ -416,7 +416,7 @@ function setOpen(w, on) {
 // Pop a plugin's options page out: the hub shrinks to just that page, not modal, so the game stays
 // in view and clickable. Its frame stays where it is, so the page never reloads.
 function popOut(fullId) {
-  ui.popout = {fullId, moved: null};
+  ui.popout = {fullId, moved: null, anchor: null};
   hub.tab = "options";
   hub.opt = "p:" + fullId;
   renderAll();
@@ -2804,6 +2804,7 @@ function hubDropped(x, y) {
     // Popped: its own spot (back to the right edge on a double-click); the full hub's stays put.
     const p = ui.popout;
     p.moved = still && now - ui.popMovedAt < 450 ? null : still && !p.moved ? null : [Math.round(x), Math.round(y)];
+    if (!p.moved) p.anchor = null;   // back at the right edge: centred again for the page's height now
     ui.popMovedAt = now;
     renderAll();
     return;
@@ -2818,8 +2819,12 @@ function hubDropped(x, y) {
 const hub = defineWindow({
   id: "hub", title: "axidps", session: true, bare: true, modal: true, fixed: true,
   // Centred, or where it was dragged by its name (`hubGrip`) this session.
-  at: sc => ui.popout ? axidpsHub.popAt(sc, [hub.el.offsetWidth, hub.el.offsetHeight], ui.popout.moved)
-    : axidpsHub.hubAt(sc, hubSizeNow(sc), ui.hubMoved),
+  at: sc => {
+    if (!ui.popout) return axidpsHub.hubAt(sc, hubSizeNow(sc), ui.hubMoved);
+    const p = ui.popout, r = axidpsHub.popPlace(sc, [hub.el.offsetWidth, hub.el.offsetHeight], p.moved, p.anchor);
+    p.anchor = r.anchor;
+    return r.at;
+  },
   mount(w) {
     w.tab = "windows";
     w.body.innerHTML = `<div class="hub"><div class="top">` +

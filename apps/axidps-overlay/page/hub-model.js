@@ -29,6 +29,15 @@ const axidpsHub = (() => {
   const popSize = ([sw, sh]) => [Math.min(POP_W, sw - 16), Math.max(HUB_MIN_H, Math.round(sh * 0.85))];
   const popAt = ([sw, sh], [w, h], moved) => moved ? hubAt([sw, sh], [w, h], moved)
     : hubAt([sw, sh], [w, h], [sw - w - POP_EDGE, (sh - h) / 2]);
+  // Where the popped hub goes this report. Until it is dragged it keeps the top it first got on this
+  // screen (`anchor`), so a page that grows or shrinks doesn't move its title bar under the cursor.
+  const popPlace = (sc, size, moved, anchor) => {
+    if (moved) return {at: popAt(sc, size, moved), anchor};
+    if (anchor && anchor.sc[0] === sc[0] && anchor.sc[1] === sc[1])
+      return {at: hubAt(sc, size, [sc[0] - size[0] - POP_EDGE, anchor.y]), anchor};
+    const at = popAt(sc, size, null);
+    return {at, anchor: {sc: [sc[0], sc[1]], y: at[1]}};
+  };
   // The page a popped hub shows, while it is still listed, on and asking for Pop out; else null.
   const popPage = (pages, fullId) =>
     (Array.isArray(pages) ? pages : []).find(p => p && p.fullId === fullId && p.on && p.popout) || null;
@@ -155,6 +164,6 @@ const axidpsHub = (() => {
   }
 
   return {TABS, tabFor, hubSize, hubFit, hubAt, windowList, showBlock, notice, groupHead, scrollThumb, scrollForThumb,
-    pageScroll, moveItem, selected, pluginRows, optionNav, popSize, popAt, popPage};
+    pageScroll, moveItem, selected, pluginRows, optionNav, popSize, popAt, popPlace, popPage};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsHub;

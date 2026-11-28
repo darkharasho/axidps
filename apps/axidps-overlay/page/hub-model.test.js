@@ -250,3 +250,17 @@ test("popPage finds a page that is listed, on and marked", () => {
   assert.strictEqual(H.popPage([pg], "gone/s"), null);
   assert.strictEqual(H.popPage(null, "a/s"), null);
 });
+test("popPlace keeps the first centred top when the page grows, on the same screen", () => {
+  const first = H.popPlace([1920, 1080], [400, 500], null, null);
+  assert.deepStrictEqual(first.at, [1496, 290]);
+  const grown = H.popPlace([1920, 1080], [400, 700], null, first.anchor);
+  assert.deepStrictEqual(grown.at, [1496, 290]);
+  // Grown past the bottom: pushed up only as far as it must be.
+  assert.deepStrictEqual(H.popPlace([1920, 1080], [400, 900], null, first.anchor).at, [1496, 180]);
+});
+test("popPlace re-centres on a new screen size, and a drop wins over the anchor", () => {
+  const first = H.popPlace([1920, 1080], [400, 500], null, null);
+  const moved = H.popPlace([1280, 720], [400, 500], null, first.anchor);
+  assert.deepStrictEqual(moved.at, [856, 110]);
+  assert.deepStrictEqual(H.popPlace([1920, 1080], [400, 500], [100, 50], first.anchor).at, [100, 50]);
+});
