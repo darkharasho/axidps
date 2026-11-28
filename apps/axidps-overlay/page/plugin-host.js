@@ -645,8 +645,20 @@
       const m = storeModel(this.store, "", this.list).cards.find(c => c.id === id);
       if (!env || !m || m.busy) return;
       const go = what => env.toHost(JSON.stringify({store: {[what]: id}}));
-      if (act === "install" && m.action === "install") go("install");
-      else if (act === "update" && m.action === "update") go("update");
+      // The card showed what the plugin asks for, so Install (or Update of a plugin that is on) is
+      // the player's OK for exactly that: saved before it goes out, so the host serves it once it
+      // lands. A manifest asking for more than the card showed still stays off (isEnabled).
+      const grant = on => {
+        const card = this.store.plugins.find(x => x && x.id === id);
+        const saved = env.saved();
+        if (!saved.plugins || typeof saved.plugins !== "object") saved.plugins = {};
+        const was = own(saved.plugins, id) ? saved.plugins[id] : null;
+        if (!on && !(was && was.enabled === true)) return;
+        saved.plugins[id] = {enabled: true, granted: grantsOf(card)};
+        env.saveNow();
+      };
+      if (act === "install" && m.action === "install") { grant(true); go("install"); }
+      else if (act === "update" && m.action === "update") { grant(false); go("update"); }
       else if (act === "replace" && m.action === "replace") {
         env.confirm(`Replace the plugin you added yourself with the store version of ${m.title}? ` +
           "Your copy is kept in the store's replaced folder.", "Replace", () => go("replace"));

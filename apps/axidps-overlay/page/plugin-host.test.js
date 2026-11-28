@@ -646,11 +646,39 @@ test("store actions: install and update go straight out, busy cards and unknown 
   h.storeAct("b.busy", "install");
   h.storeAct("nope.z", "install");
   h.storeAct("a.one", "uninstall"); // not installed
-  assert.deepStrictEqual(sent.map(t => JSON.parse(t)), [{ store: { install: "a.one" } }, { store: { update: "i.old" } }]);
+  const out = sent.map(t => JSON.parse(t)).filter(m => !m.save);
+  assert.deepStrictEqual(out, [{ store: { install: "a.one" } }, { store: { update: "i.old" } }]);
   assert.strictEqual(asked.length, 0);
+  sent.length = 0;
   h.storeOpen();
   h.storeRefresh();
-  assert.deepStrictEqual(sent.slice(2), ['{"store":"open"}', '{"store":"refresh"}']);
+  assert.deepStrictEqual(sent, ['{"store":"open"}', '{"store":"refresh"}']);
+});
+
+test("store install turns the plugin on for what its card showed, saved before the install goes out", () => {
+  const s = storePayload([listing("a.one", { permissions: ["enemies"], network: ["dps.report"] })]);
+  const saved = { plugins: {}, pos: {}, open: {}, cfg: {} };
+  const { h, sent } = storeHost(s, saved, true);
+  h.storeAct("a.one", "install");
+  assert.deepStrictEqual(saved.plugins["a.one"], { enabled: true, granted: ["enemies", "net:dps.report"] });
+  const msgs = sent.map(t => JSON.parse(t));
+  assert.ok(msgs[0].save, "saved first, so the host serves it once installed");
+  assert.deepStrictEqual(msgs[1], { store: { install: "a.one" } });
+  // What arrives is on, unless it asks for more than the card showed.
+  assert.strictEqual(ph.isEnabled(plugin("a.one", { permissions: ["enemies"], network: ["dps.report"] }), saved.plugins), true);
+  assert.strictEqual(ph.isEnabled(plugin("a.one", { permissions: ["enemies", "fight"], network: ["dps.report"] }), saved.plugins), false);
+});
+
+test("store update grants what its card shows only to a plugin that is on", () => {
+  const s = storePayload([listing("i.on", { installed: "1.0.0", update: "1.1.0", permissions: ["fight", "enemies"] }),
+    listing("i.off", { installed: "1.0.0", update: "1.1.0", permissions: ["fight", "enemies"] })]);
+  const saved = { plugins: { "i.on": { enabled: true, granted: ["fight"] }, "i.off": { enabled: false, granted: ["fight"] } },
+    pos: {}, open: {}, cfg: {} };
+  const { h } = storeHost(s, saved, true);
+  h.storeAct("i.on", "update");
+  h.storeAct("i.off", "update");
+  assert.deepStrictEqual(saved.plugins["i.on"], { enabled: true, granted: ["fight", "enemies"] });
+  assert.deepStrictEqual(saved.plugins["i.off"], { enabled: false, granted: ["fight"] }, "turned off stays off");
 });
 
 test("uninstall asks first; nothing is sent or forgotten without a yes", () => {
