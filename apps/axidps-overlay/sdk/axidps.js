@@ -113,7 +113,7 @@ b, strong { font-weight: 600; }
   border: 1px solid var(--line-hi); border-radius: var(--rs); white-space: nowrap; pointer-events: none;
   font-size: calc(11px * var(--text-scale)); z-index: 2147483647; }`;
 
-  const TYPES = ["fight", "players", "look", "edit", "settings", "perf", "frame"];
+  const TYPES = ["fight", "players", "look", "edit", "settings", "perf", "frame", "opened"];
   const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
   function str(v) {
     if (typeof v === "string") return v;
@@ -143,7 +143,7 @@ b, strong { font-weight: 600; }
       try { parent.postMessage(Object.assign({axidps: 1, type}, body || {}), "*"); } catch (e) { /* page gone */ }
     };
     const log = (level, msg) => post("log", {level, msg: String(msg).slice(0, 1000)});
-    const handlers = {fight: [], players: [], look: [], edit: [], settings: [], perf: [], frame: []};
+    const handlers = {fight: [], players: [], look: [], edit: [], settings: [], perf: [], frame: [], opened: []};
     const last = {};
     let info = null;
     const readyQ = [];
@@ -219,6 +219,7 @@ b, strong { font-weight: 600; }
           break;
         }
         case "perf": emit("perf", m.perf); break;
+        case "opened": emit("opened", {from: typeof m.from === "string" ? m.from : null, data: m.data === undefined ? null : m.data}); break;
         case "settings":
           settings = m.value && typeof m.value === "object" ? m.value : {};
           emit("settings", settings);
@@ -345,6 +346,16 @@ b, strong { font-weight: 600; }
           post("status", {text: String(text ?? "").slice(0, 80), live: !!(opts && opts.live)});
         },
         resize(w, h) { post("resize", {w: Math.ceil(Number(w) || 0), h: Math.ceil(Number(h) || 0)}); },
+        // Open another of this plugin's windows beside this one, or close it when this window
+        // opened it with the same data (as clicking a player opens Details). It hears
+        // on("opened", {from, data}); {from: null, data: null} when closed this way.
+        toggle(id, data) {
+          if (typeof id !== "string" || !id) { log("error", "window.toggle needs a window id"); return; }
+          let copy = null, size = -1;
+          try { const j = JSON.stringify(data === undefined ? null : data); copy = JSON.parse(j); size = utf8Len(j); } catch (e) { /* cyclic */ }
+          if (size < 0 || size > MAX_SETTINGS) { log("error", "window.toggle: data must be JSON, at most 16 KB; not sent"); return; }
+          post("toggle", {window: id.slice(0, 80), data: copy});
+        },
         autoSize(on) { auto = on !== false; if (auto) { lastSize = ""; measure(); } },
         tip(el, text) { if (el && el.dataset) el.dataset.tip = String(text ?? ""); },
       },

@@ -133,6 +133,9 @@
 
   // What the player grants a plugin by enabling it: its permissions and one "net:<host>" per
   // network entry.
+  // Plugin windows being placed beside another right now (at()), against loops.
+  const placing = new Set();
+
   function grantsOf(p) {
     const perms = Array.isArray(p && p.permissions) ? p.permissions : [];
     const net = Array.isArray(p && p.network) ? p.network : [];
@@ -418,6 +421,15 @@
       }
       case "log": return (m.level === "warn" || m.level === "error") && typeof m.msg === "string";
       case "pong": return num(m.n);
+      case "toggle": {
+        if (!text(m.window)) return false;
+        try {
+          const j = JSON.stringify(m.data === undefined ? null : m.data);
+          return typeof j === "string" && utf8Len(j) <= MAX_SETTINGS;
+        } catch (e) {
+          return false;
+        }
+      }
       case "textures": {
         if (!Array.isArray(m.rules) || m.rules.length > MAX_TEXTURE_RULES) return false;
         try {
@@ -702,6 +714,35 @@
       this.env.toHost(JSON.stringify({plugins: "scan"}));
       this.changed(id);
     },
+    // A window asking (window.toggle) for another of its plugin's windows: opened beside it, or
+    // closed when it is open from the same window with the same data, as a player click opens
+    // Details. The opened window hears why (`opened`), and {from: null, data: null} once closed.
+    toggleBeside(ent, id, data) {
+      const env = this.env;
+      const t = this.entries.find(e => e !== ent && !e.hub && e.w && e.plugin.id === ent.plugin.id && e.win.id === id);
+      if (!t || ent.hub || !ent.w) return;
+      const key = JSON.stringify(data);
+      if (env.isOpen(t.w) && t.beside && t.beside.from === ent.win.id && t.beside.key === key) {
+        t.beside = null;
+        if (t.hello) this.post(t, "opened", {from: null, data: null});
+        env.setOpen(t.w, false);
+        return;
+      }
+      const was = t.beside || null, pos = env.saved().pos;
+      const had = pos && own(pos, t.fullId) ? pos[t.fullId] : undefined;
+      t.beside = {from: ent.win.id, fullId: ent.fullId, data, key};
+      if (had !== undefined) delete pos[t.fullId];
+      if (!env.isOpen(t.w)) env.setOpen(t.w, true);
+      if (!env.isOpen(t.w)) {
+        // Refused (the window cap): as it was.
+        t.beside = was;
+        if (had !== undefined) pos[t.fullId] = had;
+        return;
+      }
+      if (had !== undefined) env.save();
+      if (t.hello) this.post(t, "opened", {from: ent.win.id, data});
+      env.renderAll();
+    },
     srcOf(w) {
       const path = w.win.entry.split("/").map(encodeURIComponent).join("/");
       return this.env.hosted ? `axidps-plugin://${w.plugin.id}/${path}` : `/plugins/${w.plugin.id}/${path}`;
@@ -709,6 +750,18 @@
     // Default spot: beside-meter windows chain right of Support in list order; below-meter ones
     // sit under the meter (as Timeline does).
     at(ent) {
+      const env = this.env;
+      const asker = () => ent.beside && this.entries.find(e => e.fullId === ent.beside.fullId && e.w && env.isOpen(e.w));
+      const base = this.defaultAt(ent);
+      return (sc, el) => {
+        // Windows that opened each other (or a longer ring): the one asked again keeps its own spot.
+        const a = placing.has(ent) ? null : asker();
+        if (!a) return base(sc, el);
+        placing.add(ent);
+        try { return env.besideWin(a.w, ent.w, sc); } finally { placing.delete(ent); }
+      };
+    },
+    defaultAt(ent) {
       const env = this.env;
       if (ent.win.place === "below-meter") {
         return ([sw, sh]) => {
@@ -957,6 +1010,7 @@
           if (this.hasFight(ent)) this.post(ent, "fight", {feed: sp.fight});
           if (this.hasPlayers(ent)) this.post(ent, "players", {players: sp.players});
           if (this.lastPerf) this.post(ent, "perf", {perf: this.lastPerf});
+          if (ent.beside) this.post(ent, "opened", {from: ent.beside.from, data: ent.beside.data});
           ent.lookStale = ent.feedStale = ent.perfStale = ent.playersStale = false;
           break;
         }
@@ -1003,6 +1057,9 @@
           break;
         }
         case "pong":
+          break;
+        case "toggle":
+          this.toggleBeside(ent, m.window, m.data === undefined ? null : m.data);
           break;
         case "textures": {
           if (!this.hasTextures(ent)) {

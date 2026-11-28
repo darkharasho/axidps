@@ -1346,6 +1346,12 @@ function besideSource([sw, sh], el) {
   const src = wins.find(v => v.id === ui.detailFrom);
   const dw = el.offsetWidth || 600, dh = el.offsetHeight || 480;
   if (!src || !isOpen(src)) return [Math.max(0, Math.round(sw / 2 - dw / 2)), Math.max(0, Math.round(sh / 2 - dh / 2))];
+  return besideWin(src, {el}, [sw, sh]);
+}
+// Window `w` beside the open window `src` (as besideSource; a plugin window opened by another).
+function besideWin(src, w, [sw, sh]) {
+  const el = w.el;
+  const dw = el.offsetWidth || 600, dh = el.offsetHeight || 480;
   const [x, y] = posOf(src), gap = 6;
   const right = x + src.el.offsetWidth + gap;
   const left = x - dw - gap;
@@ -3214,7 +3220,7 @@ window.axidps = {
   },
 };
 pluginHost.init({hosted: HOSTED, test: TEST, defineWindow, removeWindow, wins, saved: () => saved, ui, toHost, besideMeter,
-  posOf, save, saveNow, renderAll, scheduleReport, look: lookOf, feed: feedView, isOpen, confirm: hubConfirm,
+  posOf, save, saveNow, renderAll, scheduleReport, look: lookOf, feed: feedView, isOpen, setOpen, besideWin, confirm: hubConfirm,
   hubPage: id => hubPageEl(hub.body, id).querySelector(".hframe")});
 renderAll();
 

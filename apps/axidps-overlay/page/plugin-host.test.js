@@ -1249,3 +1249,101 @@ test("a store install that fails forgets the enable it saved", () => {
   h.setStore(storePayload([listing("a.one", { installed: "1.0.0", error: "later refresh failed" })]));
   assert.deepStrictEqual(saved.plugins["a.one"], { enabled: true, granted: ["fight"] });
 });
+
+test("accept: toggle names a window and carries small JSON data", () => {
+  assert.ok(ph.accept({ axidps: 1, type: "toggle", window: "breakdown", data: { team: "enemy-a" } }));
+  assert.ok(ph.accept({ axidps: 1, type: "toggle", window: "breakdown", data: null }));
+  assert.ok(ph.accept({ axidps: 1, type: "toggle", window: "breakdown" }));
+  assert.ok(!ph.accept({ axidps: 1, type: "toggle", window: 5, data: null }));
+  assert.ok(!ph.accept({ axidps: 1, type: "toggle", window: "b", data: { s: "x".repeat(20000) } }));
+});
+
+// One plugin with a summary and a breakdown window (closed), and another plugin's window of the
+// same id; setOpen and besideWin recorded.
+function toggleHost() {
+  const { h, state, ent } = feedHost();
+  const opened = [];
+  Object.assign(h.env, {
+    setOpen: (w, on) => { if (on) state.closed.delete(w); else state.closed.add(w); opened.push([w.id, on]); },
+    besideWin: (src, w) => [src.id === "sum" ? 500 : 0, 40],
+    besideMeter: () => [7, 7],
+  });
+  const mk = (pid, wid, wkey) => {
+    const e = ent(pid, ["enemies"]);
+    e.win = { id: wid }; e.fullId = pid + "/" + wid; e.w = { id: wkey };
+    return e;
+  };
+  const sum = mk("a.tb", "summary", "sum"), bd = mk("a.tb", "breakdown", "bd"), other = mk("z.other", "breakdown", "ot");
+  state.closed.add(bd.w); state.closed.add(other.w);
+  return { h, state, sum, bd, other, opened };
+}
+const toggle = (window, data) => ({ axidps: 1, type: "toggle", window, data });
+
+test("toggle opens the plugin's own window beside the asking one, and tells it why", () => {
+  const { h, sum, bd, other, opened } = toggleHost();
+  h.env.saved().pos["a.tb/breakdown"] = [1, 1];
+  h.handle(sum, toggle("breakdown", { team: "enemy-a" }));
+  assert.deepStrictEqual(opened, [["bd", true]], "only its own plugin's window");
+  assert.strictEqual(h.env.saved().pos["a.tb/breakdown"], undefined, "goes beside, not where it was dragged");
+  assert.deepStrictEqual(bd.posted.filter(m => m.type === "opened"),
+    [{ axidps: 1, type: "opened", from: "summary", data: { team: "enemy-a" } }]);
+  assert.deepStrictEqual(h.at(bd)([1920, 1080], {}), [500, 40]);
+  assert.strictEqual(other.posted.length, 0);
+  // Other data while open: stays open, told again.
+  h.handle(sum, toggle("breakdown", { team: "enemy-b" }));
+  assert.deepStrictEqual(opened, [["bd", true]]);
+  assert.deepStrictEqual(bd.posted.filter(m => m.type === "opened").pop().data, { team: "enemy-b" });
+  // The same again closes it, and it is told it was let go.
+  h.handle(sum, toggle("breakdown", { team: "enemy-b" }));
+  assert.deepStrictEqual(opened, [["bd", true], ["bd", false]]);
+  assert.deepStrictEqual(bd.posted.filter(m => m.type === "opened").pop(), { axidps: 1, type: "opened", from: null, data: null });
+});
+
+test("toggle never reaches itself, a missing window or a hub page", () => {
+  const { h, sum, bd, opened } = toggleHost();
+  h.handle(sum, toggle("summary", null));
+  h.handle(sum, toggle("nope", null));
+  bd.hub = true;
+  h.handle(sum, toggle("breakdown", null));
+  assert.deepStrictEqual(opened, []);
+  assert.strictEqual(bd.posted.length, 0);
+});
+
+test("a window opened beside hears why once it says hello", () => {
+  const { h, sum, bd } = toggleHost();
+  bd.hello = false;
+  h.handle(sum, toggle("breakdown", { team: "squad" }));
+  assert.strictEqual(bd.posted.filter(m => m.type === "opened").length, 0, "nothing before hello");
+  h.env.look = () => ({});
+  h.env.feed = () => ({});
+  h.handle(bd, { axidps: 1, type: "hello" });
+  assert.deepStrictEqual(bd.posted.filter(m => m.type === "opened"), [{ axidps: 1, type: "opened", from: "summary", data: { team: "squad" } }]);
+});
+
+test("a window opened beside goes back to its own spot once the asker is closed", () => {
+  const { h, state, sum, bd } = toggleHost();
+  h.handle(sum, toggle("breakdown", null));
+  state.closed.add(sum.w);
+  assert.deepStrictEqual(h.at(bd)([1920, 1080], {}), [7, 7]);
+});
+
+test("two windows that open each other still get a spot", () => {
+  const { h, sum, bd } = toggleHost();
+  // A real besideWin asks the asker's spot, which is the plugin's at() again.
+  h.env.besideWin = (src) => { const e = h.entries.find(x => x.w === src); const [x, y] = h.at(e)([1920, 1080], {}); return [x + 100, y]; };
+  h.handle(sum, toggle("breakdown", null));
+  h.handle(bd, toggle("summary", null));
+  assert.deepStrictEqual(h.at(sum)([1920, 1080], {}).length, 2);
+  assert.deepStrictEqual(h.at(bd)([1920, 1080], {}).length, 2);
+});
+
+test("a toggle the window cap refuses changes nothing", () => {
+  const { h, sum, bd, state } = toggleHost();
+  h.env.setOpen = () => {}; // refused: stays closed
+  h.env.saved().pos["a.tb/breakdown"] = [3, 4];
+  h.handle(sum, toggle("breakdown", { team: "squad" }));
+  assert.deepStrictEqual(h.env.saved().pos["a.tb/breakdown"], [3, 4]);
+  assert.strictEqual(bd.beside, null);
+  assert.strictEqual(bd.posted.filter(m => m.type === "opened").length, 0);
+  assert.ok(state.closed.has(bd.w));
+});
