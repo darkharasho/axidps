@@ -690,7 +690,15 @@ impl Ctx<'_> {
         }
     }
 
+    /// A MAX_HEALTH row; none for players, as EVTC logs carry none for them.
     fn max_health(&self, time: u64, id: u32, max: u32) -> Option<EvtcEvent> {
+        if self
+            .reg
+            .agent(id)
+            .is_some_and(|a| a.kind == AgentKind::Player)
+        {
+            return None;
+        }
         let mut e = self.agent_row(time, MAX_HEALTH, id)?;
         e.dst_agent = u64::from(max);
         Some(e)
@@ -722,6 +730,11 @@ impl Ctx<'_> {
         } else {
             r.iff()
         };
+        // Removes carry the holder's and the remover's health flags, as strikes do for source
+        // and target.
+        let remove = matches!(r.statechange, BUFF_REMOVE_ONE | BUFF_REMOVE_ALL);
+        let is_ninety = remove && state.health.get(&r.src).is_some_and(|&h| h > 9000);
+        let is_fifty = remover && state.health.get(&r.dst).is_some_and(|&h| h < 5000);
         let addr = |id: u32| {
             if id == 0 {
                 0
@@ -742,6 +755,8 @@ impl Ctx<'_> {
             buff: r.buff,
             result: r.result,
             is_buffremove: r.is_buffremove,
+            is_ninety: u8::from(is_ninety),
+            is_fifty: u8::from(is_fifty),
             is_shields: r.is_shields,
             is_offcycle: r.is_offcycle,
             pad: r.pad,
@@ -940,7 +955,10 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
     let (head, start_tick) = start_server(f);
 
     // LOG_START, POV, LANGUAGE, ARCBUILD, GW2_BUILD, SHARDID, MAP_ID (the EVTC order).
-    events.push(marker(f, f.start_ms, LOG_START));
+    // EVTC logs carry 3 in LOG_START's dst_agent (all 5,319 checked, 2026-01 to 2026-11).
+    let mut start = marker(f, f.start_ms, LOG_START);
+    start.dst_agent = 3;
+    events.push(start);
     if let Some(e) = f
         .pov
         .and_then(|id| ctx.agent_row(f.start_ms, POINT_OF_VIEW, id))
@@ -1538,6 +1556,9 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                     result,
                     is_ninety: u8::from(state.health.get(&src).is_some_and(|&h| h > 9000)),
                     is_fifty: u8::from(state.health.get(&dst).is_some_and(|&h| h < 5000)),
+                    // As in EVTC logs: damage into barrier, and hits on a downed target.
+                    is_shields: u8::from(overstack != 0),
+                    is_offcycle: u8::from(state.down.contains(&dst)),
                     ..sc(time, 0)
                 });
             }
@@ -2075,6 +2096,8 @@ mod tests {
         );
         assert_eq!(first.value, 1_700_000_000); // (1000-500)/1000 = 0 whole seconds
         assert_eq!(first.buff_dmg, first.value);
+        assert_eq!(first.dst_agent, 3, "every EVTC log of 2026 carries 3 here");
+        assert_eq!(last.dst_agent, 0);
         assert_eq!(
             (last.is_statechange, last.time, last.src_agent),
             (10, 5000, ARC_ID)
@@ -2368,9 +2391,9 @@ mod tests {
             (a4, 7, 5, 27)
         );
         let a1 = r.addr(1).unwrap();
-        // A player's max health is left out (0), as before the DLL sent it.
-        assert_eq!(sc_rows(&l, 12)[0].dst_agent, 0);
-        assert_eq!(sc_rows(&l, 12)[0].src_agent, a1);
+        // A player gets no max health row, as in EVTC logs; its health row stays.
+        assert!(sc_rows(&l, 12).is_empty());
+        assert_eq!(sc_rows(&l, 8)[0].src_agent, a1);
         assert_eq!(sc_rows(&l, 8)[0].dst_agent, 8000);
     }
 
@@ -2536,6 +2559,31 @@ mod tests {
         assert_eq!((s[1].iff, s[1].is_fifty), (0, 0));
         assert_eq!(s[2].iff, 2);
         assert_eq!((s[3].is_ninety, s[3].is_fifty), (0, 0));
+        assert_eq!(s[0].is_shields, 1, "damage into barrier marks the strike is_shields");
+        assert_eq!(s[0].is_offcycle, 0);
+        // A strike on a downed agent is marked is_offcycle, as in EVTC logs.
+        let l = build_log(
+            &fight(vec![
+                (
+                    1900,
+                    Event::State {
+                        id: 3,
+                        state: AgentState::Down,
+                    },
+                ),
+                (2000, strike(1, 3, 10)),
+            ]),
+            &r,
+        );
+        let e = l.events.iter().find(|e| e.is_statechange == 0).unwrap();
+        assert_eq!(e.is_offcycle, 1);
+        let mut no_barrier = strike(1, 3, 10);
+        if let Event::Strike { overstack, .. } = &mut no_barrier {
+            *overstack = 0;
+        }
+        let l = build_log(&fight(vec![(2000, no_barrier)]), &r);
+        let e = l.events.iter().find(|e| e.is_statechange == 0).unwrap();
+        assert_eq!(e.is_shields, 0);
         // Health unknown means both flags 0.
         let l = build_log(&fight(vec![(2000, strike(1, 3, 10))]), &r);
         let e = l.events.iter().find(|e| e.is_statechange == 0).unwrap();
@@ -2562,8 +2610,8 @@ mod tests {
         ]);
         let l = build_log(&f, &world());
         let max: Vec<i64> = sc_rows(&l, 12).iter().map(|e| e.dst_agent as i64).collect();
-        // Agent 1 is a player: one row of 0, whatever the DLL's max (EVTC logs carry none).
-        assert_eq!(max, vec![0]);
+        // Agent 1 is a player: no row, whatever the DLL's max (EVTC logs carry none).
+        assert_eq!(max, Vec::<i64>::new());
         assert_eq!(sc_rows(&l, 8).len(), 3);
         // An NPC (agent 3): a row per change.
         let n = |t, max| {
@@ -3390,6 +3438,51 @@ mod tests {
         assert_eq!((gone.dst_agent, gone.iff), (0, 2));
         let ids: Vec<_> = l.skills.iter().map(|s| s.id).collect();
         assert!(ids.contains(&740) && ids.contains(&1187));
+    }
+
+    /// Removes carry is_ninety (holder above 90%) and is_fifty (remover below 50%), as strikes
+    /// do for their source and target.
+    #[test]
+    fn buff_remove_health_flags() {
+        let r = world();
+        let health = |t, id, pct_x100| {
+            (
+                t,
+                Event::Health {
+                    id,
+                    pct_x100,
+                    max: 20_000,
+                },
+            )
+        };
+        let apply = |t, inst| {
+            (
+                t,
+                Event::BuffApply {
+                    dst: 1,
+                    src: 3,
+                    buff: 740,
+                    inst,
+                    duration: 4000,
+                    level: 0,
+                    active: true,
+                },
+            )
+        };
+        let remove = |t, remover, inst| (t, Event::BuffRemove { dst: 1, remover, inst });
+        let f = fight(vec![
+            health(1500, 1, 9500),
+            health(1500, 3, 4000),
+            apply(2000, 2),
+            apply(2000, 3),
+            remove(2500, 3, 2),
+            health(2600, 1, 5000),
+            remove(2700, 0, 3),
+        ]);
+        let l = build_log(&f, &r);
+        let rm = sc_rows(&l, 71);
+        assert_eq!((rm[0].is_ninety, rm[0].is_fifty), (1, 1));
+        assert_eq!((rm[1].is_ninety, rm[1].is_fifty), (0, 0), "holder at 50%, no remover");
     }
 
     /// BARRIERUPDATE (38): barrier as a share of max health x10000 in `dst_agent`.
