@@ -20,7 +20,7 @@ def npcs(path):
     for i in range(n):
         o = i * 96
         _addr, prof, elite = struct.unpack_from('<QII', b, o)
-        if elite == 0xFFFFFFFF and prof >> 16 != 0xFFFF:
+        if elite == 0xFFFFFFFF and prof >> 16 != 0xFFFF:  # public-check:ok
             yield prof, b[o + 28:o + 92].split(b'\0')[0].decode('utf8', 'replace')
 
 def main():

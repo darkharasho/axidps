@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use axidps_evtc::{Agent, Event as EvtcEvent, Header, Log, Skill, player_name};
 use axidps_protocol::v2::{AgentKind, AgentState, CaptureOp, Event, MotionKind, NOT_APPLICABLE};
 
-use crate::buffs::{Row, Stacks};
+use crate::buffs::{BUFF_REMOVE_ALL, BUFF_REMOVE_ONE, Row, Stacks};
 use crate::casts::{self, Casts};
 use crate::condi;
 use crate::content;
@@ -710,7 +710,18 @@ impl Ctx<'_> {
     }
 
     /// A buff row: agents by instance id (0 = none, written as addr 0).
-    fn buff(&self, time: u64, r: &Row) -> EvtcEvent {
+    /// A buff row. A remove with a remover carries the remover's relation to the holder as its
+    /// iff (foe 1, friend 0, unknown 2), as in EVTC logs: parsers count a boon strip only on a
+    /// foe's remove.
+    fn buff(&self, state: &State, time: u64, r: &Row) -> EvtcEvent {
+        let remover = matches!(r.statechange, BUFF_REMOVE_ONE | BUFF_REMOVE_ALL)
+            && r.dst != 0
+            && r.dst_raw.is_none();
+        let iff = if remover {
+            state.iff(self.reg, r.src, r.dst)
+        } else {
+            r.iff()
+        };
         let addr = |id: u32| {
             if id == 0 {
                 0
@@ -727,7 +738,7 @@ impl Ctx<'_> {
             value: r.value,
             buff_dmg: r.buff_dmg,
             overstack: r.overstack,
-            iff: r.iff(),
+            iff,
             buff: r.buff,
             result: r.result,
             is_buffremove: r.is_buffremove,
@@ -1160,7 +1171,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 .filter(|&i| i != 0 && reg.addr(i).is_some()),
         );
         skills.insert(r.skill);
-        events.push(ctx.buff(f.start_ms, &r));
+        events.push(ctx.buff(&state, f.start_ms, &r));
     }
     masters.fill(&mut events[snapshot_rows..], &state.present);
 
@@ -1484,7 +1495,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                     if r.skill != 0 {
                         skills.insert(r.skill);
                     }
-                    events.push(ctx.buff(time, &r));
+                    events.push(ctx.buff(&state, time, &r));
                 }
             }
             Event::Team { id, team } => {
@@ -3372,7 +3383,8 @@ mod tests {
                 rm.is_buffremove,
                 rm.iff
             ),
-            (a1, a3, 3500, 2, 0)
+            (a1, a3, 3500, 2, 1),
+            "a remover's iff is its relation to the holder: NPC 3 (team 9) is a foe of 1 (team 3)"
         );
         let gone = sc_rows(&l, 71)[1];
         assert_eq!((gone.dst_agent, gone.iff), (0, 2));

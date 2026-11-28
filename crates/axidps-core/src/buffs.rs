@@ -85,8 +85,9 @@ pub struct Row {
 pub const IFF_UNKNOWN: u8 = 2;
 
 impl Row {
-    /// The row's iff byte, as EVTC logs carry it on buff rows that parsers read: a remove with no
-    /// remover (an expiry or an overstack) is unknown; everything else is written as 0.
+    /// The row's iff byte as far as the row alone tells: a remove with no remover (an expiry or
+    /// an overstack) is unknown; everything else is 0. The log writer replaces it with the
+    /// teams' relation on removes that have a remover.
     pub fn iff(&self) -> u8 {
         let remove = matches!(self.statechange, BUFF_REMOVE_ONE | BUFF_REMOVE_ALL);
         if remove && self.dst == 0 && self.dst_raw.is_none() {
