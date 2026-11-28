@@ -14,12 +14,12 @@ const axidpsCustom = (() => {
     downs: {label: "Dn", tip: "enemies downed", w: 30, count: true},
     kills: {label: "K", tip: "enemies killed", w: 30, count: true},
     deaths: {label: "D", tip: "deaths", w: 26, count: true},
-    downed: {label: "Dn'd", tip: "times downed", w: 40, count: true},
+    downed: {label: "Dn'd", tip: "times downed", w: 46, count: true},
     taken: {label: "Taken", tip: "damage taken", w: 52},
     cleanses: {label: "Cleanse", tip: "condition stacks cleansed from allies", w: 62, count: true},
-    strips: {label: "Strip", tip: "boon stacks stripped from enemies", w: 52, count: true},
+    strips: {label: "Strip", tip: "boon stacks stripped from enemies", w: 54, count: true},
     healing: {label: "Heal", tip: "healing given (others: only what they gave you)", w: 56, heal: true},
-    barrier: {label: "Barr", tip: "barrier given (others: only what they gave you)", w: 52, heal: true},
+    barrier: {label: "Barr", tip: "barrier given (others: only what they gave you)", w: 54, heal: true},
     hps: {label: "HPS", tip: "healing and barrier given per second (others: only to you)", w: 50, heal: true, rate: ["healing", "barrier"]},
     healing_in: {label: "Heal in", tip: "healing received (others: only what you gave them)", w: 58, heal: true},
     barrier_in: {label: "Barr in", tip: "barrier received (others: only what you gave them)", w: 58, heal: true},
@@ -29,7 +29,10 @@ const axidpsCustom = (() => {
     down_contrib: "Down contribution", downs: "Enemies downed", kills: "Kills", deaths: "Deaths", downed: "Times downed",
     taken: "Damage taken", cleanses: "Cleanses", strips: "Boon strips", healing: "Healing", barrier: "Barrier",
     hps: "Healing per second", healing_in: "Healing received", barrier_in: "Barrier received"};
-  for (const k of Object.keys(STATS)) Object.assign(STATS[k], {name: NAMES[k], head: STATS[k].label});
+  // Column headers: short codes where the label is wider than the numbers under it.
+  const HEADS = {power: "Pwr", condi: "Cnd", taken: "Tkn", cleanses: "Cln", strips: "Strp", healing_in: "Hl in",
+    barrier_in: "Br in", downed: "Dnd"};
+  for (const k of Object.keys(STATS)) Object.assign(STATS[k], {name: NAMES[k], head: HEADS[k] || STATS[k].label});
   // The fight stats' summed keys (charts and the old tables use these).
   const FIGHT_KEYS = Object.keys(STATS).filter(k => !STATS[k].rate);
 
@@ -41,12 +44,12 @@ const axidpsCustom = (() => {
   const BOON_NAMES = {740: "Might", 725: "Fury", 1187: "Quickness", 30328: "Alacrity", 717: "Protection",
     718: "Regeneration", 726: "Vigor", 743: "Aegis", 1122: "Stability", 719: "Swiftness", 26980: "Resistance",
     873: "Resolution", 5974: "Superspeed"};
-  // Boon names short enough for a column header.
-  const BOON_SHORT = {740: "Might", 725: "Fury", 1187: "Quick", 30328: "Alac", 717: "Prot", 718: "Regen", 726: "Vigor",
-    743: "Aegis", 1122: "Stab", 719: "Swift", 26980: "Resist", 873: "Resol", 5974: "Sspeed"};
+  // Three-letter boon codes for column headers (the tip has the full name).
+  const BOON_SHORT = {740: "Mgt", 725: "Fur", 1187: "Qck", 30328: "Alc", 717: "Prt", 718: "Rgn", 726: "Vig",
+    743: "Aeg", 1122: "Stb", 719: "Swf", 26980: "Res", 873: "Rsl", 5974: "Spd"};
   const MEASURES = ["up", "self", "group", "squad"];
   const MEASURE_NAME = {up: "uptime", self: "on themself", group: "given to group", squad: "given to squad"};
-  const MEASURE_HEAD = {up: "", self: " self", group: " grp", squad: " sqd"};
+  const MEASURE_HEAD = {up: "", self: " sf", group: " gp", squad: " sq"};
   const MEASURE_TIP = {up: "uptime", self: "generation on themself", group: "generation on their subgroup, per player",
     squad: "generation on the squad, per player"};
   // Boon stats: kind "boon", one per boon and measure. noAs: always "total" (no per second, no share).
@@ -55,19 +58,20 @@ const axidpsCustom = (() => {
     STATS[`boon:${b}:${m}`] = {kind: "boon", boon: b, measure: m, index: MEASURES.indexOf(m), intensity, noAs: true,
       label: BOON_NAMES[b] + (m === "up" ? "" : ` (${m})`),
       name: `${BOON_NAMES[b]} ${MEASURE_NAME[m]}`, head: BOON_SHORT[b] + MEASURE_HEAD[m],
-      tip: `${BOON_NAMES[b]} ${MEASURE_TIP[m]}${intensity ? ", in stacks" : ""}`, w: 58};
+      tip: `${BOON_NAMES[b]} ${MEASURE_TIP[m]}${intensity ? ", in stacks" : ""}`, w: m === "up" ? 58 : 62};
   }
   // A boons window (rows "boons") picks measures only: its rows are the boons, each cell that
   // boon's value for the measure. These keys are valid only there.
   const BOON_MEASURE_KEYS = MEASURES.map(m => `boons:${m}`);
   const MEASURE_LABEL = {up: "Uptime", self: "Self", group: "Group", squad: "Squad"};
+  const MEASURE_COL = {up: "Up", self: "Self", group: "Grp", squad: "Sqd"};
   for (const m of MEASURES) {
     STATS[`boons:${m}`] = {kind: "boons", measure: m, noAs: true, label: MEASURE_LABEL[m],
-      name: MEASURE_LABEL[m] === "Uptime" ? "Uptime" : `Generation ${MEASURE_NAME[m]}`, head: MEASURE_LABEL[m],
+      name: MEASURE_LABEL[m] === "Uptime" ? "Uptime" : `Generation ${MEASURE_NAME[m]}`, head: MEASURE_COL[m],
       tip: `${MEASURE_TIP[m]} (stacks for Might and Stability)`, w: 52};
   }
   // A column's header text: its short label, with /s or % when it shows that.
-  const headText = s => STATS[s.key].head + (s.as === "share" ? " %" : s.as === "per_s" && !STATS[s.key].rate ? "/s" : "");
+  const headText = s => STATS[s.key].head + (s.as === "share" ? "%" : s.as === "per_s" && !STATS[s.key].rate ? "/s" : "");
   // The header's width (px) at Normal text: 10.5 px uppercase, semibold, letter-spaced .05em. An
   // estimate wide enough for the overlay's fonts (IBM Plex Sans, Lato, Fira Code).
   const headWidth = text => [...String(text).toUpperCase()].reduce((n, ch) =>

@@ -768,16 +768,40 @@ test("every stat has a readable name for the settings and a header for the windo
   assert.strictEqual(C.STATS["boon:740:up"].label, "Might");
 });
 
-test("headText: short boon headers and the total, /s and % suffixes", () => {
+test("headText: short codes, with /s and % suffixes", () => {
   assert.strictEqual(C.headText({key: "damage", as: "total"}), "Dmg");
-  assert.strictEqual(C.headText({key: "cleanses", as: "per_s"}), "Cleanse/s");
-  assert.strictEqual(C.headText({key: "healing_in", as: "share"}), "Heal in %");
+  assert.strictEqual(C.headText({key: "cleanses", as: "per_s"}), "Cln/s");
+  assert.strictEqual(C.headText({key: "healing_in", as: "share"}), "Hl in%");
   // A rate stat is per second already.
   assert.strictEqual(C.headText({key: "dps", as: "per_s"}), "DPS");
-  assert.strictEqual(C.headText({key: "boon:740:up", as: "total"}), "Might");
-  assert.strictEqual(C.headText({key: "boon:30328:squad", as: "total"}), "Alac sqd");
-  assert.strictEqual(C.headText({key: "boon:718:group", as: "total"}), "Regen grp");
+  assert.strictEqual(C.headText({key: "boon:740:up", as: "total"}), "Mgt");
+  assert.strictEqual(C.headText({key: "boon:30328:squad", as: "total"}), "Alc sq");
+  assert.strictEqual(C.headText({key: "boon:718:group", as: "total"}), "Rgn gp");
+  assert.strictEqual(C.headText({key: "boon:1187:self", as: "total"}), "Qck sf");
   assert.strictEqual(C.headText({key: "boons:self", as: "total"}), "Self");
+  assert.strictEqual(C.headText({key: "boons:up", as: "total"}), "Up");
+});
+
+test("headers are unique, so two columns never read the same", () => {
+  for (const as of ["total", "per_s", "share"]) {
+    const seen = new Map();
+    for (const k of Object.keys(C.STATS)) {
+      if (C.STATS[k].noAs && as !== "total") continue;
+      const h = C.headText({key: k, as}).toUpperCase();
+      assert.ok(!seen.has(h), `${k} and ${seen.get(h)} both read ${h}`);
+      seen.set(h, k);
+    }
+  }
+});
+
+test("headers fit their numbers: a column is never widened by its header text", () => {
+  for (const k of Object.keys(C.STATS)) for (const as of ["total", "per_s", "share"]) {
+    if (C.STATS[k].noAs && as !== "total") continue;
+    // The one-letter counts (K, D, Dn) are narrower than any "/s" or "%" suffix; they may grow a little.
+    const slack = C.STATS[k].w <= 30 && as !== "total" ? 12 : 0;
+    const s = {key: k, as};
+    assert.ok(C.colWidth(s) <= C.STATS[k].w + (as === "total" ? 0 : 8) + slack, `${k} ${as}: ${C.headText(s)} ${C.colWidth(s)}`);
+  }
 });
 
 test("colWidth: never narrower than the stat's numbers or its header", () => {
@@ -789,7 +813,4 @@ test("colWidth: never narrower than the stat's numbers or its header", () => {
   // Short headers keep the stat's own width.
   assert.strictEqual(C.colWidth({key: "deaths", as: "total"}), 26);
   assert.strictEqual(C.colWidth({key: "damage", as: "per_s"}), 70);
-  // The uppercase, letter-spaced header text of the longest ones fits.
-  assert.ok(C.colWidth({key: "cleanses", as: "per_s"}) >= 76);
-  assert.ok(C.colWidth({key: "boon:718:squad", as: "total"}) >= 76);
 });
