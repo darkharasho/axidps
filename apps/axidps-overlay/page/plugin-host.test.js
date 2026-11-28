@@ -1066,3 +1066,50 @@ test("overlay windows beside a hub window keep their aliases", () => withFrames(
   assert.deepStrictEqual(defined.map(d => d.id), ["p2"]);
   assert.strictEqual(holders["x.y/s"].children.length, 1);
 }));
+
+test("a hub frame can shrink below its starting height", () => withFrames(() => {
+  const p = plugin("x.y", { windows: [hubWin("s")] });
+  const { h } = hubHost([p], { plugins: { "x.y": { enabled: true, granted: ["fight"] } }, pos: {}, open: {}, cfg: {} });
+  h.setList([p]);
+  const ent = h.entries[0];
+  h.handle(ent, { type: "resize", w: 240, h: 120 });
+  assert.strictEqual(ent.frame.style.height, "120px");
+}));
+
+test("hubStatus says when a hub page is stuck or failing", () => {
+  const ent = { stalled: false, status: { text: "", live: false }, badge: { count: 0, last: [] } };
+  assert.strictEqual(ph.hubStatus(ent, false), null);
+  assert.deepStrictEqual(ph.hubStatus(Object.assign({}, ent, { status: { text: "ready", live: true } }), false),
+    { text: "ready", bad: false, tip: "" });
+  assert.deepStrictEqual(ph.hubStatus(Object.assign({}, ent, { stalled: true, status: { text: "ready", live: true } }), false),
+    { text: "Not responding", bad: true, tip: "" });
+  const errs = Object.assign({}, ent, { badge: { count: 2, last: ["a", "b"] } });
+  assert.strictEqual(ph.hubStatus(errs, false), null);
+  assert.deepStrictEqual(ph.hubStatus(errs, true), { text: "2 errors", bad: true, tip: "a\nb" });
+  assert.strictEqual(ph.hubStatus(Object.assign({}, ent, { badge: { count: 1, last: ["a"] } }), true).text, "1 error");
+});
+
+test("a hub page that stops responding redraws the hub", () => withFrames(() => {
+  const p = plugin("x.y", { windows: [hubWin("s")] });
+  const { h } = hubHost([p], { plugins: { "x.y": { enabled: true, granted: ["fight"] } }, pos: {}, open: {}, cfg: {} });
+  let renders = 0;
+  h.env.renderAll = () => { renders++; };
+  h.setList([p]);
+  const ent = h.entries[0];
+  ent.cw = { postMessage() {} };
+  const before = renders;
+  ent.seen = 0;
+  h.pingAll(10000);
+  assert.ok(renders > before, "rendered");
+  assert.strictEqual(h.hubStatusOf("x.y/s").text, "Not responding");
+  const again = renders;
+  h.pingAll(20000);
+  assert.strictEqual(renders, again, "no redraw while nothing changed");
+}));
+
+test("hubPages shows a previewed plugin on in the browser demo only", () => {
+  const p = plugin("x.y", { preview: true, windows: [hubWin("s")] });
+  assert.strictEqual(ph.hubPages([p], {}, { hosted: false })[0].on, true);
+  assert.strictEqual(ph.hubPages([p], {}, { hosted: true })[0].on, false);
+  assert.strictEqual(ph.hubPages([p], {})[0].on, false);
+});

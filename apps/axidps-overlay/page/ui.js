@@ -2489,7 +2489,7 @@ const UNCHECKED = "Not checked yet. Nobody has looked at what this plugin does."
 // there), so switching pages or re-rendering the hub doesn't reload it. Only .ohead and .oset are
 // redrawn.
 const hubPageEls = new Map();
-function hubPageEl(fullId) {
+function hubPageEl(root, fullId) {
   let el = hubPageEls.get(fullId);
   if (el) return el;
   el = document.createElement("div");
@@ -2497,7 +2497,7 @@ function hubPageEl(fullId) {
   el.dataset.op = "p:" + fullId;
   el.innerHTML = `<div class="ohead"></div><div class="oset"></div><div class="hframe"></div>`;
   el.style.display = "none";
-  hub.body.querySelector(".hpages").appendChild(el);
+  root.querySelector(".hpages").appendChild(el);
   hubPageEls.set(fullId, el);
   return el;
 }
@@ -2506,7 +2506,7 @@ const putHtml = (el, html) => { if (el._html !== html) { el._html = html; el.inn
 // has its title, what it does and asks for, and its on/off switch (the card's Turn on / Turn off);
 // under it, while on, the window's declared settings, then the plugin's own page.
 function renderOptions(w) {
-  const pages = pluginHost.hubPages(pluginHost.list, saved);
+  const pages = pluginHost.hubPages(pluginHost.list, saved, {hosted: HOSTED});
   const nav = axidpsHub.optionNav(pages, w.opt);
   w.opt = nav.sel;
   let group = "";
@@ -2518,17 +2518,24 @@ function renderOptions(w) {
   }).join(""));
   const listed = new Set(pages.map(p => p.fullId));
   for (const [id, el] of hubPageEls) {
-    if (listed.has(id) || el.querySelector("iframe")) continue;
+    if (listed.has(id)) continue;
+    if (el.querySelector("iframe")) {
+      // Its frame should have gone with the plugin; keep the page rather than orphan it.
+      if (!el._warned) { el._warned = true; console.warn(`hub page ${id}: not listed but still framed`); }
+      continue;
+    }
     el.remove();
     hubPageEls.delete(id);
   }
   for (const pg of pages) {
-    const el = hubPageEl(pg.fullId);
+    const el = hubPageEl(w.body, pg.fullId);
+    const st = pg.on ? pluginHost.hubStatusOf(pg.fullId) : null;
     const sw = pg.action ? `<span class="tog${pg.on ? " on" : ""}" data-pact="${pg.action}" ` +
       `data-tip="${pg.on ? "turn it off" : "turn it on"}"><i></i></span>` : `<span class="have off">${esc(pg.reason)}</span>`;
     putHtml(el.querySelector(".ohead"), `<div class="otop" data-p="${esc(pg.id)}"><h3>${esc(pg.title)}</h3>${sw}</div>` +
       (pg.description ? `<p class="odesc">${esc(pg.description)}</p>` : "") +
-      (pg.lines.length ? `<p class="olines">${pg.lines.map(l => esc(l)).join(" · ")}</p>` : ""));
+      (pg.lines.length ? `<p class="olines">${pg.lines.map(l => esc(l)).join(" · ")}</p>` : "") +
+      (st ? `<p class="ostat${st.bad ? " bad" : ""}"${st.tip ? ` data-tip="${esc(st.tip)}"` : ""}>${esc(st.text)}</p>` : ""));
     const p = pg.on ? pluginHost.list.find(x => x && x.id === pg.id) : null;
     const sec = p ? pluginHost.panelModel(p, saved).filter(x => x.fullId === pg.fullId && x.fields.length) : [];
     putHtml(el.querySelector(".oset"), sec.length ? plugPanel(sec, {winOpts: false}) : "");
@@ -3070,7 +3077,7 @@ window.axidps = {
 };
 pluginHost.init({hosted: HOSTED, test: TEST, defineWindow, removeWindow, wins, saved: () => saved, ui, toHost, besideMeter,
   posOf, save, saveNow, renderAll, scheduleReport, look: lookOf, feed: feedView, isOpen, confirm: hubConfirm,
-  hubPage: id => hubPageEl(id).querySelector(".hframe")});
+  hubPage: id => hubPageEl(hub.body, id).querySelector(".hframe")});
 renderAll();
 
 // index.html?demo: sample data, for working on the page without a game (?demo&edit: edit mode).

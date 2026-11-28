@@ -191,13 +191,19 @@
     };
   }
 
+  // Whether plugin p's windows are framed: enabled, or (browser demo only) the plugin being
+  // previewed.
+  const framed = (p, saved, hosted) => isEnabled(p, saved && saved.plugins) || (!hosted && !!p && p.preview === true && !p.error);
+
   // A window drawn as a page in the hub's Options tab instead of as an overlay window.
   const isHub = win => !!win && win.in === "hub";
 
   // The Options tab's plugin pages: one per hub window of every listed plugin whose manifest
-  // parsed (on or off, or failed to load), in list order. on: isEnabled; action, reason and lines
-  // as on the plugin's card.
-  function hubPages(list, saved) {
+  // parsed (on or off, or failed to load), in list order. on: whether it's framed (isEnabled, or
+  // previewed in the browser demo when opts.hosted is false); action, reason and lines as on the
+  // plugin's card.
+  function hubPages(list, saved, opts) {
+    const hosted = !opts || opts.hosted !== false;
     const s = saved && typeof saved === "object" ? saved : {};
     const str = v => typeof v === "string" ? v.slice(0, MAX_TEXT) : "";
     const out = [], seen = new Set();
@@ -210,9 +216,10 @@
         if (seen.has(fullId)) continue;
         seen.add(fullId);
         card = card || cardModel(p, s);
+        const on = framed(p, s, hosted);
         out.push({fullId, id: p.id, title: str(win.title) || win.id, description: str(win.description),
-          icon: ICONS.includes(win.icon) ? win.icon : "plug", on: isEnabled(p, s.plugins),
-          action: card.action, reason: card.reason, lines: card.lines});
+          icon: ICONS.includes(win.icon) ? win.icon : "plug", on,
+          action: card.action && (on ? "disable" : "enable"), reason: card.reason, lines: card.lines});
       }
     }
     return out;
@@ -364,6 +371,16 @@
       delete cfg.on;
     }
     return saved;
+  }
+
+  // A hub page's line under its header: not responding, developer mode's error count (tip: the
+  // last messages), or the plugin's own status; null when there's nothing to say.
+  function hubStatus(ent, dev) {
+    if (ent.stalled) return {text: "Not responding", bad: true, tip: ""};
+    const n = ent.badge && ent.badge.count;
+    if (dev && n > 0) return {text: n === 1 ? "1 error" : n + " errors", bad: true, tip: ent.badge.last.join("\n")};
+    const t = ent.status && typeof ent.status.text === "string" ? ent.status.text.slice(0, MAX_TEXT) : "";
+    return t ? {text: t, bad: false, tip: ""} : null;
   }
 
   // A frame's size, kept so a plugin can't break the atlas: 40-1000 x 24-1000. Fractions stay (an
@@ -552,7 +569,7 @@
       if (!env) return;
       const saved = env.saved();
       const sp = saved.plugins || {};
-      const on = p => isEnabled(p, sp) || (!env.hosted && p.preview === true && !p.error);
+      const on = p => framed(p, saved, env.hosted);
       this.want = validManifestWindows(this.list, on);
       for (const ent of this.entries.slice()) {
         const w = this.want.find(x => x.fullId === ent.fullId);
@@ -684,6 +701,8 @@
         // A hub page: its frame lives in a holder in the hub's Options tab (env.hubPage), which
         // is never rebuilt, so it keeps running while the hub is closed. No window, no bar.
         ent.hub = true;
+        // No height yet (CSS fills the page), so the plugin's first resize always applies.
+        ent.size = [0, 0];
         this.mount(ent, {body: env.hubPage(w.fullId)});
         this.entries.push(ent);
         this.debug();
@@ -793,8 +812,18 @@
     // A window in trouble (not responding, or developer mode's error count) shows its title bar
     // even when the player hid it, so the warning isn't lost.
     showTrouble(ent) {
+      if (ent.hub) {
+        // A hub page shows this in its header (ui.js, hubStatusOf): redraw when it changes.
+        const key = JSON.stringify(hubStatus(ent, this.env.saved().dev === true));
+        if (key !== ent.hubShown) { ent.hubShown = key; this.env.renderAll(); }
+        return;
+      }
       const cl = ent.w && ent.w.el && ent.w.el.classList;
       if (cl) cl.toggle("trouble", ent.stalled || (this.env.saved().dev === true && ent.badge.count > 0));
+    },
+    hubStatusOf(fullId) {
+      const ent = this.entries.find(e => e.hub && e.fullId === fullId);
+      return ent && this.env ? hubStatus(ent, this.env.saved().dev === true) : null;
     },
     showStatus(ent) {
       this.showTrouble(ent);
@@ -1029,7 +1058,7 @@
 
   const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, trustLabel, storeModel, usesOf, sampleStore, sampleStoreList, migrateSaved, clampSize, accept,
     logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, settingsModel, settingValues, windowOpts,
-    panelModel, fitSetting, MAX_OPEN, isHub, hubPages, OFF_BY_DEFAULT};
+    panelModel, fitSetting, MAX_OPEN, isHub, hubPages, hubStatus, OFF_BY_DEFAULT};
   Object.assign(host, pure);
   if (typeof window !== "undefined") window.pluginHost = host;
   if (typeof module !== "undefined" && module.exports) module.exports = Object.assign({host}, pure);
