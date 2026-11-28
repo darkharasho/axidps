@@ -51,7 +51,11 @@ jobs:
             ~/.cargo/git
             target
           key: cargo-release-app-windows-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-release-app-windows-
+          # The old combined cache (before the app and overlay host were split), so the first run
+          # after the split starts warm. Drop it once that cache has expired.
+          restore-keys: |
+            cargo-release-app-windows-
+            cargo-release-windows-
 
       - if: steps.check.outputs.cache-hit != 'true'
         name: Build the app and core
@@ -107,7 +111,11 @@ jobs:
             ~/.cargo/git
             apps/axidps-overlay/target
           key: cargo-release-overlay-windows-${{ hashFiles('apps/axidps-overlay/Cargo.lock') }}
-          restore-keys: cargo-release-overlay-windows-
+          # The old combined cache (before the app and overlay host were split), so the first run
+          # after the split starts warm. Drop it once that cache has expired.
+          restore-keys: |
+            cargo-release-overlay-windows-
+            cargo-release-windows-
 
       - if: steps.check.outputs.cache-hit != 'true'
         name: Build the overlay host
@@ -165,7 +173,11 @@ jobs:
             ~/.cargo/git
             target
           key: cargo-release-app-linux-ubuntu24-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-release-app-linux-ubuntu24-
+          # The old combined cache (before the app and overlay host were split), so the first run
+          # after the split starts warm. Drop it once that cache has expired.
+          restore-keys: |
+            cargo-release-app-linux-ubuntu24-
+            cargo-release-linux-ubuntu24-
 
       - if: steps.check.outputs.cache-hit != 'true'
         name: Build the app and core
@@ -216,7 +228,11 @@ jobs:
             ~/.cargo/git
             apps/axidps-overlay/target
           key: cargo-release-overlay-linux-ubuntu24-${{ hashFiles('apps/axidps-overlay/Cargo.lock') }}
-          restore-keys: cargo-release-overlay-linux-ubuntu24-
+          # The old combined cache (before the app and overlay host were split), so the first run
+          # after the split starts warm. Drop it once that cache has expired.
+          restore-keys: |
+            cargo-release-overlay-linux-ubuntu24-
+            cargo-release-linux-ubuntu24-
 
       - if: steps.check.outputs.cache-hit != 'true'
         name: Build the overlay host
