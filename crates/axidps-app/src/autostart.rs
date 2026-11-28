@@ -54,8 +54,31 @@ pub type Systemctl<'a> = &'a dyn Fn(&[&str]) -> io::Result<bool>;
 pub fn desktop_entry(exec: &Path) -> String {
     format!(
         "[Desktop Entry]\nType=Application\nName=AxiDPS\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
-        exec.display()
+        desktop_exec_escape(exec)
     )
+}
+
+/// `path` as one quoted Exec argument, without its quotes: per the Desktop Entry spec, `"`,
+/// `` ` ``, `$` and `\` take a backslash inside quotes, and the string rule then escapes every
+/// backslash again; `%` is doubled, and control characters use the string escapes.
+fn desktop_exec_escape(path: &Path) -> String {
+    let p = path.to_string_lossy();
+    let mut out = String::with_capacity(p.len());
+    for c in p.chars() {
+        match c {
+            '"' | '`' | '$' => {
+                out.push_str("\\\\");
+                out.push(c);
+            }
+            '\\' => out.push_str("\\\\\\\\"),
+            '%' => out.push_str("%%"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The text of [`PATH_UNIT`], watching `marker`.
@@ -682,6 +705,16 @@ mod tests {
             desktop_entry(Path::new(EXEC)),
             "[Desktop Entry]\nType=Application\nName=AxiDPS\nExec=\"/home/u/AppImages/axidps-0.2.0.AppImage\"\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n"
         );
+    }
+
+    /// The Exec key is escaped as the Desktop Entry spec says: the string escapes first, then
+    /// the quoting rule, and `%` doubled; a newline cannot end the key.
+    #[test]
+    fn desktop_entry_escapes_exec() {
+        let e = desktop_entry(Path::new("/h/My $ap`p\" 100%\\x\ny.AppImage"));
+        let exec = e.lines().find(|l| l.starts_with("Exec=")).unwrap();
+        assert_eq!(exec, r#"Exec="/h/My \\$ap\\`p\\" 100%%\\\\x\ny.AppImage""#);
+        assert_eq!(e.lines().count(), 6, "{e}");
     }
 
     #[test]
