@@ -3,11 +3,12 @@
 //! Rows are read from the registry each time [`Around::value`] runs. Nothing here carries a
 //! name, account, GUID, position or id: a row says only what kind of player is in range.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axidps_protocol::v2::{AgentKind, Event};
 use serde_json::{json, Value};
 
+use crate::live;
 use crate::names;
 use crate::processor::Processor;
 use crate::registry::Registry;
@@ -27,6 +28,10 @@ pub struct Around {
     fight_start: Option<u64>,
     /// The `(map_id, shard)` last seen: the registry resets only when it changes.
     map: Option<(u32, u32)>,
+    /// Players here who hit an enemy player, or were hit by one, in the last fight.
+    fought: BTreeSet<u32>,
+    /// Players who fought and left, by their last agent id, until the next fight.
+    departed: BTreeMap<u32, Row>,
 }
 
 /// One presence row; the field order is the sort order.
@@ -70,14 +75,74 @@ impl Around {
         self.next_seq = 0;
         self.fight_start = None;
         self.map = None;
+        self.fought.clear();
+        self.departed.clear();
         self.generation += 1;
+    }
+
+    /// The player an event is credited to: the agent's owner if it has one, else itself.
+    fn owner(reg: &Registry, id: u32) -> Option<u32> {
+        let o = reg.agent(id)?.master.unwrap_or(id);
+        let a = reg.agent(o)?;
+        (a.kind == AgentKind::Player && reg.is_live(o)).then_some(o)
+    }
+
+    /// Whether a hit between two players on different known teams was just seen.
+    fn count_hit(&mut self, reg: &Registry, src: u32, dst: u32) {
+        let (Some(s), Some(d)) = (Self::owner(reg, src), Self::owner(reg, dst)) else {
+            return;
+        };
+        let team = |id| reg.agent(id).and_then(|a| a.team);
+        match (team(s), team(d)) {
+            (Some(x), Some(y)) if x != y => {
+                if self.fought.insert(s) {
+                    self.generation += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn row_of(reg: &Registry, a: &crate::registry::AgentInfo) -> Row {
+        Row {
+            team: a.team,
+            spec: some(names::spec_name(a.prof, a.elite)),
+            squad: reg.is_squad(a.id),
+            prof: some(names::spec_name(a.prof, 0)),
+            is_self: reg.pov() == Some(a.id),
+            here: true,
+            fought: false,
+        }
     }
 
     /// Call after `replay::apply(p, step)`.
     pub fn after_step(&mut self, p: &Processor, step: &Step) {
+        // A new fight clears the flags before its first hit is counted.
+        if let Some(s) = p.fight_start_ms() {
+            if self.fight_start != Some(s) {
+                self.fight_start = Some(s);
+                self.fought.clear();
+                self.departed.clear();
+                self.generation += 1;
+            }
+        }
+        let reg = p.registry();
+        if let Step::Push(_, Event::Strike { src, dst, result, .. }) = *step {
+            if p.fight_start_ms().is_some() && result <= 9 {
+                self.count_hit(reg, src, dst);
+            }
+        }
+        if let Step::Push(_, Event::BuffApply { src, dst, buff, .. }) = *step {
+            if p.fight_start_ms().is_some() && live::CONDITIONS.contains(&buff) {
+                self.count_hit(reg, src, dst);
+            }
+        }
         if let Step::Prime(_, ev) | Step::Push(_, ev) = step {
             match *ev {
                 Event::AgentAdd { id, .. } => {
+                    if self.departed.remove(&id).is_some() {
+                        self.fought.insert(id);
+                    }
                     self.added.insert(id, self.next_seq);
                     self.next_seq += 1;
                     self.generation += 1;
@@ -86,12 +151,17 @@ impl Around {
                     if self.map != Some((map_id, shard)) {
                         self.map = Some((map_id, shard));
                         self.added.clear();
+                        self.fought.clear();
+                        self.departed.clear();
                     }
                     self.generation += 1;
                 }
                 // The account arrives in name chunks after the add; it decides squad and dedupe.
+                Event::AgentRemove { id } => {
+                    self.leave(reg, id);
+                    self.generation += 1;
+                }
                 Event::AgentName { .. }
-                | Event::AgentRemove { .. }
                 | Event::Team { .. }
                 | Event::Pov { .. }
                 | Event::WvwTeam { .. } => self.generation += 1,
@@ -100,8 +170,35 @@ impl Around {
         }
         let start = p.fight_start_ms();
         if start != self.fight_start {
+            // Only the end of a fight lands here (a start was stored above).
             self.fight_start = start;
             self.generation += 1;
+        }
+    }
+
+    /// A fighter leaves: keep its row, unless the same account is still here under another id.
+    fn leave(&mut self, reg: &Registry, id: u32) {
+        if !self.fought.remove(&id) {
+            return;
+        }
+        let Some(a) = reg.agent(id) else { return };
+        let sibling = (!a.account.is_empty())
+            .then(|| {
+                reg.live_agents()
+                    .find(|b| b.id != id && b.kind == AgentKind::Player && b.account == a.account)
+                    .map(|b| b.id)
+            })
+            .flatten();
+        match sibling {
+            Some(b) => {
+                self.fought.insert(b);
+            }
+            None => {
+                let mut row = Self::row_of(reg, a);
+                row.here = false;
+                row.fought = true;
+                self.departed.insert(id, row);
+            }
         }
     }
 
@@ -124,16 +221,26 @@ impl Around {
         let mut rows: Vec<Row> = players
             .into_iter()
             .filter_map(|id| reg.agent(id))
-            .map(|a| Row {
-                team: a.team,
-                spec: some(names::spec_name(a.prof, a.elite)),
-                squad: reg.is_squad(a.id),
-                prof: some(names::spec_name(a.prof, 0)),
-                is_self: reg.pov() == Some(a.id),
-                here: true,
-                fought: false,
+            .map(|a| {
+                let mut row = Self::row_of(reg, a);
+                let same = |b: &crate::registry::AgentInfo| {
+                    b.id == a.id || (!a.account.is_empty() && b.account == a.account)
+                };
+                row.fought = reg
+                    .live_agents()
+                    .any(|b| same(b) && self.fought.contains(&b.id))
+                    || self.departed.keys().any(|&d| {
+                        d == a.id || reg.agent(d).is_some_and(|b| same(b) && b.id != a.id)
+                    });
+                row
             })
             .collect();
+        // A departed fighter whose account is back under another id is already a live row.
+        rows.extend(self.departed.iter().filter_map(|(&id, row)| {
+            let acct = &reg.agent(id)?.account;
+            let back = !acct.is_empty() && reg.live_agents().any(|b| &b.account == acct);
+            (!back).then(|| row.clone())
+        }));
         rows.sort();
         rows
     }
@@ -444,5 +551,194 @@ mod tests {
         let team6: Vec<_> = players(&v).iter().filter(|r| r["team"] == 6).collect();
         assert_eq!(team6.len(), 1);
         assert_eq!(team6[0]["spec"], "Dragonhunter");
+    }
+
+    fn at(p: &mut Processor, a: &mut Around, t: u64, ev: Event) {
+        run(p, a, Step::Push(t, ev));
+    }
+
+    fn start_fight(p: &mut Processor, a: &mut Around, t: u64) {
+        at(p, a, t, Event::Combat { id: 1, in_combat: true });
+        assert!(p.fight_start_ms().is_some());
+    }
+
+    fn hit(src: u32, dst: u32, result: u8) -> Event {
+        Event::Strike {
+            src,
+            dst,
+            skill: 1,
+            value: 500,
+            overstack: 0,
+            result,
+        }
+    }
+
+    fn buff(src: u32, dst: u32, buff: u32) -> Event {
+        Event::BuffApply {
+            dst,
+            src,
+            buff,
+            inst: 1,
+            duration: 1000,
+            level: 0,
+            active: true,
+        }
+    }
+
+    /// How many rows of `team` are `fought`.
+    fn fought_in(v: &Value, team: u32) -> usize {
+        players(v)
+            .iter()
+            .filter(|r| r["team"] == team && r["fought"] == true)
+            .count()
+    }
+
+    fn me_fought(v: &Value) -> bool {
+        players(v).iter().find(|r| r["self"] == true).unwrap()["fought"] == true
+    }
+
+    #[test]
+    fn strike_on_enemy_marks_both_sides_only_when_they_hit() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, hit(1, 6, 0));
+        let v = a.value(&p);
+        assert!(me_fought(&v));
+        assert_eq!(fought_in(&v, 5), 0);
+        at(&mut p, &mut a, 1200, hit(6, 4, 0));
+        let v = a.value(&p);
+        assert_eq!(fought_in(&v, 5), 1);
+    }
+
+    #[test]
+    fn blocked_strike_counts() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        let mut e = hit(7, 1, 3);
+        if let Event::Strike { value, .. } = &mut e {
+            *value = 0;
+        }
+        at(&mut p, &mut a, 1100, e);
+        assert_eq!(fought_in(&a.value(&p), 5), 1);
+    }
+
+    #[test]
+    fn pet_hit_credits_owner() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, hit(9, 1, 0));
+        let v = a.value(&p);
+        assert_eq!(fought_in(&v, 5), 1);
+        assert_eq!(players(&v).len(), 5);
+    }
+
+    #[test]
+    fn condition_apply_counts_boon_does_not() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, buff(7, 4, 736));
+        assert_eq!(fought_in(&a.value(&p), 5), 1);
+        at(&mut p, &mut a, 1200, buff(4, 6, 717));
+        let v = a.value(&p);
+        let four = players(&v)
+            .iter()
+            .find(|r| r["team"] == 2 && r["self"] == false && r["squad"] == true)
+            .unwrap();
+        assert_eq!(four["fought"], false);
+    }
+
+    #[test]
+    fn same_team_and_npc_hits_do_not_count() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, hit(1, 4, 0));
+        at(&mut p, &mut a, 1200, hit(1, 8, 0));
+        assert!(!me_fought(&a.value(&p)));
+    }
+
+    #[test]
+    fn departed_fighter_stays_until_next_fight() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, hit(6, 1, 0));
+        at(&mut p, &mut a, 1200, Event::AgentRemove { id: 6 });
+        let gone = |v: &Value| {
+            players(v)
+                .iter()
+                .filter(|r| r["team"] == 5 && r["here"] == false && r["fought"] == true)
+                .count()
+        };
+        assert_eq!(gone(&a.value(&p)), 1);
+        run(&mut p, &mut a, Step::Tick(100_000));
+        assert_eq!(a.value(&p)["fight"]["active"], false);
+        assert_eq!(gone(&a.value(&p)), 1);
+        at(&mut p, &mut a, 200_000, Event::Combat { id: 1, in_combat: true });
+        assert_eq!(gone(&a.value(&p)), 0);
+    }
+
+    #[test]
+    fn non_fighter_leaves_at_once() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, Event::AgentRemove { id: 7 });
+        let v = a.value(&p);
+        assert_eq!(players(&v).iter().filter(|r| r["team"] == 5).count(), 1);
+        assert!(players(&v).iter().all(|r| r["here"] == true));
+    }
+
+    #[test]
+    fn return_under_same_id_counts_once() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, hit(6, 1, 0));
+        at(&mut p, &mut a, 1200, Event::AgentRemove { id: 6 });
+        at(&mut p, &mut a, 1300, player(6, 5, 1, 62, 0));
+        let v = a.value(&p);
+        let back: Vec<_> = players(&v)
+            .iter()
+            .filter(|r| r["team"] == 5 && r["spec"] == "Firebrand" && r["fought"] == true)
+            .collect();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0]["here"], true);
+        assert_eq!(players(&v).len(), 5);
+    }
+
+    #[test]
+    fn fought_survives_fight_end_and_clears_on_next_start() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, hit(1, 6, 0));
+        run(&mut p, &mut a, Step::Tick(100_000));
+        let v = a.value(&p);
+        assert_eq!(v["fight"]["active"], false);
+        assert!(me_fought(&v));
+        at(&mut p, &mut a, 200_000, Event::Combat { id: 1, in_combat: true });
+        assert!(!me_fought(&a.value(&p)));
+        at(&mut p, &mut a, 200_100, hit(1, 6, 0));
+        assert!(me_fought(&a.value(&p)));
+    }
+
+    #[test]
+    fn map_change_clears_fought() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, hit(6, 1, 0));
+        at(&mut p, &mut a, 1200, Event::AgentRemove { id: 6 });
+        at(&mut p, &mut a, 1300, map(99));
+        push(&mut p, &mut a, player(6, 5, 1, 62, 0));
+        let v = a.value(&p);
+        assert_eq!(players(&v).len(), 1);
+        assert_eq!(fought_in(&v, 5), 0);
+    }
+
+    #[test]
+    fn no_hits_outside_a_fight() {
+        // A strike does not start a fight (only a squad Combat enter does), so nothing is
+        // counted while none runs.
+        let (mut p, mut a) = world();
+        at(&mut p, &mut a, 1000, hit(1, 6, 0));
+        assert_eq!(p.fight_start_ms(), None);
+        let v = a.value(&p);
+        assert!(players(&v).iter().all(|r| r["fought"] == false));
     }
 }

@@ -190,7 +190,7 @@ const BOONS: &[u32] = &[
     717, 718, 719, 725, 726, 740, 743, 873, 1122, 1187, 26980, 30328,
 ];
 /// Conditions: removing one is a cleanse.
-const CONDITIONS: &[u32] = &[
+pub(crate) const CONDITIONS: &[u32] = &[
     720, 721, 722, 723, 727, 736, 737, 738, 742, 791, 861, 19426, 26766, 27705,
 ];
 
