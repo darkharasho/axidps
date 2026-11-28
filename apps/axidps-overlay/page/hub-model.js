@@ -15,6 +15,13 @@ const axidpsHub = (() => {
   // The hub packs last in the atlas, so it never pushes another window out: it takes what height is
   // left below where it lands (`room`), down to its smallest; below that a window has to give way.
   const hubFit = ([w, h], room) => [w, Math.max(HUB_MIN_H, Math.min(h, Math.floor(room)))];
+  // Where the hub goes on a screen [sw, sh] at size [w, h]: centred, or where it was dragged to
+  // (`moved`, this session), kept on screen.
+  const hubAt = ([sw, sh], [w, h], moved) => {
+    const clamp = (v, max) => Math.max(0, Math.min(Math.round(v), Math.max(0, max)));
+    if (!moved) return [clamp((sw - w) / 2, sw - w), clamp((sh - h) / 2, sh - h)];
+    return [clamp(moved[0], sw - w), clamp(moved[1], sh - h)];
+  };
 
   // Stable sort by kind: builtin, custom, plugin; `wins` order kept within a kind.
   const byKind = list => KINDS.flatMap(k => list.filter(x => x.kind === k));
@@ -137,7 +144,7 @@ const axidpsHub = (() => {
     return {items, sel: items.some(i => i.id === sel) ? sel : "look"};
   }
 
-  return {TABS, tabFor, hubSize, hubFit, windowList, showBlock, notice, groupHead, scrollThumb, scrollForThumb,
+  return {TABS, tabFor, hubSize, hubFit, hubAt, windowList, showBlock, notice, groupHead, scrollThumb, scrollForThumb,
     pageScroll, moveItem, selected, pluginRows, optionNav};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsHub;

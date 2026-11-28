@@ -215,3 +215,17 @@ test("optionNav keeps a known selection and falls back", () => {
   assert.strictEqual(H.optionNav(pages, "p:gone/s").sel, "look");
   assert.strictEqual(H.optionNav(null, undefined).sel, "look");
 });
+
+test("hubAt centres the hub until it is moved", () => {
+  assert.deepStrictEqual(H.hubAt([1920, 1080], [1040, 680], null), [440, 200]);
+});
+
+test("hubAt keeps a moved hub where it was dropped", () => {
+  assert.deepStrictEqual(H.hubAt([1920, 1080], [1040, 680], [30, 400]), [30, 400]);
+});
+
+test("hubAt keeps a moved hub on screen, even after the screen shrinks", () => {
+  assert.deepStrictEqual(H.hubAt([1920, 1080], [1040, 680], [1500, -20]), [880, 0]);
+  assert.deepStrictEqual(H.hubAt([1280, 720], [1040, 640], [880, 400]), [240, 80]);
+  assert.deepStrictEqual(H.hubAt([400, 300], [480, 340], [10, 10]), [0, 0]);
+});

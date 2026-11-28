@@ -170,6 +170,9 @@
   .hub .top .x:hover { background: var(--raise-hi); }
   .hub .top .grow { flex: 1; }
   .brand { display: flex; align-items: center; gap: 9px; }
+  /* The hub drags by its name (ui.js hubGrip); Centre shows once it has been moved. */
+  .hub .top .recentre { display: none; height: 28px; }
+  .win.moved .hub .top .recentre { display: inline-flex; align-items: center; }
   .brand b { font-size: 16px; color: var(--title); letter-spacing: .02em; }
   .hub nav { display: flex; gap: 4px; align-self: stretch; }
   .tabb { display: flex; align-items: center; gap: 8px; padding: 0 16px; color: var(--dim); font-weight: 500;

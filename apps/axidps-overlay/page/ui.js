@@ -243,6 +243,8 @@ const ui = {
   live: null,          // core's live feed
   cleared: false,      // Clear fight (hub): blank until the next fight starts
   screen: [2560, 1440],
+  hubMoved: null,      // where the hub was dragged to (this session; null = centred), and when
+  hubMovedAt: 0,
   editing: false,      // the DLL's edit mode, as reported by the host
   editSeq: 0,          // our edit requests: odd = on, even = off
   session: {},         // open state of windows that always start closed (the hub, Details)
@@ -473,6 +475,7 @@ function renderAll() {
   document.body.classList.toggle("editing", ui.editing);
   document.body.classList.toggle("compact", !!saved.compact);
   applyText();
+  hub.el.classList.toggle("moved", !!ui.hubMoved); // its Centre button
   trackCharts();
   for (const w of wins) {
     const open = isOpen(w);
@@ -544,7 +547,8 @@ function report() {
       // A merged window drags by its bar; a press elsewhere pulls a table off. A torn-off table
       // takes the drag over from its grab point until the DLL reports it (FLAG_GRAB).
       drag: w.grab ? [w.grab[0], w.grab[1], 0, 0]
-        : w.def.group && ui.editing ? [0, 0, Math.ceil(r.width), w.bar.offsetHeight] : [0, 0, 0, 0],
+        : w.def.group && ui.editing ? [0, 0, Math.ceil(r.width), w.bar.offsetHeight]
+        : w === hub ? hubGrip(r) : [0, 0, 0, 0],
       r: flat ? 0 : theme.s.r,
       blur: flat ? 0 : w.def.modal ? Math.max(2, blurLevel()) : blurLevel(),
       flags: (w.def.ed ? 1 : 0) | (w.def.modal ? 2 : 0) | (w.def.group ? FLAG_GROUP : 0) | (w.grab ? FLAG_GRAB : 0)});
@@ -2737,21 +2741,39 @@ function scrollBarEvents(root) {
   });
 }
 
-// Everything in one place: a full window over the dimmed game, centred, closed by a click
-// outside it or Esc.
+// The hub drags by the left end of its top bar (its name, up to the tabs), so it can be moved off
+// whatever the player wants to watch while changing settings; window-local [x, y, w, h].
+function hubGrip(r) {
+  const top = hub.body.querySelector(".top"), nav = top && top.querySelector("nav");
+  if (!top || !nav) return [0, 0, 0, 0];
+  const t = top.getBoundingClientRect();
+  return [Math.max(0, Math.round(t.left - r.left)), Math.max(0, Math.round(t.top - r.top)),
+    Math.max(0, Math.round(nav.getBoundingClientRect().left - t.left - 6)), Math.round(t.height)];
+}
+// The DLL dropped the hub at screen (x, y). A drop where it already was soon after the last one
+// is a double-click: back to the middle. Kept for this session only.
+function hubDropped(x, y) {
+  const now = Date.now(), [hx, hy] = posOf(hub);
+  const still = Math.abs(x - hx) < 3 && Math.abs(y - hy) < 3;
+  ui.hubMoved = still && now - ui.hubMovedAt < 450 ? null : still && !ui.hubMoved ? null : [Math.round(x), Math.round(y)];
+  ui.hubMovedAt = now;
+  renderAll();
+}
+
+// Everything in one place: a full window over the dimmed game, centred (or where it was dragged),
+// closed by a click outside it or Esc.
 const hub = defineWindow({
   id: "hub", title: "axidps", session: true, bare: true, modal: true, fixed: true,
-  at: sc => {
-    const [hw, hh] = hubSizeNow(sc);
-    return [Math.max(0, Math.round((sc[0] - hw) / 2)), Math.max(0, Math.round((sc[1] - hh) / 2))];
-  },
+  // Centred, or where it was dragged by its name (`hubGrip`) this session.
+  at: sc => axidpsHub.hubAt(sc, hubSizeNow(sc), ui.hubMoved),
   mount(w) {
     w.tab = "windows";
     w.body.innerHTML = `<div class="hub"><div class="top">` +
-      `<div class="brand">${icon("chart", 18, "accent")}<b>axidps</b></div>` +
+      `<div class="brand" data-tip="drag to move · double-click to centre">${icon("chart", 18, "accent")}<b>axidps</b></div>` +
       `<nav>${TABS.map(([id, label]) => `<div class="tabb" data-tab="${id}">${esc(label)}` +
         `${id === "plugins" ? '<span class="n"></span>' : ""}</div>`).join("")}</nav>` +
       `<span class="grow"></span><span class="kbd">Alt+Shift+M opens and closes this</span>` +
+      `<button class="quiet recentre" data-act="recentre" data-tip="put it back in the middle">Centre</button>` +
       `<button class="x" data-act="close" data-tip="close (Esc)">${icon("x", 12)}</button></div>` +
       `<main>` +
       // Windows: the list on the left, the selected window's settings and the bottom bar on the right
@@ -2844,6 +2866,7 @@ const hub = defineWindow({
     };
     q('[data-act="layout"]').onclick = () => { ui.session.hub = false; ui.fromHub = true; refit(); requestEdit(true); renderAll(); };
     q('[data-act="close"]').onclick = () => setOpen(w, false);
+    q('[data-act="recentre"]').onclick = () => { ui.hubMoved = null; renderAll(); };
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
     q('[data-act="addtable"]').onclick = () => { w.addMenu = !w.addMenu; w.def.render(w); };
@@ -3084,6 +3107,7 @@ window.axidps = {
   // `name` is the window's id (a plugin window's alias); its position is saved under its key.
   moved(name, x, y) {
     const w = wins.find(v => v.id === name);
+    if (w === hub) return hubDropped(x, y);
     saved.pos[w ? w.key : name] = [Math.round(x), Math.round(y)];
     if (w && w.grab) w.grab = null;
     if (mpull && mpull.torn) mpull = null;
