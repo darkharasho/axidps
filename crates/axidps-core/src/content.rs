@@ -298,7 +298,7 @@ pub(crate) mod tests {
     /// Values from the EVTC kind-1 starts (24 576 of 24 576 starts in the six 20261124 logs match
     /// this reduction): a plain skill and the q40 rounding.
     #[test]
-    fn timing_matches_arcdps_starts() {
+    fn timing_matches_evtc_starts() {
         let t = timing(5491).unwrap();
         assert_eq!((t.start_value(), t.full_ms), (800, 1240));
         assert!(timing(u32::MAX).is_none());

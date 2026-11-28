@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_follow_arcdps() {
+    fn rows_follow_evtc_layout() {
         let mut o = Objectives::default();
         assert_eq!(
             o.apply(&ev(1, 1, 0, 0, 708), Some(38)),

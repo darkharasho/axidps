@@ -240,7 +240,7 @@ mod tests {
     /// EVTC log 20261124-211816: log start 396294 at tick 505552, sc 42 src
     /// 0xfffffffffed17b86; log 211839: start 411860 at tick 505941, src 0xfffffffffed17b8c. // public-check:ok
     #[test]
-    fn instance_start_matches_arcdps() {
+    fn instance_start_matches_evtc() {
         assert_eq!(instance_start(396_294, 505_552), 0xffff_ffff_fed1_7b86); // public-check:ok
         assert_eq!(instance_start(411_860, 505_941), 0xffff_ffff_fed1_7b8c); // public-check:ok
     }

@@ -3733,7 +3733,7 @@ mod tests {
     /// The registration row from the reference log 20261124-212056 (addon version 2.20rc1) decodes as the
     /// layout above.
     #[test]
-    fn healing_registration_layout_matches_arcdps() {
+    fn healing_registration_layout_matches_evtc() {
         let (src, dst) = (0x0700_0002_9c9b_3c99u64, 0x0031_6372_3032_2e32u64);
         assert_eq!(src & 0xffff_ffff, u64::from(extension::HEALING_SIG)); // public-check:ok
         assert_eq!((src >> 32) & 0xff_ffff, extension::HEALING_REVISION); // public-check:ok
