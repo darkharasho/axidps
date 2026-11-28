@@ -2017,6 +2017,34 @@ impl LiveWriter {
     }
 }
 
+/// Write the live feed: the stats snapshot plus `around`, when either changed and a write is
+/// due (`last` ignores the interval, for a final write on exit). `Ok(true)` if it wrote.
+pub fn write_feed(
+    writer: &mut LiveWriter,
+    stats: &mut LiveStats,
+    around: &crate::around::Around,
+    p: &Processor,
+    now: Instant,
+    unix_ms: u64,
+    last: bool,
+) -> io::Result<bool> {
+    let generation = stats.generation().wrapping_add(around.generation());
+    let due = if last {
+        writer.changed(generation)
+    } else {
+        writer.due(now, generation)
+    };
+    if !due {
+        return Ok(false);
+    }
+    let mut json = stats.snapshot(p.registry(), unix_ms);
+    if let Some(o) = json.as_object_mut() {
+        o.insert("around".to_owned(), around.value(p));
+    }
+    writer.write(now, generation, &json)?;
+    Ok(true)
+}
+
 /// Write `bytes` to `path` through `<path>.tmp` and a rename, so readers never see a partial
 /// file.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -4065,5 +4093,85 @@ mod tests {
             .join("nope")
             .join("live.json");
         assert!(write_atomic(&path, b"{}").is_err());
+    }
+
+    fn feed_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("axidps-feed-{name}-{}.json", std::process::id()))
+    }
+
+    fn add_player(id: u32) -> Event {
+        Event::AgentAdd {
+            id,
+            kind: AgentKind::Player,
+            prof: 1,
+            elite: 0,
+            species: 0,
+            team: 1,
+            subgroup: 0,
+            wvw_rank: 0,
+            wvw_rank_def: 0,
+        }
+    }
+
+    fn feed_step(
+        p: &mut Processor,
+        l: &mut LiveStats,
+        a: &mut crate::around::Around,
+        ev: Event,
+    ) {
+        let s = Step::Push(0, ev);
+        let o = crate::replay::apply(p, &s);
+        l.after_step(p, &s, o.as_ref());
+        a.after_step(p, &s);
+    }
+
+    #[test]
+    fn feed_carries_around() {
+        let path = feed_path("carries");
+        let mut w = LiveWriter::new(path.clone());
+        let (mut p, mut l, mut a) = (processor(), LiveStats::new(), crate::around::Around::new());
+        feed_step(&mut p, &mut l, &mut a, add_player(5));
+        assert!(write_feed(&mut w, &mut l, &a, &p, Instant::now(), 0, false).unwrap());
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(v["around"]["players"].is_array());
+        for k in ["v", "t", "state", "fight", "players", "timeline", "healing", "detail"] {
+            assert!(v.get(k).is_some(), "missing {k}");
+        }
+    }
+
+    #[test]
+    fn around_alone_triggers_a_write() {
+        let path = feed_path("alone");
+        let mut w = LiveWriter::new(path.clone());
+        let (mut p, mut l, mut a) = (processor(), LiveStats::new(), crate::around::Around::new());
+        let t0 = Instant::now();
+        assert!(write_feed(&mut w, &mut l, &a, &p, t0, 0, false).unwrap());
+        let later = t0 + Duration::from_millis(600);
+        assert!(!write_feed(&mut w, &mut l, &a, &p, later, 0, false).unwrap());
+        let before = l.generation();
+        // Only Around sees this: LiveStats is not fed.
+        let s = Step::Push(0, add_player(5));
+        crate::replay::apply(&mut p, &s);
+        a.after_step(&p, &s);
+        assert_eq!(l.generation(), before);
+        assert!(write_feed(&mut w, &mut l, &a, &p, later, 0, false).unwrap());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn existing_keys_are_unchanged() {
+        let path = feed_path("unchanged");
+        let mut w = LiveWriter::new(path.clone());
+        let (mut p, mut l, mut a) = (processor(), LiveStats::new(), crate::around::Around::new());
+        for id in [1, 4, 5] {
+            feed_step(&mut p, &mut l, &mut a, add_player(id));
+        }
+        feed_step(&mut p, &mut l, &mut a, Event::Pov { id: 1 });
+        assert!(write_feed(&mut w, &mut l, &a, &p, Instant::now(), 7, false).unwrap());
+        let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("around").is_some());
+        assert_eq!(v, l.snapshot(p.registry(), 7));
     }
 }

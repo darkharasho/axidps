@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use axidps_core::around::Around;
 use axidps_core::assemble::{CondiReport, build_log_report};
 use axidps_core::condi::Verdict;
 use axidps_core::live::{self, LiveStats, LiveWriter};
@@ -196,6 +197,7 @@ fn condi_line(r: &CondiReport) -> String {
 /// The live stats feed and where it goes.
 struct Live {
     stats: LiveStats,
+    around: Around,
     writer: LiveWriter,
     /// A write failed and was reported; cleared by the next good write.
     failing: bool,
@@ -393,6 +395,7 @@ impl App {
         let outcome = apply(&mut self.processor, &s);
         if let Some(l) = self.live.as_mut() {
             l.stats.after_step(&self.processor, &s, outcome.as_ref());
+            l.around.after_step(&self.processor, &s);
         }
         self.relay_after_step(&s);
         if let Some(o) = outcome {
@@ -533,18 +536,17 @@ impl App {
                 }
             }
         }
-        let generation = l.stats.generation();
-        let due = if last {
-            l.writer.changed(generation)
-        } else {
-            l.writer.due(now, generation)
-        };
-        if !due {
-            return;
-        }
-        let json = l.stats.snapshot(self.processor.registry(), now_unix_ms());
-        match l.writer.write(now, generation, &json) {
-            Ok(()) => l.failing = false,
+        let wrote = live::write_feed(
+            &mut l.writer,
+            &mut l.stats,
+            &l.around,
+            &self.processor,
+            now,
+            now_unix_ms(),
+            last,
+        );
+        match wrote {
+            Ok(_) => l.failing = false,
             Err(e) => {
                 if !l.failing {
                     l.failing = true;
@@ -780,6 +782,7 @@ fn main() -> ExitCode {
     if args.live_out.as_os_str() != "none" {
         app.live = Some(Live {
             stats: LiveStats::new(),
+            around: Around::new(),
             writer: LiveWriter::new(args.live_out.clone()),
             failing: false,
             settings: ui_json_path(),
@@ -859,6 +862,7 @@ fn main() -> ExitCode {
                     // A new game run: the meter must not show the previous run's last fight.
                     if let Some(l) = app.live.as_mut() {
                         l.stats.clear();
+                        l.around.clear();
                     }
                     said_waiting = false;
                     last_open_err = None;
