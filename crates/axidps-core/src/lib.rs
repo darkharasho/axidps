@@ -14,6 +14,7 @@ pub mod live;
 pub mod live_condi;
 mod masters;
 pub mod names;
+pub mod npc_names;
 pub mod output;
 pub mod processor;
 pub mod registry;

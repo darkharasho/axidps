@@ -23,6 +23,7 @@ crates/axidps-mock-producer
 apps/axidps-overlay
 tools/plugin-tests
 tools/overlay-fake-dll.py
+tools/npc-names.py
 tools/public-allowlist
 tools/public-check
 tools/export-public

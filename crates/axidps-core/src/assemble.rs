@@ -16,6 +16,7 @@ use crate::names;
 use crate::processor::Fight;
 use crate::registry::{AgentInfo, Registry, squad_fields};
 use crate::server::{Server, TickRows, instance_start, tick_before};
+use crate::npc_names::NPC_NAMES;
 use crate::skill_names::SKILL_NAMES;
 
 /// `src_agent` of LOG_START / LOG_END rows (`"arc"`).
@@ -154,6 +155,18 @@ fn plain_name(s: &str) -> [u8; 64] {
     out
 }
 
+/// An NPC's name: the one the capture read, else its species' name as EVTC logs carry it, else
+/// the `ch<species>-<instance id>` placeholder EVTC logs write for a name they could not read.
+fn npc_name(a: &AgentInfo) -> std::borrow::Cow<'_, str> {
+    if !a.character.is_empty() {
+        return a.character.as_str().into();
+    }
+    match NPC_NAMES.binary_search_by_key(&a.species, |&(s, _)| s) {
+        Ok(i) => NPC_NAMES[i].1.into(),
+        Err(_) => format!("ch{}-{}", a.species, a.id).into(),
+    }
+}
+
 /// `squad`: the agent is in the POV's squad. `wvw`: the fight is on a WvW map.
 fn agent_row(addr: u64, a: &AgentInfo, squad: bool, wvw: bool) -> Agent {
     let (prof, is_elite, name) = match a.kind {
@@ -172,7 +185,7 @@ fn agent_row(addr: u64, a: &AgentInfo, squad: bool, wvw: bool) -> Agent {
                 .unwrap_or(names::spec_name(a.prof, a.elite));
             (a.prof, a.elite, player_name(name, "", None))
         }
-        AgentKind::Npc => (a.species, 0xFFFF_FFFF, plain_name(&a.character)), // public-check:ok
+        AgentKind::Npc => (a.species, 0xFFFF_FFFF, plain_name(&npc_name(a))), // public-check:ok
         AgentKind::Gadget => (
             0xFFFF_0000 | (a.species & 0xFFFF), // public-check:ok
             0xFFFF_FFFF,                        // public-check:ok
@@ -4528,6 +4541,48 @@ mod tests {
                 name[..end].to_vec()
             })
             .collect()
+    }
+
+    fn npc_info(id: u32, species: u32, character: &str) -> AgentInfo {
+        AgentInfo {
+            id,
+            kind: AgentKind::Npc,
+            prof: 0,
+            elite: 0,
+            species,
+            team: None,
+            subgroup: None,
+            character: character.to_string(),
+            account: String::new(),
+            health: None,
+            in_combat: false,
+            state: None,
+            breakbar: None,
+            speed: None,
+            flags: None,
+            info: None,
+            model: None,
+            shape: Vec::new(),
+            attack_parent: None,
+            wvw_rank_id: None,
+            master: None,
+            guild: None,
+            account_guid: None,
+        }
+    }
+
+    fn row_name(a: &AgentInfo) -> String {
+        let n = agent_row(7, a, false, true).name;
+        String::from_utf8(n[..n.iter().position(|&b| b == 0).unwrap()].to_vec()).unwrap()
+    }
+
+    /// The capture reads no NPC names: EVTC logs name NPCs by species, else write
+    /// `ch<species>-<instance id>`.
+    #[test]
+    fn npcs_are_named_by_species() {
+        assert_eq!(row_name(&npc_info(3173, 7389, "")), "Jagged Horror");
+        assert_eq!(row_name(&npc_info(3173, 27039, "")), "ch27039-3173");
+        assert_eq!(row_name(&npc_info(3173, 7389, "Named Here")), "Named Here");
     }
 
     /// EVTC logs name every player outside the squad by WvW rank title on a WvW map, allies
