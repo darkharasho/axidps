@@ -225,7 +225,8 @@ pub fn incoming_condi(
 
 /// The local event for a peer's heal, at the local time for its `t_unix_ms`: `clock` is
 /// `(event time ms, unix ms at it)`, `floor` the last time pushed (times never go backwards).
-/// `None` for the POV's own batches, an unknown sender, an unresolved endpoint or a zero heal.
+/// `None` for the POV's own batches, an unknown sender, an unresolved endpoint, a heal that
+/// neither comes from nor goes to the sender (or its minions), or a zero heal.
 pub fn incoming(
     reg: &Registry,
     from: &str,
@@ -239,6 +240,11 @@ pub fn incoming(
     let sender = agent_of(reg, &Endpoint::Player(from.to_string()))?;
     let src = agent_of(reg, &h.src)?;
     let dst = agent_of(reg, &h.dst)?;
+    // The game reports only heals its own player (or that player's minions) gives or gets.
+    let own = |id: u32| id == sender || reg.agent(id).and_then(|a| a.master) == Some(sender);
+    if !own(src) && !own(dst) {
+        return None;
+    }
     let total = h.heal.saturating_add(h.barrier);
     let value = i32::try_from(total).unwrap_or(i32::MAX);
     if value <= 0 {
@@ -406,6 +412,23 @@ mod tests {
             ..wire(":b.2", ":a.1", 1_000_000)
         };
         assert_eq!(incoming(&r, ":b.2", &h, clock, 0), None);
+    }
+
+    /// The game reports only heals its own player gives or gets, so a peer's heal involves the
+    /// peer (or its minion): a heal between two others is someone speaking for them.
+    #[test]
+    fn incoming_heal_must_involve_the_sender() {
+        let mut r = reg();
+        r.apply(0, &add(3, 1));
+        for e in name_events(3, NameField::Account, ":c.3") {
+            r.apply(0, &e);
+        }
+        let clock = (10_000, 1_000_000);
+        let others = wire(":c.3", ":a.1", 1_000_000);
+        assert_eq!(incoming(&r, ":b.2", &others, clock, 0), None);
+        assert!(incoming(&r, ":c.3", &others, clock, 0).is_some());
+        assert!(incoming(&r, ":a.1", &wire(":b.2", ":c.3", 1_000_000), clock, 0).is_none());
+        assert!(incoming(&r, ":c.3", &wire(":b.2", ":c.3", 1_000_000), clock, 0).is_some());
     }
 
     #[test]

@@ -474,8 +474,8 @@ fn open(url: &str) -> Result<Ws, String> {
         .set_read_timeout(Some(CONNECT_TIMEOUT))
         .and_then(|()| stream.set_write_timeout(Some(CONNECT_TIMEOUT)))
         .map_err(|e| e.to_string())?;
-    let (ws, _) =
-        tungstenite::client_tls_with_config(url, stream, None, None).map_err(|e| match e {
+    let (ws, _) = tungstenite::client_tls_with_config(url, stream, Some(ws_config()), None)
+        .map_err(|e| match e {
             HandshakeError::Failure(e) => e.to_string(),
             HandshakeError::Interrupted(_) => "handshake timed out".into(),
         })?;
@@ -487,6 +487,15 @@ fn open(url: &str) -> Result<Ws, String> {
     tcp.set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|e| e.to_string())?;
     Ok(ws)
+}
+
+/// Frames and messages from the relay are refused well before tungstenite's defaults (16 MiB
+/// frames, 64 MiB messages): ours are at most [`MAX_MESSAGE`], and a relay sending more is
+/// misbehaving.
+fn ws_config() -> tungstenite::protocol::WebSocketConfig {
+    tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(4 * MAX_MESSAGE))
+        .max_frame_size(Some(4 * MAX_MESSAGE))
 }
 
 #[cfg(test)]
@@ -802,6 +811,20 @@ mod tests {
             s.next(),
             Ev::Text(wire::batch(":a.1", &[heal(1)], &[], &[]))
         );
+    }
+
+    /// A message far beyond our own size limit ends the connection instead of being buffered
+    /// and parsed (tungstenite's defaults allow 64 MiB).
+    #[test]
+    fn oversized_message_drops_the_connection() {
+        let s = Server::start();
+        let r = Relay::start_with(s.base(), fast());
+        join(&r, ROOM_A);
+        assert!(matches!(s.next(), Ev::Open(_)));
+        assert!(matches!(s.next(), Ev::Text(_)));
+        s.push.send("x".repeat(1 << 20)).unwrap();
+        assert_eq!(s.next(), Ev::Closed);
+        assert_eq!(s.next(), Ev::Open(format!("/v1/room/{ROOM_A}")));
     }
 
     #[test]
