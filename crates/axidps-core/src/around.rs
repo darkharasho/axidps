@@ -25,6 +25,8 @@ pub struct Around {
     next_seq: u64,
     generation: u64,
     fight_start: Option<u64>,
+    /// The `(map_id, shard)` last seen: the registry resets only when it changes.
+    map: Option<(u32, u32)>,
 }
 
 /// One presence row; the field order is the sort order.
@@ -67,6 +69,7 @@ impl Around {
         self.added.clear();
         self.next_seq = 0;
         self.fight_start = None;
+        self.map = None;
         self.generation += 1;
     }
 
@@ -79,11 +82,16 @@ impl Around {
                     self.next_seq += 1;
                     self.generation += 1;
                 }
-                Event::Map { .. } => {
-                    self.added.clear();
+                Event::Map { map_id, shard, .. } => {
+                    if self.map != Some((map_id, shard)) {
+                        self.map = Some((map_id, shard));
+                        self.added.clear();
+                    }
                     self.generation += 1;
                 }
-                Event::AgentRemove { .. }
+                // The account arrives in name chunks after the add; it decides squad and dedupe.
+                Event::AgentName { .. }
+                | Event::AgentRemove { .. }
                 | Event::Team { .. }
                 | Event::Pov { .. }
                 | Event::WvwTeam { .. } => self.generation += 1,
@@ -409,5 +417,32 @@ mod tests {
         assert!(a.generation() > g);
         assert_eq!(p.fight_start_ms(), None);
         assert_eq!(a.value(&p)["fight"]["active"], false);
+    }
+
+    #[test]
+    fn generation_moves_when_an_account_name_completes() {
+        let (mut p, mut a) = world();
+        push(&mut p, &mut a, player(40, 2, 1, 0, 2));
+        let g = a.generation();
+        for e in name_events(40, NameField::Account, ":Alpha.0040") {
+            push(&mut p, &mut a, e);
+        }
+        assert!(a.generation() > g);
+    }
+
+    #[test]
+    fn same_map_event_keeps_the_latest_add_for_an_account() {
+        let (mut p, mut a) = world();
+        for (id, elite) in [(21, 62), (20, 27)] {
+            push(&mut p, &mut a, player(id, 6, 1, elite, 0));
+            for e in name_events(id, NameField::Account, ":Alpha.0004x") {
+                push(&mut p, &mut a, e);
+            }
+        }
+        push(&mut p, &mut a, map(38));
+        let v = a.value(&p);
+        let team6: Vec<_> = players(&v).iter().filter(|r| r["team"] == 6).collect();
+        assert_eq!(team6.len(), 1);
+        assert_eq!(team6[0]["spec"], "Dragonhunter");
     }
 }
