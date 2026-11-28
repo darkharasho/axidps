@@ -679,11 +679,15 @@ pub fn grant_game_folder(path: &Path, user: Option<&str>, store: &Store) -> Exit
     let user = user
         .map(str::to_owned)
         .unwrap_or_else(elevate::current_user);
-    if let Err(e) = crate::gw2path::check_grant_target(path, &user) {
-        eprintln!("axidps: not granting access: {e}");
-        return ExitCode::FAILURE;
-    }
-    match elevate::icacls_grant(path, &user) {
+    // Grant on the folder that was checked, not on `path`, which could be relinked meanwhile.
+    let real = match crate::gw2path::check_grant_target(path, &user) {
+        Ok(real) => real,
+        Err(e) => {
+            eprintln!("axidps: not granting access: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match elevate::icacls_grant(&real, &user) {
         Ok(()) => {
             let mut state = store.load_state();
             state.record_grant(path);

@@ -150,6 +150,7 @@ mod tests {
 
     /// A plugin.json that is a FIFO (from a tar or a dev tool) must not block the watcher, which
     /// the overlay starts on its main thread.
+    #[cfg(unix)]
     #[test]
     fn fifo_manifest_does_not_block() {
         let t = tempfile::tempdir().unwrap();

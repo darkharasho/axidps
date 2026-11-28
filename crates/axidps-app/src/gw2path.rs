@@ -19,8 +19,9 @@ fn has_gw2_exe(dir: &Path) -> bool {
 /// Whether the elevated `--grant-game-folder` may give `user` write access to `path`: `path`
 /// must be a folder that holds `Gw2-64.exe` (after following links), and `user` a bare account
 /// name, so that a UAC prompt approved for the game folder cannot be turned into write access
-/// to another folder, or into other rights through the `icacls` argument.
-pub fn check_grant_target(path: &Path, user: &str) -> Result<(), String> {
+/// to another folder, or into other rights through the `icacls` argument. Returns the resolved
+/// folder, which is what should be granted.
+pub fn check_grant_target(path: &Path, user: &str) -> Result<PathBuf, String> {
     let real = std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !real.is_dir() || !has_gw2_exe(&real) {
         return Err(format!("{} is not a Guild Wars 2 folder", path.display()));
@@ -29,7 +30,19 @@ pub fn check_grant_target(path: &Path, user: &str) -> Result<(), String> {
     if user.trim().is_empty() || user.chars().any(bad) {
         return Err(format!("{user:?} is not an account name"));
     }
-    Ok(())
+    Ok(without_verbatim(real))
+}
+
+/// `p` without the `\\?\` prefix `canonicalize` adds on Windows, which `icacls` may refuse.
+fn without_verbatim(p: PathBuf) -> PathBuf {
+    let Some(s) = p.to_str() else { return p };
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p
+    }
 }
 
 /// The game folder for `dir`: `dir` itself when it holds `Gw2-64.exe`, or its parent when
@@ -413,10 +426,35 @@ mod tests {
     /// The elevated grant runs on whatever command line it is given, so it checks for itself that
     /// the folder is a game folder and that the account name is only a name.
     #[test]
+    fn verbatim_prefix_is_dropped_for_icacls() {
+        let p = |s: &str| without_verbatim(PathBuf::from(s));
+        assert_eq!(
+            p(r"\\?\C:\Games\Guild Wars 2"),
+            PathBuf::from(r"C:\Games\Guild Wars 2")
+        );
+        assert_eq!(
+            p(r"\\?\UNC\nas\games\gw2"),
+            PathBuf::from(r"\\nas\games\gw2")
+        );
+        assert_eq!(p("/home/u/gw2"), PathBuf::from("/home/u/gw2"));
+    }
+
+    #[test]
     fn grant_target_must_be_a_game_folder() {
         let tmp = tempfile::tempdir().unwrap();
         let gw2 = game(tmp.path(), "Guild Wars 2");
-        assert_eq!(check_grant_target(&gw2, "PC\\player"), Ok(()));
+        let real = fs::canonicalize(&gw2).unwrap();
+        assert_eq!(check_grant_target(&gw2, "PC\\player"), Ok(real.clone()));
+        #[cfg(unix)]
+        {
+            let link = tmp.path().join("link");
+            std::os::unix::fs::symlink(&gw2, &link).unwrap();
+            assert_eq!(
+                check_grant_target(&link, "player"),
+                Ok(real),
+                "grants the checked folder"
+            );
+        }
         let other = tmp.path().join("Program Files");
         fs::create_dir_all(&other).unwrap();
         assert!(
