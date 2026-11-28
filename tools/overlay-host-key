@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Prints a short key for everything the overlay host binary is built from, so release.yml can
+# reuse the binary cache-warm.yml built on main instead of rebuilding Servo. The page ships as
+# separate files (packaging/stage-page.sh) and the binary carries no version, so neither is in it.
+# Bump SALT when the build setup changes in a way the files below don't show (LLVM, MozTools,
+# runner image, build command).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+SALT=1
+{
+  echo "salt $SALT"
+  # Index blob hashes: the same on every runner, whatever line endings the checkout uses.
+  git ls-files -s -- \
+    Cargo.toml \
+    apps/axidps-overlay/Cargo.toml apps/axidps-overlay/Cargo.lock \
+    apps/axidps-overlay/rust-toolchain.toml apps/axidps-overlay/src \
+    crates/axidps-protocol crates/axidps-overlay-shm crates/axidps-plugins
+} | sha256sum | cut -c1-20

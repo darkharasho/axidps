@@ -1,13 +1,17 @@
 name: Warm release caches
 
 # A tag run can restore caches saved on main, but the caches it saves itself are scoped to that
-# tag, so without this every release builds Servo from scratch. This builds what release.yml
-# builds, with the same cache keys, on main, so the next tag restores an exact hit.
+# tag, so release.yml only restores and this builds what it needs on main, with the same keys:
+# - the app's build cache (app and core, per runner image);
+# - the overlay host binary itself, keyed by its sources (tools/overlay-host-key), so a release
+#   whose overlay host didn't change skips Servo entirely;
+# - the overlay host's build cache, for when it did change.
 # Keep the setup and build steps in step with release.yml's windows and linux jobs (the DLL
-# job is never cached: its target dir would hold the private crates): a
-# different toolchain, env or command changes the fingerprints and the tag rebuilds anyway.
+# job is never cached: its target dir would hold the private crates): a different toolchain,
+# env or command changes the fingerprints, or builds a different binary.
 # Each job first checks whether its key already exists and stops there if so, so a push that
-# doesn't touch a Cargo.lock costs a few seconds per job. Unused caches expire after 7 days.
+# changes neither a Cargo.lock nor the overlay host costs a few seconds per job.
+# Unused caches expire after 7 days.
 on:
   workflow_dispatch:
   push:
@@ -21,7 +25,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  windows:
+  windows-app:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +38,40 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-            apps/axidps-overlay/target
-          key: cargo-release-windows-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
+          key: cargo-release-app-windows-${{ hashFiles('Cargo.lock') }}
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-app-windows-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-release-app-windows-
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        name: Build the app and core
+        run: cargo build --release -p axidps-app -p axidps-core
+
+  windows-overlay:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: key
+        shell: bash
+        run: echo "key=$(tools/overlay-host-key)" >> "$GITHUB_OUTPUT"
+
+      - id: check
+        uses: actions/cache/restore@v4
+        with:
+          lookup-only: true
+          path: overlay-bin
+          key: overlay-host-windows-${{ steps.key.outputs.key }}
 
       - if: steps.check.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@stable
@@ -69,21 +105,25 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
             apps/axidps-overlay/target
-          key: cargo-release-windows-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
-          restore-keys: cargo-release-windows-
-
-      - if: steps.check.outputs.cache-hit != 'true'
-        name: Build the app and core
-        run: cargo build --release -p axidps-app -p axidps-core
+          key: cargo-release-overlay-windows-${{ hashFiles('apps/axidps-overlay/Cargo.lock') }}
+          restore-keys: cargo-release-overlay-windows-
 
       - if: steps.check.outputs.cache-hit != 'true'
         name: Build the overlay host
-        working-directory: apps/axidps-overlay
-        run: cargo build --release
+        shell: bash
+        run: |
+          (cd apps/axidps-overlay && cargo build --release)
+          mkdir -p overlay-bin
+          cp apps/axidps-overlay/target/release/axidps-overlay.exe overlay-bin/
 
-  linux:
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: overlay-bin
+          key: overlay-host-windows-${{ steps.key.outputs.key }}
+
+  linux-app:
     # Same image as release.yml's linux job (its glibc is the AppImage's floor).
     runs-on: ubuntu-24.04
     steps:
@@ -97,17 +137,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-            apps/axidps-overlay/target
-          key: cargo-release-linux-ubuntu24-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
+          key: cargo-release-app-linux-ubuntu24-${{ hashFiles('Cargo.lock') }}
 
       - if: steps.check.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@stable
 
-      - if: steps.check.outputs.cache-hit != 'true'
-        name: Install the overlay host toolchain
-        working-directory: apps/axidps-overlay
-        run: rustup toolchain install
-
+      # The same packages as release.yml installs before it builds the app.
       - if: steps.check.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
@@ -129,15 +164,69 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-            apps/axidps-overlay/target
-          key: cargo-release-linux-ubuntu24-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
-          restore-keys: cargo-release-linux-ubuntu24-
+          key: cargo-release-app-linux-ubuntu24-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-release-app-linux-ubuntu24-
 
       - if: steps.check.outputs.cache-hit != 'true'
         name: Build the app and core
         run: cargo build --release -p axidps-app -p axidps-core
 
+  linux-overlay:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: key
+        run: echo "key=$(tools/overlay-host-key)" >> "$GITHUB_OUTPUT"
+
+      - id: check
+        uses: actions/cache/restore@v4
+        with:
+          lookup-only: true
+          path: overlay-bin
+          key: overlay-host-linux-ubuntu24-${{ steps.key.outputs.key }}
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates ccache clang cmake curl g++ git gperf \
+            libdbus-1-dev libfreetype6-dev libgl1-mesa-dri libgles2-mesa-dev libglib2.0-dev \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-ugly gstreamer1.0-plugins-base libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-libav libgstrtspserver-1.0-dev gstreamer1.0-tools libges-1.0-dev \
+            libharfbuzz-dev liblzma-dev libudev-dev libunwind-dev libvulkan1 libx11-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxmu-dev libxmu6 \
+            libegl1-mesa-dev llvm-dev m4 xorg-dev libxkbcommon0 libxkbcommon-x11-0 \
+            libwayland-dev
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        name: Install the overlay host toolchain
+        working-directory: apps/axidps-overlay
+        run: rustup toolchain install
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/axidps-overlay/target
+          key: cargo-release-overlay-linux-ubuntu24-${{ hashFiles('apps/axidps-overlay/Cargo.lock') }}
+          restore-keys: cargo-release-overlay-linux-ubuntu24-
+
       - if: steps.check.outputs.cache-hit != 'true'
         name: Build the overlay host
-        working-directory: apps/axidps-overlay
-        run: cargo build --release
+        run: |
+          (cd apps/axidps-overlay && cargo build --release)
+          mkdir -p overlay-bin
+          cp apps/axidps-overlay/target/release/axidps-overlay overlay-bin/
+
+      - if: steps.check.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: overlay-bin
+          key: overlay-host-linux-ubuntu24-${{ steps.key.outputs.key }}

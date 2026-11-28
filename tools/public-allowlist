@@ -27,6 +27,7 @@ tools/public-allowlist
 tools/public-check
 tools/export-public
 tools/bump-private
+tools/overlay-host-key
 tools/quiet-build
 packaging
 docs/plugins

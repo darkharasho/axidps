@@ -166,19 +166,51 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Caches are only restored here, never saved: a tag run's caches are scoped to that tag, so
+      # no later run could use them, and they push main's (cache-warm.yml) out of the 10 GB limit.
+      - name: Restore the app's build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-app-windows-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-release-app-windows-
+
+      - name: Build the app and core
+        run: cargo build --release -p axidps-app -p axidps-core
+
+      # The overlay host (Servo) rarely changes: cache-warm.yml builds it on main and keeps the
+      # binary under a key of its sources (tools/overlay-host-key). Only a miss builds it here.
+      - name: Key the overlay host by its sources
+        id: overlay-key
+        shell: bash
+        run: echo "key=$(tools/overlay-host-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the overlay host built on main
+        id: overlay-bin
+        uses: actions/cache/restore@v4
+        with:
+          path: overlay-bin
+          key: overlay-host-windows-${{ steps.overlay-key.outputs.key }}
+
       # The overlay host pins its own toolchain (apps/axidps-overlay/rust-toolchain.toml).
       - name: Install the overlay host toolchain
+        if: steps.overlay-bin.outputs.cache-hit != 'true'
         working-directory: apps/axidps-overlay
         run: rustup toolchain install
 
       # Servo's winget.json wants CMake, LLVM and Ninja (CMake and Ninja ship on the runner).
       # mozjs-sys also needs MozTools. Same setup as ci.yml overlay-check.
-      - uses: KyleMayes/install-llvm-action@v2
+      - if: steps.overlay-bin.outputs.cache-hit != 'true'
+        uses: KyleMayes/install-llvm-action@v2
         with:
           version: "20.1"
           directory: ${{ runner.temp }}/llvm
 
-      - shell: pwsh
+      - if: steps.overlay-bin.outputs.cache-hit != 'true'
+        shell: pwsh
         run: |
           echo "LIBCLANG_PATH=$(Join-Path $env:LLVM_PATH 'bin')" >> $env:GITHUB_ENV
           $dest = Join-Path $env:RUNNER_TEMP 'moztools'
@@ -190,22 +222,24 @@ jobs:
           git config --system core.longpaths true
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> $env:GITHUB_ENV
 
-      - uses: actions/cache@v4
+      - name: Restore the overlay host's build cache
+        if: steps.overlay-bin.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
             apps/axidps-overlay/target
-          key: cargo-release-windows-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
-          restore-keys: cargo-release-windows-
-
-      - name: Build the app and core
-        run: cargo build --release -p axidps-app -p axidps-core
+          key: cargo-release-overlay-windows-${{ hashFiles('apps/axidps-overlay/Cargo.lock') }}
+          restore-keys: cargo-release-overlay-windows-
 
       - name: Build the overlay host
-        working-directory: apps/axidps-overlay
-        run: cargo build --release
+        if: steps.overlay-bin.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          (cd apps/axidps-overlay && cargo build --release)
+          mkdir -p overlay-bin
+          cp apps/axidps-overlay/target/release/axidps-overlay.exe overlay-bin/
 
       - name: Fetch the signed DLL
         shell: bash
@@ -218,7 +252,7 @@ jobs:
         run: |
           mkdir -p stage/overlay stage/game
           cp target/release/axidps.exe target/release/axidps-core.exe stage/
-          cp apps/axidps-overlay/target/release/axidps-overlay.exe stage/overlay/
+          cp overlay-bin/axidps-overlay.exe stage/overlay/
           cp dll-signed/dll-signed.dll stage/game/d3d11.dll
           npm install --no-audit --no-fund
           packaging/stage-page.sh stage/overlay/page "$AXIDPS_VERSION"
@@ -306,11 +340,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install the overlay host toolchain
-        working-directory: apps/axidps-overlay
-        run: rustup toolchain install
-
-      # Servo build deps: same list as ci.yml overlay-check.
+      # Servo build deps: same list as ci.yml overlay-check. Installed even when the overlay host
+      # comes from the cache: the AppImage bundles the libraries it links from this system.
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -324,23 +355,54 @@ jobs:
             libegl1-mesa-dev llvm-dev m4 xorg-dev libxkbcommon0 libxkbcommon-x11-0 \
             libwayland-dev
 
-      - uses: actions/cache@v4
+      # Restored only, as in the windows job. The image is in the keys: build scripts cached
+      # from a newer glibc won't run on an older one.
+      - name: Restore the app's build cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-            apps/axidps-overlay/target
-          # The image is in the key: build scripts cached from a newer glibc won't run on an older one.
-          key: cargo-release-linux-ubuntu24-${{ hashFiles('Cargo.lock', 'apps/axidps-overlay/Cargo.lock') }}
-          restore-keys: cargo-release-linux-ubuntu24-
+          key: cargo-release-app-linux-ubuntu24-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-release-app-linux-ubuntu24-
 
       - name: Build the app and core
         run: cargo build --release -p axidps-app -p axidps-core
 
-      - name: Build the overlay host
+      - name: Key the overlay host by its sources
+        id: overlay-key
+        run: echo "key=$(tools/overlay-host-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the overlay host built on main
+        id: overlay-bin
+        uses: actions/cache/restore@v4
+        with:
+          path: overlay-bin
+          key: overlay-host-linux-ubuntu24-${{ steps.overlay-key.outputs.key }}
+
+      - name: Install the overlay host toolchain
+        if: steps.overlay-bin.outputs.cache-hit != 'true'
         working-directory: apps/axidps-overlay
-        run: cargo build --release
+        run: rustup toolchain install
+
+      - name: Restore the overlay host's build cache
+        if: steps.overlay-bin.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/axidps-overlay/target
+          key: cargo-release-overlay-linux-ubuntu24-${{ hashFiles('apps/axidps-overlay/Cargo.lock') }}
+          restore-keys: cargo-release-overlay-linux-ubuntu24-
+
+      - name: Build the overlay host
+        if: steps.overlay-bin.outputs.cache-hit != 'true'
+        run: |
+          (cd apps/axidps-overlay && cargo build --release)
+          mkdir -p overlay-bin
+          cp apps/axidps-overlay/target/release/axidps-overlay overlay-bin/
 
       - name: Fetch the signed DLL
         env:
@@ -351,7 +413,7 @@ jobs:
         run: |
           mkdir -p stage/overlay stage/game
           cp target/release/axidps target/release/axidps-core stage/
-          cp apps/axidps-overlay/target/release/axidps-overlay stage/overlay/
+          cp overlay-bin/axidps-overlay stage/overlay/
           cp dll-signed/dll-signed.dll stage/game/d3d11.dll
 
       # The packaging script runs the tools with --appimage-extract-and-run, so FUSE is not needed.

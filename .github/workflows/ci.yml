@@ -35,7 +35,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v4
+      - id: cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -49,6 +50,17 @@ jobs:
 
       - run: cargo test --workspace
 
+      # Saved from main only: caches saved on a pull request or tag are scoped to it, so no
+      # later run could use them, and they push main's out of the 10 GB limit.
+      - if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
   windows-check:
     runs-on: windows-latest
     steps:
@@ -56,7 +68,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v4
+      - id: cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -67,16 +80,29 @@ jobs:
 
       - run: cargo check --workspace
 
-  # Same set as the Linux test job. On tags only: called from release.yml, github.ref is the tag.
+      # Saved from main only: caches saved on a pull request or tag are scoped to it, so no
+      # later run could use them, and they push main's out of the 10 GB limit.
+      - if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  # Same set as the Linux test job. On main and tags (called from release.yml), not pull
+  # requests: main's run keeps the cache a tag run restores (a tag can't save one others use).
   windows-test:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v4
+      - id: cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -86,6 +112,17 @@ jobs:
           restore-keys: cargo-windows-test-${{ runner.os }}-
 
       - run: cargo test --workspace
+
+      # Saved from main only: caches saved on a pull request or tag are scoped to it, so no
+      # later run could use them, and they push main's out of the 10 GB limit.
+      - if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   # Compiles the DLL against this commit's public crates. Never on pull requests: it needs the
   # deploy key for the private repo, and its output (which quotes private source) stays out of
@@ -130,7 +167,8 @@ jobs:
 
       # Registry and git sources only (public crates). Never cache a target dir that holds the
       # private crates: a fork's pull request can restore any cache saved on main.
-      - uses: actions/cache@v4
+      - id: cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -139,6 +177,16 @@ jobs:
           restore-keys: cargo-registry-dll-
 
       - run: tools/quiet-build "$RUNNER_TEMP/dll-check.log" -- cargo check --manifest-path private/Cargo.toml -p axidps-dll --target x86_64-pc-windows-gnu --features arcdps-chainload,overlay,outline
+
+      # Saved from main only: caches saved on a pull request or tag are scoped to it, so no
+      # later run could use them, and they push main's out of the 10 GB limit.
+      - if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   # The overlay host (Servo) is its own Cargo workspace. Servo build deps come from
   # python/servo/platform/{linux_packages/apt,windows}* at servo rev 75d20deef.
@@ -197,7 +245,8 @@ jobs:
           git config --system core.longpaths true
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> $env:GITHUB_ENV
 
-      - uses: actions/cache@v4
+      - id: cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -212,3 +261,14 @@ jobs:
       # Servo codegen on both runners would double the job's longest step.
       - if: runner.os == 'Linux'
         run: cargo test --release
+
+      # Saved from main only: caches saved on a pull request or tag are scoped to it, so no
+      # later run could use them, and they push main's out of the 10 GB limit.
+      - if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/axidps-overlay/target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
