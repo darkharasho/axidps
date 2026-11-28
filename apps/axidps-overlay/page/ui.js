@@ -1785,7 +1785,7 @@ function customText(s, v, key) {
   if (s.as === "share") return v == null ? "–" : fmt(v) + "%";
   return STATS[s.key].count && s.as === "total" ? int(v) : fmt(v);
 }
-const statHead = s => STATS[s.key].label + (s.as === "share" ? " %" : s.as === "per_s" && !STATS[s.key].rate ? "/s" : "");
+const statHead = s => axidpsCustom.headText(s);
 const statTip = s => STATS[s.key].tip + (s.as === "share" ? " (% of everyone shown)" :
   s.as === "per_s" && !STATS[s.key].rate ? " per second" : "");
 // The numbers a spec's span covers: the live feed (fight), else the history; nothing after Clear fight.
@@ -1889,7 +1889,7 @@ function buildCustom(w) {
   w.drawn = "";
   const foot = `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
   if (spec.look === "table") {
-    const cols = spec.stats.map(s => ({s, w: colW(STATS[s.key].w + (s.as === "total" ? 0 : 8))}));
+    const cols = spec.stats.map(s => ({s, w: colW(axidpsCustom.colWidth(s))}));
     w.body.style.width = (boxW(170) + colW(28) + cols.reduce((n, c) => n + c.w, 0)) + "px";
     w.body.innerHTML = `<table><colgroup><col style="width:${colW(28)}px"><col>` +
       cols.map(c => `<col style="width:${c.w}px">`).join("") + `</colgroup><thead><tr><th>#</th>` +
@@ -1928,7 +1928,7 @@ function renderCustom(w) {
     const any = axidpsCustom.filterWho(view.players, spec.who).length > 0;
     const {rows} = axidpsCustom.computeRows(Object.assign({}, spec, {rows: "total"}), view, fmt, 0);
     w.body.querySelector(".big b").textContent = any ? customText(s, rows[0].values[0]) : "–";
-    w.body.querySelector(".big small").textContent = any ? `${statHead(s)} · ${spanText(spec.span)}` : emptyText();
+    w.body.querySelector(".big small").textContent = any ? `${STATS[s.key].name} · ${spanText(spec.span)}` : emptyText();
     return;
   }
   // limit: a fixed number of rows; else Settings' Rows shown, the rest by wheel.
@@ -2303,39 +2303,45 @@ const HEAL_KEY = k => /^heal/.test(k) || k === "hps" || k === "barrier";
 // be made, only reset).
 const builtinChanged = t => { const c = t.cfg; return Array.isArray(c.cols) || !!c.groupOnly; };
 // A custom window's settings, in two columns: the left says what it counts, the right what it shows.
-function customSettings(spec, full, filterOpen, boonOpen, note, addOpen) {
+function customSettings(spec, full, filterOpen, note, addOpen) {
   const C = axidpsCustom, n = spec.stats.length, chart = spec.look === "chart", boons = spec.rows === "boons";
+  const colsFull = n >= C.MAX_STATS;
+  // Each column by its full name, with the header it shows in the window beside it.
   const rows = spec.stats.map((s, i) => {
     const as = STATS[s.key].rate || STATS[s.key].noAs || chart ? "" :
       `<button data-cact="as" class="as" data-tip="total, per second or % of everyone shown">${AS_TEXT[s.as]}</button>`;
     return `<div class="crw" data-k="${esc(s.key)}" data-i="${i}" data-tip="${esc(statTip(s))}">` +
       `<button class="grip" data-cact="grip" aria-label="Move" data-tip="drag to reorder">&#8942;&#8942;</button>` +
-      `<span class="nm">${esc(STATS[s.key].label)}</span>${as}` +
+      `<span class="nm">${esc(STATS[s.key].name)}</span><span class="hd">${esc(statHead(s))}</span>${as}` +
       `<button data-cact="rm" aria-label="Remove"${n > 1 ? "" : " disabled"}>&times;</button></div>`;
   }).join("");
-  const addItem = (k, text) => `<div class="pick" data-k="${esc(k)}" data-tip="${esc(STATS[k].tip)}"><button data-cact="add"` +
-    `${n >= C.MAX_STATS ? " disabled" : ""}>+ ${esc(text)}</button></div>`;
-  const free = k => !spec.stats.some(s => s.key === k);
-  const group = (name, body) => `<span class="grp">${name}</span>` + (body ? `<div class="plist">${body}</div>` : "");
-  let picker = "";
-  if (addOpen) {
+  // One click adds a column; one already shown is ticked.
+  const has = k => spec.stats.some(s => s.key === k);
+  const pick = (k, text, sub) => has(k)
+    ? `<button class="pk on" disabled data-tip="already a column"><span>&#10003; ${esc(text)}</span>${sub ? `<i>${esc(sub)}</i>` : ""}</button>`
+    : `<button class="pk" data-cact="add" data-k="${esc(k)}" data-tip="${esc(STATS[k].tip)}"${colsFull ? " disabled" : ""}>` +
+      `<span>${esc(text)}</span>${sub ? `<i>${esc(sub)}</i>` : ""}</button>`;
+  const MEAS = {up: "Uptime", self: "Self", group: "Group", squad: "Squad"};
+  let adder;
+  if (!addOpen) {
+    adder = `<button class="addslot" data-cact="addopen"${colsFull ? ` disabled data-tip="A window shows up to ${C.MAX_STATS} columns. Remove one to add another."` : ""}>` +
+      `+ Add a column</button>`;
+  } else {
+    let body;
     if (boons) {
-      // A boons window picks measures only: its rows are the boons.
-      picker = Object.keys(STATS).filter(k => STATS[k].kind === "boons" && free(k)).map(k => addItem(k, STATS[k].label.replace(/ \(.*\)$/, ""))).join("");
+      // A boons window's rows are the boons; its columns are the measures.
+      body = `<div class="pgrid">` + C.BOON_MEASURE_KEYS.map(k => pick(k, STATS[k].name)).join("") + `</div>`;
     } else {
-      picker = group("Fight", Object.keys(STATS).filter(k => !STATS[k].kind && free(k)).map(k => addItem(k, STATS[k].label.replace(/ \(.*\)$/, ""))).join(""));
+      body = `<span class="grp">Fight</span><div class="pgrid">` +
+        Object.keys(STATS).filter(k => !STATS[k].kind).map(k => pick(k, STATS[k].name, STATS[k].head)).join("") + `</div>`;
       // Boon stats are not for charts (summing uptime over players over time means nothing).
-      if (!chart) {
-        const names = C.SQUAD_BOONS.map(b => {
-          const k = `boon:${b}:up`;
-          return `<div class="pick${boonOpen === b ? " on" : ""}"><button data-cact="boonopen" data-v="${b}">` +
-            `${esc(STATS[k].label)}${boonOpen === b ? " &times;" : ""}</button></div>`;
-        }).join("");
-        const measures = boonOpen ? ["up", "self", "group", "squad"].map(m => `boon:${boonOpen}:${m}`).filter(free).map(k =>
-          addItem(k, ({up: "Uptime", self: "Self", group: "Group", squad: "Squad"})[STATS[k].measure])).join("") : "";
-        picker += group("Boons", names) + (boonOpen ? group(`${esc(STATS[`boon:${boonOpen}:up`].label)}: pick a measure`, measures || "") : "");
-      }
+      if (!chart) body += `<span class="grp">Boons</span><span class="bhint">uptime, or how much each player gives to themself, their group or the squad</span>` +
+        `<div class="bgrid">` + C.SQUAD_BOONS.map(b => `<span class="bn">${esc(STATS[`boon:${b}:up`].label)}</span>` +
+          ["up", "self", "group", "squad"].map(m => pick(`boon:${b}:${m}`, MEAS[m])).join("")).join("") + `</div>`;
     }
+    adder = `<div class="cpick"><div class="ph"><b>Add a column</b><span>${n} of ${C.MAX_STATS}</span>` +
+      `<button data-cact="addopen">Done</button></div>` +
+      (colsFull ? `<p class="note">A window shows up to ${C.MAX_STATS} columns. Remove one to add another.</p>` : "") + body + `</div>`;
   }
   const fl = spec.who.filters;
   const filters = (filterOpen ? filterChoices(spec) : fl).map(f => {
@@ -2357,8 +2363,7 @@ function customSettings(spec, full, filterOpen, boonOpen, note, addOpen) {
     crow("Count over", seg("span", spec.span)) +
     // A boons window is a table.
     crow("Show it as", seg("look", spec.look, boons ? ["table"] : null));
-  const right = crow("Columns", `<div class="clist">${rows}</div>` +
-      `<button class="addcol${addOpen ? " on" : ""}" data-cact="addopen">${addOpen ? "Done" : "+ Add a column"}</button>` + picker +
+  const right = crow("Columns", `<div class="clist">${rows}${adder}</div>` +
       (heal ? `<p class="note">The game reports healing only for you and squadmates who share it, so other rows may read low.</p>` : "")) +
     (note ? `<div class="cnote">${esc(note)}</div>` : "") +
     crow("Sort by", `<div class="chips sortk">${sortBtns}</div>` + dir) +
@@ -2443,7 +2448,7 @@ function renderWindows(w) {
     let body;
     if (x.def.custom) {
       body = show + customSettings(x.def.spec, full, w.filterOpen === x.id,
-        w.boonOpen && w.boonOpen.id === x.id ? w.boonOpen.boon : 0, w.cardNote && w.cardNote.id === x.id ? w.cardNote.text : "",
+        w.cardNote && w.cardNote.id === x.id ? w.cardNote.text : "",
         w.addCol === x.id);
     } else if (x.def.plugin) {
       const sec = p ? pluginHost.panelModel(p, saved).filter(sc => sc.fullId === x.key) : [];
@@ -2488,13 +2493,10 @@ function builderAct(hw, b) {
     case "name": return startText(id);
     case "del":
       if (hw.filterOpen === id) hw.filterOpen = "";
-      if (hw.boonOpen && hw.boonOpen.id === id) hw.boonOpen = null;
       if (hw.addCol === id) hw.addCol = "";
       return removeCustom(id);
     case "set": {
       const f = b.closest("[data-f]").dataset.f;
-      // A boons window or a chart has no per-boon picker to leave open.
-      if (hw.boonOpen && hw.boonOpen.id === id && (f === "rows" && v === "boons" || f === "look" && v === "chart")) hw.boonOpen = null;
       if (f === "who") return updateSpec(id, {who: {base: v, filters: spec.who.filters}});
       const next = updateSpec(id, {[f]: v});
       // Say what the change took away.
@@ -2512,9 +2514,6 @@ function builderAct(hw, b) {
       if (!(from >= 0 && to >= 0) || from === to) return;
       return updateSpec(id, {stats: axidpsHub.moveItem(stats, from, to)});
     }
-    case "boonopen":
-      hw.boonOpen = hw.boonOpen && hw.boonOpen.id === id && hw.boonOpen.boon === Number(v) ? null : {id, boon: Number(v)};
-      return hw.def.render(hw);
     case "filters":
       hw.filterOpen = hw.filterOpen === id ? "" : id;
       return hw.def.render(hw);
@@ -2525,7 +2524,7 @@ function builderAct(hw, b) {
     }
     case "add": {
       const k = b.closest("[data-k]").dataset.k;
-      if (stats.length >= axidpsCustom.MAX_STATS) return;
+      if (stats.length >= axidpsCustom.MAX_STATS || stats.some(s => s.key === k)) return;
       return updateSpec(id, {stats: stats.concat({key: k, as: "total"})});
     }
     case "rm":

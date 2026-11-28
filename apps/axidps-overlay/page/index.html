@@ -78,7 +78,7 @@
   /* ---- tables ---- */
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   th { height: var(--hh, 22px); color: var(--faint); font-weight: 600; font-size: calc(10.5px * var(--ts, 1)); text-align: right;
-    padding: 0 6px; white-space: nowrap; text-transform: uppercase; letter-spacing: .05em; }
+    padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; letter-spacing: .05em; }
   th:hover { color: var(--text); }
   th.sort { color: var(--accent); }
   th.l, td.l { text-align: left; }
@@ -257,12 +257,31 @@
   .clist.dragging, .clist.dragging .grip { cursor: grabbing; }
   .crw.drag { opacity: .55; }
   .crw.over { border-color: var(--accent); background: var(--accent-soft); }
-  .cw .addcol { align-self: flex-start; padding: 4px 10px; font-size: 12px; }
-  .cw .addcol.on { color: var(--accent); }
-  .cw .plist { display: flex; flex-direction: column; width: 100%; max-height: 220px; overflow-y: auto; padding-right: 16px; }
-  .cw .pick button { width: 100%; text-align: left; padding: 6px 8px; font-size: 12px; background: transparent; color: var(--text); }
-  .cw .pick button:hover:not(:disabled) { background: var(--raise-hi); color: var(--title); }
-  .cw .pick.on button { color: var(--accent); }
+  .crw .hd { flex: none; color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+  /* The empty slot under the columns, then the picker it opens. */
+  .cw .addslot { min-height: 32px; padding: 0 10px; text-align: left; font-size: 12px; color: var(--accent);
+    background: transparent; border: 1px dashed var(--accent-line); border-radius: var(--rs); }
+  .cw .addslot:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-hi); }
+  .cw .addslot:disabled { color: var(--faint); border-color: var(--line); }
+  .cw .cpick { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border: 1px solid var(--accent-line);
+    border-radius: var(--rs); background: var(--raise); }
+  .cpick .ph { display: flex; align-items: center; gap: 8px; }
+  .cpick .ph b { flex: 1; color: var(--title); font-size: 12px; }
+  .cpick .ph span { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .cpick .ph button { padding: 3px 10px; font-size: 11px; }
+  .cpick .grp { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; margin-top: 4px; }
+  .cpick .bhint { color: var(--faint); font-size: 11px; margin-top: -4px; }
+  .cpick .pgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+  .cpick .bgrid { display: grid; grid-template-columns: auto repeat(4, 1fr); gap: 3px; align-items: center; }
+  .cpick .bn { color: var(--text); font-size: 12px; padding-right: 6px; white-space: nowrap; }
+  .cpick .pk { display: flex; align-items: baseline; gap: 6px; padding: 5px 8px; font-size: 12px; text-align: left;
+    background: var(--btn); color: var(--text); white-space: nowrap; overflow: hidden; }
+  .cpick .bgrid .pk { justify-content: center; padding: 4px 4px; font-size: 11px; }
+  .cpick .pk span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .cpick .pk i { flex: none; margin-left: auto; font-style: normal; color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+  .cpick .pk:hover:not(:disabled) { background: var(--btn-hi); color: var(--title); }
+  .cpick .pk.on { background: var(--accent-soft); color: var(--accent); opacity: 1; }
+  .cpick .note { margin: 0; font-size: 12px; color: var(--dim); }
   .cw .sortk button { padding: 3px 9px; font-size: 11px; }
   .cw .sortk button.on { color: var(--title); background: var(--btn-hi); }
   .cw .cr .note { margin: 4px 0 0; font-size: 12px; }

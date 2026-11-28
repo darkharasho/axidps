@@ -754,3 +754,42 @@ test("chart look drops boon stats", () => {
     assert.deepStrictEqual(normalizeSpec({ look, stats: [{ key: "boon:1187:up" }] }, "c1").stats.map(x => x.key), ["boon:1187:up"]);
   }
 });
+
+test("every stat has a readable name for the settings and a header for the window", () => {
+  for (const [k, st] of Object.entries(C.STATS)) {
+    assert.ok(typeof st.name === "string" && st.name.length > 2, k);
+    assert.ok(typeof st.head === "string" && st.head.length > 0, k);
+  }
+  assert.strictEqual(C.STATS.downs.name, "Enemies downed");
+  assert.strictEqual(C.STATS.down_contrib.name, "Down contribution");
+  assert.strictEqual(C.STATS["boon:740:up"].name, "Might uptime");
+  assert.strictEqual(C.STATS["boon:740:squad"].name, "Might given to squad");
+  // The boons window's rows still read the plain boon name.
+  assert.strictEqual(C.STATS["boon:740:up"].label, "Might");
+});
+
+test("headText: short boon headers and the total, /s and % suffixes", () => {
+  assert.strictEqual(C.headText({key: "damage", as: "total"}), "Dmg");
+  assert.strictEqual(C.headText({key: "cleanses", as: "per_s"}), "Cleanse/s");
+  assert.strictEqual(C.headText({key: "healing_in", as: "share"}), "Heal in %");
+  // A rate stat is per second already.
+  assert.strictEqual(C.headText({key: "dps", as: "per_s"}), "DPS");
+  assert.strictEqual(C.headText({key: "boon:740:up", as: "total"}), "Might");
+  assert.strictEqual(C.headText({key: "boon:30328:squad", as: "total"}), "Alac sqd");
+  assert.strictEqual(C.headText({key: "boon:718:group", as: "total"}), "Regen grp");
+  assert.strictEqual(C.headText({key: "boons:self", as: "total"}), "Self");
+});
+
+test("colWidth: never narrower than the stat's numbers or its header", () => {
+  for (const k of Object.keys(C.STATS)) for (const as of ["total", "per_s", "share"]) {
+    const s = {key: k, as}, w = C.colWidth(s);
+    assert.ok(w >= C.STATS[k].w, k);
+    assert.ok(w >= C.headWidth(C.headText(s)) + 12, `${k} ${as}: ${w}`);
+  }
+  // Short headers keep the stat's own width.
+  assert.strictEqual(C.colWidth({key: "deaths", as: "total"}), 26);
+  assert.strictEqual(C.colWidth({key: "damage", as: "per_s"}), 70);
+  // The uppercase, letter-spaced header text of the longest ones fits.
+  assert.ok(C.colWidth({key: "cleanses", as: "per_s"}) >= 76);
+  assert.ok(C.colWidth({key: "boon:718:squad", as: "total"}) >= 76);
+});

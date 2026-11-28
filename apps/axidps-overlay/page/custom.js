@@ -24,6 +24,12 @@ const axidpsCustom = (() => {
     healing_in: {label: "Heal in", tip: "healing received (others: only what you gave them)", w: 58, heal: true},
     barrier_in: {label: "Barr in", tip: "barrier received (others: only what you gave them)", w: 58, heal: true},
   };
+  // What the settings call each fight stat (the window's header is its short label).
+  const NAMES = {damage: "Damage", dps: "Damage per second", power: "Strike damage", condi: "Condition damage",
+    down_contrib: "Down contribution", downs: "Enemies downed", kills: "Kills", deaths: "Deaths", downed: "Times downed",
+    taken: "Damage taken", cleanses: "Cleanses", strips: "Boon strips", healing: "Healing", barrier: "Barrier",
+    hps: "Healing per second", healing_in: "Healing received", barrier_in: "Barrier received"};
+  for (const k of Object.keys(STATS)) Object.assign(STATS[k], {name: NAMES[k], head: STATS[k].label});
   // The fight stats' summed keys (charts and the old tables use these).
   const FIGHT_KEYS = Object.keys(STATS).filter(k => !STATS[k].rate);
 
@@ -35,7 +41,12 @@ const axidpsCustom = (() => {
   const BOON_NAMES = {740: "Might", 725: "Fury", 1187: "Quickness", 30328: "Alacrity", 717: "Protection",
     718: "Regeneration", 726: "Vigor", 743: "Aegis", 1122: "Stability", 719: "Swiftness", 26980: "Resistance",
     873: "Resolution", 5974: "Superspeed"};
+  // Boon names short enough for a column header.
+  const BOON_SHORT = {740: "Might", 725: "Fury", 1187: "Quick", 30328: "Alac", 717: "Prot", 718: "Regen", 726: "Vigor",
+    743: "Aegis", 1122: "Stab", 719: "Swift", 26980: "Resist", 873: "Resol", 5974: "Sspeed"};
   const MEASURES = ["up", "self", "group", "squad"];
+  const MEASURE_NAME = {up: "uptime", self: "on themself", group: "given to group", squad: "given to squad"};
+  const MEASURE_HEAD = {up: "", self: " self", group: " grp", squad: " sqd"};
   const MEASURE_TIP = {up: "uptime", self: "generation on themself", group: "generation on their subgroup, per player",
     squad: "generation on the squad, per player"};
   // Boon stats: kind "boon", one per boon and measure. noAs: always "total" (no per second, no share).
@@ -43,6 +54,7 @@ const axidpsCustom = (() => {
     const intensity = INTENSITY.includes(b);
     STATS[`boon:${b}:${m}`] = {kind: "boon", boon: b, measure: m, index: MEASURES.indexOf(m), intensity, noAs: true,
       label: BOON_NAMES[b] + (m === "up" ? "" : ` (${m})`),
+      name: `${BOON_NAMES[b]} ${MEASURE_NAME[m]}`, head: BOON_SHORT[b] + MEASURE_HEAD[m],
       tip: `${BOON_NAMES[b]} ${MEASURE_TIP[m]}${intensity ? ", in stacks" : ""}`, w: 58};
   }
   // A boons window (rows "boons") picks measures only: its rows are the boons, each cell that
@@ -51,8 +63,18 @@ const axidpsCustom = (() => {
   const MEASURE_LABEL = {up: "Uptime", self: "Self", group: "Group", squad: "Squad"};
   for (const m of MEASURES) {
     STATS[`boons:${m}`] = {kind: "boons", measure: m, noAs: true, label: MEASURE_LABEL[m],
+      name: MEASURE_LABEL[m] === "Uptime" ? "Uptime" : `Generation ${MEASURE_NAME[m]}`, head: MEASURE_LABEL[m],
       tip: `${MEASURE_TIP[m]} (stacks for Might and Stability)`, w: 52};
   }
+  // A column's header text: its short label, with /s or % when it shows that.
+  const headText = s => STATS[s.key].head + (s.as === "share" ? " %" : s.as === "per_s" && !STATS[s.key].rate ? "/s" : "");
+  // The header's width (px) at Normal text: 10.5 px uppercase, semibold, letter-spaced .05em. An
+  // estimate wide enough for the overlay's fonts (IBM Plex Sans, Lato, Fira Code).
+  const headWidth = text => [...String(text).toUpperCase()].reduce((n, ch) =>
+    n + (" '.,()I1".includes(ch) ? 4.5 : "MW%".includes(ch) ? 10.5 : 8), 0);
+  // A column's width (px) at Normal text: room for its numbers (per second and % take 8 px more)
+  // and for its header (6 px padding a side and 2 to spare), so headers never run into each other.
+  const colWidth = s => Math.max(STATS[s.key].w + (s.as === "total" ? 0 : 8), Math.ceil(headWidth(headText(s)) + 14));
   const isBoon = k => !!STATS[k] && STATS[k].kind === "boon";
   const isMeasure = k => !!STATS[k] && STATS[k].kind === "boons";
   // Summed keys, fight stats first: the history keeps and differences every one of them.
@@ -610,6 +632,6 @@ const axidpsCustom = (() => {
 
   return {STATS, BASE_KEYS, FIGHT_KEYS, BOON_MEASURE_KEYS, CHART_KEYS, MAX_CUSTOM, MAX_STATS, NAME_MAX, SPANS, LOOKS, SQUAD_BOONS,
     filterWho, statValue, computeRows, normalizeSpec, normalizeAll, migrateTables, specFromBuiltin, blankSpec, createHistory, applyKey,
-    boonRate, formatBoon};
+    boonRate, formatBoon, headText, headWidth, colWidth};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsCustom;
