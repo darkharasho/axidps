@@ -31,7 +31,7 @@ pub struct Around {
     /// Players here who hit an enemy player, or were hit by one, in the last fight.
     fought: BTreeSet<u32>,
     /// Players who fought and left, by their last agent id, until the next fight.
-    departed: BTreeMap<u32, Row>,
+    departed: BTreeMap<u32, (Row, String)>,
 }
 
 /// One presence row; the field order is the sort order.
@@ -93,13 +93,11 @@ impl Around {
             return;
         };
         let team = |id| reg.agent(id).and_then(|a| a.team);
-        match (team(s), team(d)) {
-            (Some(x), Some(y)) if x != y => {
-                if self.fought.insert(s) {
-                    self.generation += 1;
-                }
-            }
-            _ => {}
+        if let (Some(x), Some(y)) = (team(s), team(d))
+            && x != y
+            && self.fought.insert(s)
+        {
+            self.generation += 1;
         }
     }
 
@@ -118,29 +116,39 @@ impl Around {
     /// Call after `replay::apply(p, step)`.
     pub fn after_step(&mut self, p: &Processor, step: &Step) {
         // A new fight clears the flags before its first hit is counted.
-        if let Some(s) = p.fight_start_ms() {
-            if self.fight_start != Some(s) {
-                self.fight_start = Some(s);
-                self.fought.clear();
-                self.departed.clear();
-                self.generation += 1;
-            }
+        if let Some(s) = p.fight_start_ms()
+            && self.fight_start != Some(s)
+        {
+            self.fight_start = Some(s);
+            self.fought.clear();
+            self.departed.clear();
+            self.generation += 1;
         }
         let reg = p.registry();
-        if let Step::Push(_, Event::Strike { src, dst, result, .. }) = *step {
-            if p.fight_start_ms().is_some() && result <= 9 {
-                self.count_hit(reg, src, dst);
-            }
+        if let Step::Push(_, Event::Strike { src, dst, result, .. }) = *step
+            && p.fight_start_ms().is_some()
+            && result <= 9
+        {
+            self.count_hit(reg, src, dst);
         }
-        if let Step::Push(_, Event::BuffApply { src, dst, buff, .. }) = *step {
-            if p.fight_start_ms().is_some() && live::CONDITIONS.contains(&buff) {
-                self.count_hit(reg, src, dst);
-            }
+        if let Step::Push(_, Event::BuffApply { src, dst, buff, .. }) = *step
+            && p.fight_start_ms().is_some()
+            && live::CONDITIONS.contains(&buff)
+        {
+            self.count_hit(reg, src, dst);
         }
         if let Step::Prime(_, ev) | Step::Push(_, ev) = step {
             match *ev {
-                Event::AgentAdd { id, .. } => {
-                    if self.departed.remove(&id).is_some() {
+                Event::AgentAdd { id, kind, prof, .. } => {
+                    // The game reuses ids: only the same profession back is the same fighter.
+                    let back = kind == AgentKind::Player
+                        && self
+                            .departed
+                            .get(&id)
+                            
+                            .is_some_and(|(row, _)| row.prof == some(names::spec_name(prof, 0)));
+                    if back {
+                        self.departed.remove(&id);
                         self.fought.insert(id);
                     }
                     self.added.insert(id, self.next_seq);
@@ -178,10 +186,11 @@ impl Around {
 
     /// A fighter leaves: keep its row, unless the same account is still here under another id.
     fn leave(&mut self, reg: &Registry, id: u32) {
-        if !self.fought.remove(&id) {
+        let Some(a) = reg.agent(id) else { return };
+        // Pets, minions, NPCs and clones are never rows.
+        if a.kind != AgentKind::Player || !self.fought.remove(&id) {
             return;
         }
-        let Some(a) = reg.agent(id) else { return };
         let sibling = (!a.account.is_empty())
             .then(|| {
                 reg.live_agents()
@@ -197,7 +206,7 @@ impl Around {
                 let mut row = Self::row_of(reg, a);
                 row.here = false;
                 row.fought = true;
-                self.departed.insert(id, row);
+                self.departed.insert(id, (row, a.account.clone()));
             }
         }
     }
@@ -229,15 +238,15 @@ impl Around {
                 row.fought = reg
                     .live_agents()
                     .any(|b| same(b) && self.fought.contains(&b.id))
-                    || self.departed.keys().any(|&d| {
-                        d == a.id || reg.agent(d).is_some_and(|b| same(b) && b.id != a.id)
-                    });
+                    || self
+                        .departed
+                        .values()
+                        .any(|(_, acct)| !acct.is_empty() && *acct == a.account);
                 row
             })
             .collect();
         // A departed fighter whose account is back under another id is already a live row.
-        rows.extend(self.departed.iter().filter_map(|(&id, row)| {
-            let acct = &reg.agent(id)?.account;
+        rows.extend(self.departed.values().filter_map(|(row, acct)| {
             let back = !acct.is_empty() && reg.live_agents().any(|b| &b.account == acct);
             (!back).then(|| row.clone())
         }));
@@ -783,5 +792,58 @@ mod tests {
         }
         only_here_dragonhunter(&a.value(&p));
         assert_eq!(players(&a.value(&p)).len(), 5);
+    }
+
+    #[test]
+    fn reused_id_by_npc_keeps_departed_and_adds_no_row() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, hit(6, 1, 0));
+        at(&mut p, &mut a, 1200, Event::AgentRemove { id: 6 });
+        at(
+            &mut p,
+            &mut a,
+            1300,
+            Event::AgentAdd {
+                id: 6,
+                kind: AgentKind::Npc,
+                prof: 0,
+                elite: 0,
+                species: 77,
+                team: 9,
+                subgroup: 0,
+                wvw_rank: 0,
+                wvw_rank_def: 0,
+            },
+        );
+        at(&mut p, &mut a, 1400, Event::AgentRemove { id: 6 });
+        let v = a.value(&p);
+        assert_eq!(players(&v).len(), 5);
+        let rows: Vec<_> = players(&v).iter().filter(|r| r["here"] == false).collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["team"], 5);
+        assert_eq!(rows[0]["fought"], true);
+        assert_eq!(rows[0]["spec"], "Firebrand");
+        assert!(players(&v).iter().all(|r| !r["prof"].is_null()));
+    }
+
+    #[test]
+    fn reused_id_by_other_profession_is_not_credited() {
+        let (mut p, mut a) = world();
+        start_fight(&mut p, &mut a, 1000);
+        at(&mut p, &mut a, 1100, hit(6, 1, 0));
+        at(&mut p, &mut a, 1200, Event::AgentRemove { id: 6 });
+        at(&mut p, &mut a, 1300, player(6, 5, 2, 0, 0));
+        let v = a.value(&p);
+        let gone: Vec<_> = players(&v).iter().filter(|r| r["here"] == false).collect();
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0]["fought"], true);
+        assert_eq!(gone[0]["spec"], "Firebrand");
+        let new: Vec<_> = players(&v)
+            .iter()
+            .filter(|r| r["team"] == 5 && r["here"] == true && r["spec"] != "Firebrand")
+            .collect();
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0]["fought"], false);
     }
 }
