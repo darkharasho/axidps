@@ -154,7 +154,18 @@ impl Rect {
         Rect { x, y, w, h }
     }
     pub fn contains(&self, x: i32, y: i32) -> bool {
-        x >= self.x && y >= self.y && x < self.x + self.w && y < self.y + self.h
+        // In i64: a far edge past i32::MAX must not wrap.
+        let (x, y) = (i64::from(x), i64::from(y));
+        x >= i64::from(self.x) && y >= i64::from(self.y) && x < self.right() && y < self.bottom()
+    }
+
+    /// The far edges, in i64 so that hostile sizes cannot wrap.
+    fn right(&self) -> i64 {
+        i64::from(self.x) + i64::from(self.w)
+    }
+
+    fn bottom(&self) -> i64 {
+        i64::from(self.y) + i64::from(self.h)
     }
 }
 
@@ -264,8 +275,8 @@ pub fn clip_to_atlas(r: Rect) -> Option<Rect> {
         && r.h > 0
         && r.x >= 0
         && r.y >= 0
-        && r.x + r.w <= MAX_W as i32
-        && r.y + r.h <= MAX_H as i32)
+        && r.right() <= MAX_W as i64
+        && r.bottom() <= MAX_H as i64)
         .then_some(r)
 }
 
@@ -542,7 +553,13 @@ pub fn zones(ui: &GameUi, screen: (i32, i32)) -> Vec<Zone> {
 
 /// True if `a` and `b` overlap.
 pub fn overlaps(a: Rect, b: Rect) -> bool {
-    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    let (ax, ay, bx, by) = (
+        i64::from(a.x),
+        i64::from(a.y),
+        i64::from(b.x),
+        i64::from(b.y),
+    );
+    ax < b.right() && bx < a.right() && ay < b.bottom() && by < a.bottom()
 }
 
 /// Snap a window being dragged to `r` (screen space) onto the screen's edges and centre lines and
@@ -605,6 +622,19 @@ mod tests {
     }
 
     use super::*;
+
+    /// A rect whose far edge overflows i32 is refused, not wrapped into the atlas: the DLL copies
+    /// pixels by these numbers on the game's render thread.
+    #[test]
+    fn huge_rects_are_refused() {
+        let r = |x, y, w, h| Rect { x, y, w, h };
+        assert_eq!(clip_to_atlas(r(i32::MAX - 255, 0, 512, 1)), None);
+        assert_eq!(clip_to_atlas(r(0, i32::MAX - 255, 1, 512)), None);
+        assert_eq!(clip_to_atlas(r(0, 0, i32::MAX, i32::MAX)), None);
+        assert_eq!(clip_to_atlas(r(0, 0, 10, 10)), Some(r(0, 0, 10, 10)));
+        assert!(!r(i32::MAX - 1, 0, 10, 10).contains(0, 5));
+        assert!(!overlaps(r(i32::MAX - 1, 0, 10, 10), r(0, 0, 5, 5)));
+    }
 
     #[test]
     fn layout_fits_header_area() {
