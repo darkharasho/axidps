@@ -1131,3 +1131,18 @@ test("frames are told whether their window is see-through or a hub page", () => 
   h.setWindowOpt("x.y/w", "clear", false);
   assert.deepStrictEqual(frame(winEnt).at(-1), [false, false]);
 }));
+
+test("a plugin updated while running reloads its frames; the same version leaves them", () => withFrames(() => {
+  const p = plugin("x.y", { windows: [hubWin("s")] });
+  const { h } = hubHost([p], { plugins: { "x.y": { enabled: true, granted: ["fight"] } }, pos: {}, open: {}, cfg: {} });
+  h.setList([p]);
+  const f = h.entries[0].frame;
+  let loads = 0, src = f.src;
+  Object.defineProperty(f, "src", { get: () => src, set(v) { src = v; loads++; } });
+  h.setList([Object.assign({}, p)]);
+  assert.strictEqual(loads, 0, "a rescan with nothing new keeps the page");
+  h.setList([Object.assign({}, p, { version: "1.1.0" })]);
+  assert.strictEqual(loads, 1, "the new version's files load");
+  assert.strictEqual(h.entries[0].frame, f, "the same frame, reloaded");
+  assert.strictEqual(h.entries[0].plugin.version, "1.1.0");
+}));

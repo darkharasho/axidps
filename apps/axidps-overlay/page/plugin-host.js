@@ -571,11 +571,17 @@
       const sp = saved.plugins || {};
       const on = p => framed(p, saved, env.hosted);
       this.want = validManifestWindows(this.list, on);
+      // A plugin updated while running (a store update) gets its new files: its frames reload.
+      const updated = new Set();
       for (const ent of this.entries.slice()) {
         const w = this.want.find(x => x.fullId === ent.fullId);
         if (!w || w.alias !== ent.alias || w.win.entry !== ent.win.entry || isHub(w.win) !== !!ent.hub) this.drop(ent);
-        else { ent.plugin = w.plugin; ent.win = w.win; this.applyOpts(ent); }
+        else {
+          if (String(w.plugin.version || "") !== String(ent.plugin.version || "")) updated.add(w.plugin.id);
+          ent.plugin = w.plugin; ent.win = w.win; this.applyOpts(ent);
+        }
       }
+      for (const id of updated) this.changed(id);
       for (const w of this.want) {
         if (this.entries.some(e => e.fullId === w.fullId)) continue;
         // In the browser demo the plugin being previewed starts open.
