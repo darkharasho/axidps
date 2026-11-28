@@ -30,12 +30,12 @@
   }
   function save() {
     apply();
-    axidps.settings.set(cur);
+    axidps.settings.set(M.toSave(cur));
     render();
   }
 
   function render() {
-    ["on", "pve", "wvw"].forEach(k => { $(k).checked = cur[k]; });
+    ["pve", "wvw"].forEach(k => { $(k).checked = cur[k]; });
     if (document.activeElement !== $("thickness")) $("thickness").value = cur.thickness;
     $("thickness-v").textContent = cur.thickness;
     if (document.activeElement !== $("fill")) $("fill").value = cur.fill;
@@ -48,7 +48,7 @@
     }
   }
 
-  for (const k of ["on", "pve", "wvw"]) $(k).addEventListener("change", e => { cur[k] = e.target.checked; save(); });
+  for (const k of ["pve", "wvw"]) $(k).addEventListener("change", e => { cur[k] = e.target.checked; save(); });
   for (const k of ["thickness", "fill"]) $(k).addEventListener("input", e => { cur[k] = Number(e.target.value); save(); });
   for (const k of ["color", "fillColor"]) {
     M.SWATCHES.forEach(c => {

@@ -9,10 +9,12 @@
   const colour = v => (Array.isArray(v) && v.length === 3 && v.every(num) ? v.map(c => clamp(c, 0, 1, 0)) : DEFAULT.slice());
   const flag = (v, d) => (typeof v === "boolean" ? v : d);
 
+  // `on` is always true: the plugin's switch in the hub turns the outline on and off (switched off,
+  // this page doesn't run). An `on` saved before that is ignored.
   function normalize(o) {
     o = o && typeof o === "object" && !Array.isArray(o) ? o : {};
     return {
-      on: flag(o.on, false), color: colour(o.color), thickness: clamp(o.thickness, 1, 8, 3),
+      on: true, color: colour(o.color), thickness: clamp(o.thickness, 1, 8, 3),
       fill: clamp(o.fill, 0, 0.6, 0.15), fillColor: colour(o.fillColor), pve: flag(o.pve, true), wvw: flag(o.wvw, true),
     };
   }
@@ -27,6 +29,13 @@
     return [f(0), f(8), f(4)];
   }
 
-  const api = { normalize, color, SWATCHES };
+  // What gets saved: the settings without `on`.
+  function toSave(o) {
+    const out = Object.assign({}, o);
+    delete out.on;
+    return out;
+  }
+
+  const api = { normalize, toSave, color, SWATCHES };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.outlineModel = api;
 })(typeof window !== "undefined" ? window : this);

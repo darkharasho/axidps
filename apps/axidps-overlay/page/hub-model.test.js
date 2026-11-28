@@ -197,3 +197,21 @@ test("rows under a standing approval aren't unchecked", () => {
   assert.strictEqual(rows[0].unchecked, false);
   assert.strictEqual(rows[0].trust, "approved");
 });
+
+test("optionNav lists built-ins then plugin pages", () => {
+  const n = H.optionNav([{ fullId: "a/s", title: "Tag Colours", icon: "grid", on: true }], "look");
+  assert.deepStrictEqual(n.items.map(i => i.id), ["look", "windows", "counted", "updates", "p:a/s"]);
+  assert.deepStrictEqual(n.items.slice(0, 4).map(i => i.label), ["Look", "Windows", "What gets counted", "Updates"]);
+  assert.strictEqual(n.items[4].label, "Tag Colours");
+  assert.strictEqual(n.items[4].group, "Plugins");
+  assert.strictEqual(n.items[0].group, undefined);
+  assert.strictEqual(n.sel, "look");
+});
+
+test("optionNav keeps a known selection and falls back", () => {
+  const pages = [{ fullId: "a/s", title: "T" }];
+  assert.strictEqual(H.optionNav(pages, "p:a/s").sel, "p:a/s");
+  assert.strictEqual(H.optionNav(pages, "updates").sel, "updates");
+  assert.strictEqual(H.optionNav(pages, "p:gone/s").sel, "look");
+  assert.strictEqual(H.optionNav(null, undefined).sel, "look");
+});

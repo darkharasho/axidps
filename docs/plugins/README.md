@@ -174,6 +174,7 @@ Each window:
 | `icon` | no | One of `chart users shield swords activity x grid layers sliders plug download columns plus`. Anything else shows `plug`. |
 | `open` | no | `true` to show the window until the player closes it. Default `false`: the player opens it from the hub's Windows tab. |
 | `place` | no | Where the window first appears: `beside-meter` (default; in a row to the right of the Support window) or `below-meter`. The player can move it; its position is saved. |
+| `in` | no | `overlay` (default) or `hub`. A `hub` window is drawn as a page in the hub's Options tab, listed under Plugins, with an on/off switch for the plugin at the top. `open` and `place` are ignored for it, it isn't listed in the Windows tab, and it keeps running while the hub is closed. Its frame is as wide as the page; `resize` sets only its height. axidps versions before 0.2.0-rc.18 ignore this key and show the window as an ordinary window. |
 | `settings` | no | Options the player sets from the hub's cog, at most 16. See [Settings in the hub](#settings-in-the-hub). |
 
 Text the page shows (titles, names, statuses) is cut to 80 characters.

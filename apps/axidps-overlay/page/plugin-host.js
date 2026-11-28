@@ -139,12 +139,14 @@
     return perms.filter(x => typeof x === "string").concat(net.filter(x => typeof x === "string").map(h => "net:" + h));
   }
 
-  // Bundled plugins are on unless switched off. A player's plugin is on only once enabled, and
-  // only while the manifest asks for nothing beyond what was granted then.
+  // Bundled plugins are on unless switched off, except those in OFF_BY_DEFAULT, which are on only
+  // once switched on. A player's plugin is on only once enabled, and only while the manifest asks
+  // for nothing beyond what was granted then.
+  const OFF_BY_DEFAULT = ["axidps.outline"];
   function isEnabled(p, savedPlugins) {
     if (!p || typeof p !== "object" || p.error) return false;
     const s = own(savedPlugins, p.id) ? savedPlugins[p.id] : null;
-    if (p.bundled === true) return !(s && s.enabled === false);
+    if (p.bundled === true) return OFF_BY_DEFAULT.includes(p.id) ? !!(s && s.enabled === true) : !(s && s.enabled === false);
     if (!s || s.enabled !== true || !Array.isArray(s.granted)) return false;
     return grantsOf(p).every(g => s.granted.includes(g));
   }
@@ -187,6 +189,33 @@
       label: trustLabel(p),
       reload: !err && on && !bundled && s.dev === true,
     };
+  }
+
+  // A window drawn as a page in the hub's Options tab instead of as an overlay window.
+  const isHub = win => !!win && win.in === "hub";
+
+  // The Options tab's plugin pages: one per hub window of every listed plugin whose manifest
+  // parsed (on or off, or failed to load), in list order. on: isEnabled; action, reason and lines
+  // as on the plugin's card.
+  function hubPages(list, saved) {
+    const s = saved && typeof saved === "object" ? saved : {};
+    const str = v => typeof v === "string" ? v.slice(0, MAX_TEXT) : "";
+    const out = [], seen = new Set();
+    for (const p of Array.isArray(list) ? list : []) {
+      if (!p || typeof p !== "object" || typeof p.id !== "string" || !PLUGIN_ID.test(p.id) || !Array.isArray(p.windows)) continue;
+      let card = null;
+      for (const win of p.windows.slice(0, 4)) {
+        if (!isHub(win) || typeof win.id !== "string" || !WINDOW_ID.test(win.id) || typeof win.entry !== "string") continue;
+        const fullId = p.id + "/" + win.id;
+        if (seen.has(fullId)) continue;
+        seen.add(fullId);
+        card = card || cardModel(p, s);
+        out.push({fullId, id: p.id, title: str(win.title) || win.id, description: str(win.description),
+          icon: ICONS.includes(win.icon) ? win.icon : "plug", on: isEnabled(p, s.plugins),
+          action: card.action, reason: card.reason, lines: card.lines});
+      }
+    }
+    return out;
   }
 
   const OFFLINE = "Can't reach the plugin store. Installed plugins still work.";
@@ -324,6 +353,15 @@
         if (m !== "cfg") o[id] = o[full];
         delete o[full];
       }
+    }
+    // Character Outline's own On toggle became the plugin's switch: carry it over once (an
+    // explicit switch-off on its card stays off), then drop it.
+    const OK = "axidps.outline", cfg = saved.cfg && saved.cfg[OK + "/settings"];
+    if (cfg && typeof cfg === "object" && own(cfg, "on")) {
+      if (!saved.plugins || typeof saved.plugins !== "object") saved.plugins = {};
+      const cur = own(saved.plugins, OK) ? saved.plugins[OK] : null;
+      if (!(cur && cur.enabled === false)) saved.plugins[OK] = {enabled: cfg.on === true, granted: []};
+      delete cfg.on;
     }
     return saved;
   }
@@ -467,7 +505,8 @@
 
   // env (from ui.js): {hosted, test (?test: send debug reports), defineWindow(def), removeWindow(w), wins,
   //   saved(), ui, toHost(text), besideMeter(after, dy), posOf(w), save(), saveNow(), renderAll(), scheduleReport(),
-  //   look(), feed(), isOpen(w)}
+  //   look(), feed(), isOpen(w), hubPage(fullId) (the element in the hub's Options tab that holds a hub
+  //   window's frame; made once per fullId and never rebuilt)}
   const host = {
     env: null,
     list: [],
@@ -517,7 +556,7 @@
       this.want = validManifestWindows(this.list, on);
       for (const ent of this.entries.slice()) {
         const w = this.want.find(x => x.fullId === ent.fullId);
-        if (!w || w.alias !== ent.alias || w.win.entry !== ent.win.entry) this.drop(ent);
+        if (!w || w.alias !== ent.alias || w.win.entry !== ent.win.entry || isHub(w.win) !== !!ent.hub) this.drop(ent);
         else { ent.plugin = w.plugin; ent.win = w.win; this.applyOpts(ent); }
       }
       for (const w of this.want) {
@@ -627,7 +666,8 @@
     },
     add(w) {
       const env = this.env;
-      const taken = nameTaken(env.wins, w);
+      const hub = isHub(w.win);
+      const taken = !hub && nameTaken(env.wins, w);
       if (taken) {
         console.warn(`plugin window ${w.fullId}: ${taken}; not shown`);
         return;
@@ -640,6 +680,15 @@
       const title = String(w.win.title || w.plugin.name || w.plugin.id).slice(0, MAX_TEXT);
       const glyph = ICONS.includes(w.win.icon) ? w.win.icon : "plug";
       ent.title = title;
+      if (hub) {
+        // A hub page: its frame lives in a holder in the hub's Options tab (env.hubPage), which
+        // is never rebuilt, so it keeps running while the hub is closed. No window, no bar.
+        ent.hub = true;
+        this.mount(ent, {body: env.hubPage(w.fullId)});
+        this.entries.push(ent);
+        this.debug();
+        return;
+      }
       ent.w = env.defineWindow({
         id: w.alias, key: w.fullId, title, plugin: true, open: w.win.open === true,
         blurb: [title, String(w.win.description || "").slice(0, MAX_TEXT), glyph],
@@ -710,8 +759,9 @@
       const f = document.createElement("iframe");
       f.setAttribute("sandbox", "allow-scripts");
       f.className = "plugin";
-      f.style.width = ent.size[0] + "px";
-      f.style.height = ent.size[1] + "px";
+      // A hub page's frame is as wide as the page and fills it until the plugin asks for a height.
+      f.style.width = ent.hub ? "100%" : ent.size[0] + "px";
+      f.style.height = ent.hub ? "" : ent.size[1] + "px";
       f.style.pointerEvents = this.env.ui.editing ? "none" : "";
       f.src = ent.src;
       win.body.appendChild(f);
@@ -729,6 +779,7 @@
         this.setOutline(ent.plugin.id, null);
       }
       if (ent.w) this.env.removeWindow(ent.w);
+      if (ent.hub && ent.frame && ent.frame.parentNode) ent.frame.parentNode.removeChild(ent.frame);
       const i = this.entries.indexOf(ent);
       if (i >= 0) this.entries.splice(i, 1);
       this.debug();
@@ -825,7 +876,8 @@
             const wait = ent.sizeGate(Date.now());
             if (wait > 0) { ent.sizeTimer = setTimeout(apply, wait); return; }
             ent.size = s;
-            if (ent.frame) { ent.frame.style.width = s[0] + "px"; ent.frame.style.height = s[1] + "px"; }
+            if (ent.frame && ent.hub) ent.frame.style.height = s[1] + "px";
+            else if (ent.frame) { ent.frame.style.width = s[0] + "px"; ent.frame.style.height = s[1] + "px"; }
             env.scheduleReport();
           };
           apply();
@@ -977,7 +1029,7 @@
 
   const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, trustLabel, storeModel, usesOf, sampleStore, sampleStoreList, migrateSaved, clampSize, accept,
     logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, settingsModel, settingValues, windowOpts,
-    panelModel, fitSetting, MAX_OPEN};
+    panelModel, fitSetting, MAX_OPEN, isHub, hubPages, OFF_BY_DEFAULT};
   Object.assign(host, pure);
   if (typeof window !== "undefined") window.pluginHost = host;
   if (typeof module !== "undefined" && module.exports) module.exports = Object.assign({host}, pure);

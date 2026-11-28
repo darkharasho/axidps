@@ -172,6 +172,7 @@ mod tests {
                 icon: "plug".into(),
                 open: false,
                 place: Place::BesideMeter,
+                shown: crate::manifest::Shown::Overlay,
                 settings: Vec::new(),
             }],
         }

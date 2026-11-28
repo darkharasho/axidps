@@ -165,15 +165,15 @@ function paintIcons(root) {
 
 // A plugin card's settings panel (pluginHost.panelModel): per window, the host's two window
 // options and then the plugin's declared settings. Everything from the manifest goes through esc().
-function plugPanel(sections) {
+function plugPanel(sections, {winOpts = true} = {}) {
   const tog = on => `<span class="tog${on ? " on" : ""}"><i></i></span>`;
   const opt = (attrs, label, note, on) =>
     `<div class="opt" ${attrs}><div>${esc(label)}${note ? `<small>${esc(note)}</small>` : ""}</div>${tog(on)}</div>`;
   return `<div class="pset">` + sections.map(sec => {
     const full = `data-full="${esc(sec.fullId)}"`;
     return (sections.length > 1 ? `<h4>${esc(sec.title)}</h4>` : "") +
-      opt(`data-pwin="bar" ${full}`, "Show title bar", "Hides the window's title. Move it in Arrange.", sec.opts.bar) +
-      opt(`data-pwin="clear" ${full}`, "See-through background", "No background or border behind the plugin.", sec.opts.clear) +
+      (winOpts ? opt(`data-pwin="bar" ${full}`, "Show title bar", "Hides the window's title. Move it in Arrange.", sec.opts.bar) +
+        opt(`data-pwin="clear" ${full}`, "See-through background", "No background or border behind the plugin.", sec.opts.clear) : "") +
       sec.fields.map(f => {
         const at = `${full} data-k="${esc(f.key)}"`;
         if (f.type === "toggle") return opt(`data-ptog ${at}`, f.label, "", f.value === true);
@@ -2484,6 +2484,60 @@ const filterOf = f => PLUGIN_FILTERS.some(x => x[0] === f) ? f : "all";
 const UNCHECKED = "Not checked yet. Nobody has looked at what this plugin does.";
 // A plugin's buttons, as on its Plugins row: Update/Install, Turn on/off (or why it can't be on),
 // Remove, and Reload in developer mode. The Windows tab shows the same ones for a plugin's window.
+// The Options tab's plugin pages (pluginHost.hubPages), by window fullId. Each is made once, in the
+// hub's .hpages, and never rebuilt: its .hframe holds the plugin's frame (pluginHost mounts it
+// there), so switching pages or re-rendering the hub doesn't reload it. Only .ohead and .oset are
+// redrawn.
+const hubPageEls = new Map();
+function hubPageEl(fullId) {
+  let el = hubPageEls.get(fullId);
+  if (el) return el;
+  el = document.createElement("div");
+  el.className = "opage hpage";
+  el.dataset.op = "p:" + fullId;
+  el.innerHTML = `<div class="ohead"></div><div class="oset"></div><div class="hframe"></div>`;
+  el.style.display = "none";
+  hub.body.querySelector(".hpages").appendChild(el);
+  hubPageEls.set(fullId, el);
+  return el;
+}
+const putHtml = (el, html) => { if (el._html !== html) { el._html = html; el.innerHTML = html; } };
+// The Options tab: the left list (axidpsHub.optionNav) and the chosen page. A plugin page's header
+// has its title, what it does and asks for, and its on/off switch (the card's Turn on / Turn off);
+// under it, while on, the window's declared settings, then the plugin's own page.
+function renderOptions(w) {
+  const pages = pluginHost.hubPages(pluginHost.list, saved);
+  const nav = axidpsHub.optionNav(pages, w.opt);
+  w.opt = nav.sel;
+  let group = "";
+  putHtml(w.body.querySelector(".onav"), nav.items.map(i => {
+    const head = i.group && i.group !== group ? `<div class="ogrp">${esc(i.group)}</div>` : "";
+    group = i.group || "";
+    return head + `<div class="pf${i.id === nav.sel ? " on" : ""}" data-onav="${esc(i.id)}">${esc(i.label)}` +
+      (i.group && !i.on ? ` <i>Off</i>` : "") + `</div>`;
+  }).join(""));
+  const listed = new Set(pages.map(p => p.fullId));
+  for (const [id, el] of hubPageEls) {
+    if (listed.has(id) || el.querySelector("iframe")) continue;
+    el.remove();
+    hubPageEls.delete(id);
+  }
+  for (const pg of pages) {
+    const el = hubPageEl(pg.fullId);
+    const sw = pg.action ? `<span class="tog${pg.on ? " on" : ""}" data-pact="${pg.action}" ` +
+      `data-tip="${pg.on ? "turn it off" : "turn it on"}"><i></i></span>` : `<span class="have off">${esc(pg.reason)}</span>`;
+    putHtml(el.querySelector(".ohead"), `<div class="otop" data-p="${esc(pg.id)}"><h3>${esc(pg.title)}</h3>${sw}</div>` +
+      (pg.description ? `<p class="odesc">${esc(pg.description)}</p>` : "") +
+      (pg.lines.length ? `<p class="olines">${pg.lines.map(l => esc(l)).join(" · ")}</p>` : ""));
+    const p = pg.on ? pluginHost.list.find(x => x && x.id === pg.id) : null;
+    const sec = p ? pluginHost.panelModel(p, saved).filter(x => x.fullId === pg.fullId && x.fields.length) : [];
+    putHtml(el.querySelector(".oset"), sec.length ? plugPanel(sec, {winOpts: false}) : "");
+  }
+  w.body.querySelectorAll('section[data-tab="options"] .opage').forEach(el => {
+    el.style.display = el.dataset.op === nav.sel ? "" : "none";
+  });
+}
+
 function plugActs(r) {
   if (r.busy) return `<button disabled>Working…</button>`;
   const btn = (attr, act, label, cls) => `<button data-${attr}="${act}"${cls ? ` class="${cls}"` : ""}>${esc(label)}</button>`;
@@ -2574,7 +2628,7 @@ function renderPlugins(w) {
 // and clips with it): a 12px track, shown whenever the content is taller than the area, and a thumb
 // of at least 40px (axidpsHub.scrollThumb). Drag the thumb to scroll; press the track to move a
 // page. The wheel scrolls the area as before; the bar follows its scroll events.
-const SCROLLERS = ".wl .lst, .ws .grid, .cw .plist, .pfilters, .pmain, .hub section[data-tab=\"options\"]";
+const SCROLLERS = ".wl .lst, .ws .grid, .cw .plist, .pfilters, .pmain, .onav, .opane";
 const SB_W = 12;
 function placeBar(sc) {
   const bar = sc._sb;
@@ -2680,25 +2734,26 @@ const hub = defineWindow({
       `<button data-sact="refresh" data-tip="check the store for new plugins and versions">Refresh</button></div>` +
       `<p class="note store-msg"></p><div class="srows"></div></div></section>` +
       // Options
-      `<section data-tab="options"><div class="optpage"><h3>Look</h3><div class="themes">${THEMES.map(themeCard).join("")}</div>` +
+      `<section data-tab="options" class="psec"><div class="pfcol"><div class="onav"></div></div>` +
+      `<div class="opane"><div class="optpage"><div class="opage" data-op="look"><h3>Look</h3><div class="themes">${THEMES.map(themeCard).join("")}</div>` +
       `<div class="opt"><div>How see-through<small>Lower is more see-through. Picking a theme brings its own look.</small></div>` +
       `<div class="slide" data-slide="opacity">${OPACITY.map((o, i) => `<i data-v="${o}" style="left:${i * 20}%"></i>`).join("")}` +
       `<u></u><em></em></div><b class="slide-n"></b></div>` +
       `<div class="opt"><div>Blur<small>Softens the game behind see-through windows.</small></div>` +
       `<div class="seg" data-look="blur">${BLUR.map((b, i) => `<button data-v="${i}">${b}</button>`).join("")}</div></div>` +
       `<div class="opt" data-compact><div>Smaller text and rows<small>Smaller rows, text and columns, so each window takes less room.</small></div>` +
-      `<span class="tog"><i></i></span></div>` +
-      `<h3>Windows</h3>` +
+      `<span class="tog"><i></i></span></div></div>` +
+      `<div class="opage" data-op="windows"><h3>Windows</h3>` +
       `<div class="opt"><div>How many players to show<small>Every party or squad member up to this many; scroll for the rest.</small></div>` +
       `<div class="step">${[-5, -1].map(d => `<button data-rows="${d}">${d}</button>`).join("")}` +
       `<b class="rows-n"></b>${[1, 5].map(d => `<button data-rows="${d}">+${d}</button>`).join("")}</div></div>` +
       `<div class="opt" data-merge><div>Join windows that touch<small>In Arrange, drop a table window ` +
       `against another to join them into one window; pull a table's header to take it out again.</small></div>` +
-      `<span class="tog"><i></i></span></div>` +
-      `<h3>What gets counted</h3>` +
+      `<span class="tog"><i></i></span></div></div>` +
+      `<div class="opage" data-op="counted"><h3>What gets counted</h3>` +
       CORE_OPTS.map(([k, label, detail]) => `<div class="opt" data-opt="${k}"><div>${esc(label)}<small>${esc(detail)}</small></div>` +
-        `<span class="tog"><i></i></span></div>`).join("") +
-      `<h3>Updates</h3><div class="kv"><span>AxiDPS</span><b>${esc(BUILD)}</b>` +
+        `<span class="tog"><i></i></span></div>`).join("") + `</div>` +
+      `<div class="opage" data-op="updates"><h3>Updates</h3><div class="kv"><span>AxiDPS</span><b>${esc(BUILD)}</b>` +
       `<span class="upd-label">Update</span><b class="upd-text"></b>` +
       `<span>Core</span><b class="core-state"></b></div>` +
       `<div class="opt" data-autoupdate><div>Install updates automatically` +
@@ -2707,7 +2762,8 @@ const hub = defineWindow({
       `<div class="opt" data-dev><div>Developer mode<small>Reload plugins when their files ` +
       `change, count their errors and add Reload to their cards. The overlay restarts to switch developer ` +
       `mode.</small></div><span class="tog"><i></i></span></div>` +
-      `<p class="note dev-note">Developer tools: open about:debugging in Firefox, add 127.0.0.1:6080</p></div></section>` +
+      `<p class="note dev-note">Developer tools: open about:debugging in Firefox, add 127.0.0.1:6080</p></div>` +
+      `<div class="hpages"></div></div></div></section>` +
       `<div class="ask"><div><p></p><div class="acts"><button data-ask="no">Cancel</button>` +
       `<button data-ask="yes" class="primary"></button></div></div></div>` +
       `</main></div>`;
@@ -2827,6 +2883,10 @@ const hub = defineWindow({
       document.addEventListener("mouseup", up);
     };
     q('section[data-tab="options"]').onclick = e => {
+      const nav = e.target.closest("[data-onav]");
+      if (nav) { w.opt = nav.dataset.onav; renderAll(); scheduleReport(); return; }
+      if (plugActClick(e)) return;
+      if (plugSettingClick(e)) return;
       if (e.target.closest("[data-autoupdate]")) {
         saved.app = Object.assign({}, saved.app, {autoUpdate: !autoUpdate()});
         save(); renderAll(); return;
@@ -2850,6 +2910,7 @@ const hub = defineWindow({
     w.body.querySelectorAll(".tabb").forEach(n => n.classList.toggle("on", n.dataset.tab === w.tab));
     w.body.querySelectorAll("section").forEach(sc => sc.classList.toggle("on", sc.dataset.tab === w.tab));
     if (w.tab === "windows") renderWindows(w);
+    renderOptions(w);
     const nUpd = renderPlugins(w);
     const pill = w.body.querySelector('.tabb[data-tab="plugins"] .n');
     pill.textContent = nUpd === 1 ? "1 update" : nUpd + " updates";
@@ -3008,7 +3069,8 @@ window.axidps = {
   },
 };
 pluginHost.init({hosted: HOSTED, test: TEST, defineWindow, removeWindow, wins, saved: () => saved, ui, toHost, besideMeter,
-  posOf, save, saveNow, renderAll, scheduleReport, look: lookOf, feed: feedView, isOpen, confirm: hubConfirm});
+  posOf, save, saveNow, renderAll, scheduleReport, look: lookOf, feed: feedView, isOpen, confirm: hubConfirm,
+  hubPage: id => hubPageEl(id).querySelector(".hframe")});
 renderAll();
 
 // index.html?demo: sample data, for working on the page without a game (?demo&edit: edit mode).

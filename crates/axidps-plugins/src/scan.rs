@@ -213,6 +213,9 @@ pub fn enabled(p: &Plugin, saved: &Value) -> bool {
     };
     let s = saved.get(&m.id);
     if p.bundled {
+        // The page keeps some bundled plugins off until switched on (OFF_BY_DEFAULT in
+        // plugin-host.js); their files are still served, so a page that switches one on, or
+        // carries an old setting over on upgrade, never frames it before the host has the save.
         return s.and_then(|s| s.get("enabled")) != Some(&Value::Bool(false));
     }
     let Some(s) = s else { return false };
@@ -240,6 +243,7 @@ fn one(p: &Plugin) -> Value {
             "windows": m.windows.iter().map(|w| json!({
                 "id": w.id, "title": w.title, "entry": w.entry, "description": w.description,
                 "icon": w.icon, "open": w.open, "place": w.place.as_str(),
+                "in": w.shown.as_str(),
                 "settings": w.settings,
             })).collect::<Vec<_>>(),
             "bundled": p.bundled,
@@ -436,6 +440,16 @@ mod tests {
     }
 
     #[test]
+    fn page_json_carries_window_in() {
+        let mut p = plugin("x.y", false, &[], &[]);
+        let j = to_page_json(std::slice::from_ref(&p));
+        assert_eq!(j[0]["windows"][0]["in"], "overlay");
+        p.manifest.as_mut().unwrap().windows[0].shown = crate::manifest::Shown::Hub;
+        let j = to_page_json(std::slice::from_ref(&p));
+        assert_eq!(j[0]["windows"][0]["in"], "hub");
+    }
+
+    #[test]
     fn deeper_loads_only_when_granted() {
         use crate::keys::Keys;
         use crate::trust::Signed;
@@ -510,7 +524,7 @@ mod tests {
     fn privileged_only_loads_bundled() {
         let b = plugin("axidps.outline", true, &["outline"], &[]);
         assert!(loadable(&b));
-        assert!(enabled(&b, &Value::Null));
+        assert!(enabled(&b, &json!({"axidps.outline": {"enabled": true}})));
         let p = plugin("x.outline", false, &["outline"], &[]);
         assert!(!loadable(&p));
         assert!(!enabled(&p, &json!({"x.outline": {"enabled": true, "granted": ["outline"]}})));
@@ -526,6 +540,12 @@ mod tests {
         assert!(enabled(&b, &json!({"axidps.fight": {"enabled": true}})));
         assert!(enabled(&b, &json!({"axidps.fight": 3})));
         assert!(!enabled(&b, &json!({"axidps.fight": {"enabled": false}})));
+        let o = plugin("axidps.outline", true, &["outline"], &[]);
+        // Served until switched off: the page decides whether to frame it, and an upgrade's
+        // migration of the old On toggle can't race the save that tells the host.
+        assert!(enabled(&o, &Value::Null), "outline: files served unless switched off");
+        assert!(!enabled(&o, &json!({"axidps.outline": {"enabled": false}})));
+        assert!(enabled(&o, &json!({"axidps.outline": {"enabled": true}})));
 
         let p = plugin("x.y", false, &["fight"], &["api.example.com"]);
         let all = json!(["fight", "net:api.example.com"]);

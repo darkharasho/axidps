@@ -253,6 +253,21 @@
   .wr .bottom .grow { flex: 1; }
   .wr .bottom small { color: var(--faint); }
   .optpage { max-width: 640px; }
+  /* Options tab: a list of pages on the left (as the Plugins tab's filters), one page at a time.
+     A plugin's page: its header with the on/off switch, its declared settings, then its frame. */
+  .onav { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 16px 12px; }
+  .onav .ogrp { margin: 14px 10px 6px; font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: .06em;
+    text-transform: uppercase; }
+  body.caps .onav .ogrp { letter-spacing: .1em; font-size: 10px; }
+  .opane { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 20px 28px 24px; }
+  .hpage .otop { display: flex; align-items: center; gap: 12px; }
+  .hpage .otop h3 { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .hpage .otop .have.off { color: var(--bad); font-size: 11px; }
+  .hpage .odesc { margin: 8px 0 0; color: var(--text); }
+  .hpage .olines { margin: 4px 0 0; color: var(--dim); font-size: 11px; }
+  .hpage .oset { margin-top: 10px; }
+  .hpage .hframe { margin-top: 12px; }
+  .hframe iframe.plugin { display: block; width: 100%; height: 360px; border: 0; background: transparent; }
   .opt .slide { flex: none; width: 220px; height: 20px; position: relative; margin-right: 6px; cursor: pointer; }
   .slide::before { content: ""; position: absolute; left: 0; right: 0; top: 8px; height: 4px; border-radius: 2px;
     background: var(--line-hi); }

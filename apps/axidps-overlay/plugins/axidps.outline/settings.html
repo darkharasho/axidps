@@ -1,11 +1,11 @@
 <!doctype html>
-<!-- Character Outline: the settings window. Mouse only; every change is saved and applied at once. -->
+<!-- Character Outline: its page in the hub's Options. Mouse only; every change is saved and applied at once. -->
 <html>
 <head>
 <meta charset="utf-8">
 <script src="/_sdk/axidps.js"></script>
 <style>
-  body { padding: 8px 10px; color: var(--text); min-width: 220px; }
+  body { margin: 0; padding: 0 0 8px; color: var(--text); }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; }
   .row label { color: var(--text); }
   .row output { color: var(--dim); font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
@@ -20,7 +20,6 @@
 </style>
 </head>
 <body>
-<div class="row"><label for="on">Outline on</label><input type="checkbox" id="on"></div>
 <div class="row"><label for="pve">Show in PvE</label><input type="checkbox" id="pve"></div>
 <div class="row"><label for="wvw">Show in WvW</label><input type="checkbox" id="wvw"></div>
 <div class="row"><label for="thickness">Thickness</label><input type="range" id="thickness" min="1" max="8" step="1"><output id="thickness-v"></output></div>

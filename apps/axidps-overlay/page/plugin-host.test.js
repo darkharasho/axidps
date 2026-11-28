@@ -940,3 +940,129 @@ test("a plugin under a standing approval reads Permissions approved", () => {
   assert.deepStrictEqual(ph.storeModel(s, "").cards.map(c => c.trust), ["approved", "unverified"]);
   assert.strictEqual(ph.cardModel(plugin("x.y", { trust: "approved" }), {}).label, "Permissions approved");
 });
+
+const hubWin = (id, extra) => win(id, Object.assign({ in: "hub", title: "Page " + id, description: "What " + id + " does" }, extra));
+
+test("hubPages lists hub windows on and off", () => {
+  const list = [
+    plugin("a.on", { windows: [hubWin("s"), win("w")] }),
+    plugin("b.off", { windows: [win("w"), hubWin("s")] }),
+  ];
+  const saved = { plugins: { "a.on": { enabled: true, granted: ["fight"] } } };
+  const pages = ph.hubPages(list, saved);
+  assert.deepStrictEqual(pages.map(x => [x.fullId, x.on, x.action]), [["a.on/s", true, "disable"], ["b.off/s", false, "enable"]]);
+  assert.strictEqual(pages[0].id, "a.on");
+  assert.strictEqual(pages[0].title, "Page s");
+  assert.strictEqual(pages[0].description, "What s does");
+  assert.strictEqual(pages[0].icon, "chart");
+  assert.deepStrictEqual(pages[0].lines, ph.permissionLines(list[0]));
+  assert.strictEqual(ph.isHub(hubWin("s")), true);
+  assert.strictEqual(ph.isHub(win("w")), false);
+});
+
+test("hubPages lists a plugin with an error and no action", () => {
+  const pages = ph.hubPages([plugin("c.bad", { error: "needs verification", windows: [hubWin("s")] })], {});
+  assert.strictEqual(pages.length, 1);
+  assert.strictEqual(pages[0].action, null);
+  assert.strictEqual(pages[0].reason, "Needs verification");
+  assert.strictEqual(pages[0].on, false);
+  assert.deepStrictEqual(ph.hubPages([{ id: "d.none", error: "bad manifest", windows: [] }], {}), []);
+  assert.deepStrictEqual(ph.hubPages(null, null), []);
+});
+
+test("outline is off by default", () => {
+  const outline = plugin("axidps.outline", { bundled: true });
+  assert.strictEqual(ph.isEnabled(outline, {}), false);
+  assert.strictEqual(ph.isEnabled(outline, { "axidps.outline": { enabled: true, granted: [] } }), true);
+  assert.strictEqual(ph.isEnabled(outline, { "axidps.outline": { enabled: false } }), false);
+  assert.strictEqual(ph.isEnabled(plugin("axidps.perf", { bundled: true }), {}), true);
+});
+
+test("migrateSaved carries the old outline toggle", () => {
+  const K = "axidps.outline/settings";
+  const run = s => {
+    ph.migrateSaved(s);
+    const once = JSON.stringify(s);
+    ph.migrateSaved(s);
+    assert.strictEqual(JSON.stringify(s), once);
+    assert.ok(!s.cfg || !s.cfg[K] || !("on" in s.cfg[K]), once);
+    return s;
+  };
+  let s = run({ cfg: { [K]: { on: true, pve: true } } });
+  assert.strictEqual(s.plugins["axidps.outline"].enabled, true);
+  assert.strictEqual(s.cfg[K].pve, true);
+  s = run({ cfg: { [K]: { on: false } } });
+  assert.strictEqual(s.plugins["axidps.outline"].enabled, false);
+  s = run({ plugins: { "axidps.outline": { enabled: false, granted: [] } }, cfg: { [K]: { on: true } } });
+  assert.strictEqual(s.plugins["axidps.outline"].enabled, false);
+  s = run({ cfg: {} });
+  assert.ok(!s.plugins || !s.plugins["axidps.outline"]);
+});
+
+// A host whose env has a hub holder per page; frames are fake iframes.
+function hubHost(list, saved) {
+  const { h, sent } = fakeHost(list, saved);
+  const holders = {}, defined = [];
+  const holder = () => ({ children: [], appendChild(c) { this.children.push(c); c.parentNode = this; },
+    removeChild(c) { this.children.splice(this.children.indexOf(c), 1); c.parentNode = null; } });
+  Object.assign(h.env, {
+    ui: { editing: false }, scheduleReport() {}, look: () => ({}), feed: () => null,
+    defineWindow: d => { defined.push(d); return { el: { querySelector: () => null } }; },
+    hubPage: id => holders[id] || (holders[id] = holder()),
+  });
+  return { h, sent, holders, defined };
+}
+function withFrames(fn) {
+  const before = global.document;
+  global.document = { createElement: () => {
+    const f = { style: {}, contentWindow: {}, setAttribute() {} };
+    f.remove = () => { if (f.parentNode) f.parentNode.removeChild(f); };
+    return f;
+  } };
+  try { fn(); } finally { global.document = before; }
+}
+
+test("a hub window mounts into the hub holder, not a window", () => withFrames(() => {
+  const p = plugin("x.y", { windows: [hubWin("s")] });
+  const { h, holders, defined } = hubHost([p], { plugins: { "x.y": { enabled: true, granted: ["fight"] } }, pos: {}, open: {}, cfg: {} });
+  h.setList([p]);
+  assert.strictEqual(defined.length, 0);
+  assert.strictEqual(holders["x.y/s"].children.length, 1);
+  assert.strictEqual(h.entries.length, 1);
+  assert.strictEqual(h.entries[0].w, null);
+  assert.strictEqual(h.entries[0].hub, true);
+  assert.strictEqual(h.entries[0].frame.style.width, "100%");
+}));
+
+test("a hub frame resize sets only the height", () => withFrames(() => {
+  const p = plugin("x.y", { windows: [hubWin("s")] });
+  const { h } = hubHost([p], { plugins: { "x.y": { enabled: true, granted: ["fight"] } }, pos: {}, open: {}, cfg: {} });
+  h.setList([p]);
+  const ent = h.entries[0];
+  h.handle(ent, { type: "resize", w: 300, h: 2000 });
+  assert.strictEqual(ent.frame.style.width, "100%");
+  assert.strictEqual(ent.frame.style.height, "1000px");
+}));
+
+test("disabling a hub plugin drops its frame and its outline", () => withFrames(() => {
+  const p = plugin("axidps.outline", { bundled: true, permissions: ["outline"], windows: [hubWin("settings")] });
+  const saved = { plugins: { "axidps.outline": { enabled: true, granted: [] } }, pos: {}, open: {}, cfg: {} };
+  const { h, sent, holders } = hubHost([p], saved);
+  h.env.hosted = false;
+  h.setList([p]);
+  const ent = h.entries[0];
+  ent.hello = true;
+  h.handle(ent, { type: "outline", settings: { on: true } });
+  h.choose("axidps.outline", false);
+  assert.ok(sent.includes('{"outline":null}'), sent.join("\n"));
+  assert.strictEqual(holders["axidps.outline/settings"].children.length, 0);
+  assert.strictEqual(h.entries.length, 0);
+}));
+
+test("overlay windows beside a hub window keep their aliases", () => withFrames(() => {
+  const p = plugin("x.y", { windows: [hubWin("s"), win("w")] });
+  const { h, defined, holders } = hubHost([p], { plugins: { "x.y": { enabled: true, granted: ["fight"] } }, pos: {}, open: {}, cfg: {} });
+  h.setList([p]);
+  assert.deepStrictEqual(defined.map(d => d.id), ["p2"]);
+  assert.strictEqual(holders["x.y/s"].children.length, 1);
+}));
