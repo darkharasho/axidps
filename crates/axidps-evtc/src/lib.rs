@@ -1,4 +1,4 @@
-//! arcdps-compatible EVTC (revision 1) log model and encoder.
+//! EVTC (revision 1) log model and encoder.
 
 mod container;
 mod encode;

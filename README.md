@@ -1,9 +1,9 @@
 # axidps
 
-An arcdps replacement for Guild Wars 2. A small in-game DLL captures combat data, and a separate
-program turns it into EVTC logs that Elite Insights and existing log tools read the same way they
-read arcdps logs. It adds built-in healing and barrier stats, an in-game overlay drawn with Servo,
-plugins, and self-updates. Windows and Linux (Proton, including the Steam Deck) are both supported.
+A combat meter and log recorder for Guild Wars 2. A small in-game DLL captures combat data, and a
+separate program writes it as standard EVTC logs, which Elite Insights and other log tools read.
+It has built-in healing and barrier stats, an in-game overlay drawn with Servo, plugins, and
+self-updates. Windows and Linux (Proton, including the Steam Deck) are both supported.
 
 Downloads: [Releases](https://github.com/darkharasho/axidps/releases).
 
@@ -19,7 +19,7 @@ crates/
   axidps-ringbuf/        Shared-memory ring the DLL writes and the host reads
   axidps-overlay-shm/    Shared memory between the DLL and the overlay host
   axidps-evtc/           EVTC model, encoder and .zevtc container
-  axidps-core/           Fight processor: turns ring events into arcdps-compatible logs
+  axidps-core/           Fight processor: turns ring events into EVTC logs
   axidps-app/            The launcher: installs the DLL, runs core and the overlay, updates
   axidps-plugins/        Plugin manifests, permissions, registry and signatures
   axidps-mock-producer/  Fake WvW events on the ring, for working without the game
@@ -39,14 +39,14 @@ GW2 process (Windows or Proton)               Host
 │  captures combat events and  │──ring file──→│  ├─ agent registry           │
 │  turns itself off for any    │   (mmap)     │  ├─ fight start/end rules    │
 │  feature it can't verify on  │              │  ├─ EVTC assembly            │
-│  the running game build      │              │  └─ .zevtc → arcdps.cbtlogs  │
+│  the running game build      │              │  └─ .zevtc → log folder      │
 └──────────────────────────────┘              └──────────────────────────────┘
 ```
 
-`axidps-core` writes logs into the game's `arcdps.cbtlogs` folder, so existing log uploaders pick
-them up. The ring is multi-producer and lock-free. On Proton the DLL writes
-`Z:\tmp\axidps_ring_v2` (`/tmp/axidps_ring_v2` on the host). On Windows both sides use
-`%TEMP%\axidps_ring_v2`; pass `--ring <path>` to `axidps-core` to point it elsewhere.
+`axidps-core` writes logs to `Documents/Guild Wars 2/addons/arcdps/arcdps.cbtlogs`, the folder log
+uploaders already watch, so they pick them up with no setup. The ring is multi-producer and
+lock-free. On Proton the DLL writes `Z:\tmp\axidps_ring_v2` (`/tmp/axidps_ring_v2` on the host).
+On Windows both sides use `%TEMP%\axidps_ring_v2`; pass `--ring <path>` to `axidps-core` to point it elsewhere.
 
 ## Development
 

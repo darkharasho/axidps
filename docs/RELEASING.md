@@ -94,8 +94,8 @@ everyone has a build and an AxiOM that read this repo. Then delete the `mirror` 
 
 ## Linux
 
-The AppImage ships the overlay host and the DLL. Under Steam, set this launch option (as for
-arcdps) so the game loads the `d3d11.dll` in its folder:
+The AppImage ships the overlay host and the DLL. Under Steam, set this launch option so the
+game loads the `d3d11.dll` in its folder:
 
     WINEDLLOVERRIDES="d3d11=n,b" %command%
 

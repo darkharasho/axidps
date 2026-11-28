@@ -378,7 +378,7 @@ impl GameUi {
     }
 }
 
-/// The game's frame rate, ping and server tick rate, like arcdps's F/P/R line. 0 = unknown.
+/// The game's frame rate, ping and server tick rate. 0 = unknown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Perf {
     pub fps: u32,
