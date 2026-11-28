@@ -241,6 +241,7 @@ don't stop other handlers.
 | `"edit"` | `true` while the player is arranging windows. Your frame gets no mouse input then. |
 | `"settings"` | This window's saved settings (`{}` if none). |
 | `"perf"` | The game's performance over the last second, once a second: `{fps, ping, tick_rate}` (frames per second, ping in ms, server ticks per second, normally 25). `0` means not known yet. Needs no permission. |
+| `"opened"` | Another of your plugin's windows opened this one with `axidps.window.toggle`: `{from, data}`, `from` being that window's id. `{from: null, data: null}` when it closed this one the same way. Opened from the hub, a window hears nothing. Needs no permission. |
 | `"frame"` | What your frame sits in: `{clear, page}`. `clear` is true when the player turned on the window's see-through background, so your text sits straight over the game; `page` is true for a hub page (`"in": "hub"`). The SDK also puts the classes `axidps-clear` and `axidps-page` on `<body>`: with `axidps-clear` the text colours turn light with a dark edge on every theme, and with `axidps-page` the body is as wide as the page instead of its content. Needs no permission. |
 
 ### `axidps.settings`
@@ -307,6 +308,11 @@ bigger.
   shows it in the "in combat" style.
 - `axidps.window.autoSize(on)`: on by default. The window follows the size of your page's
   `<body>`.
+- `axidps.window.toggle(id, data)`: open another of your plugin's windows (manifest `id`)
+  beside this one, the way clicking a player opens Details. Called again with the same `data`
+  while it is open from this window, it closes it. `data` is any JSON, at most 16 KB (or none).
+  The opened window gets the `"opened"` event. Not for hub pages. Needs axidps 0.2.0-rc.22 or
+  later; check `typeof axidps.window.toggle === "function"`.
 - `axidps.window.resize(w, h)`: set the size yourself. Call `axidps.window.autoSize(false)`
   first, or the next body size change replaces it.
 - `axidps.window.tip(el, text)`: show `text` as a tooltip when the mouse is over `el`. A

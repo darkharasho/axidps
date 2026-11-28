@@ -374,3 +374,28 @@ test("a page in the hub's Options keeps the hub's text size", () => {
   w.fromPage({ axidps: 1, type: "frame", clear: false, page: false });
   assert.strictEqual(vars["--fs"], "15.6px");
 });
+
+test("sdk window.toggle asks for one of the plugin's windows, with JSON data", () => {
+  const w = fakeWin();
+  const sdk = makeSdk(w);
+  sdk.window.toggle("breakdown", { team: "enemy-a" });
+  sdk.window.toggle("breakdown");
+  assert.deepStrictEqual(msgs(w, "toggle"), [
+    { axidps: 1, type: "toggle", window: "breakdown", data: { team: "enemy-a" } },
+    { axidps: 1, type: "toggle", window: "breakdown", data: null }]);
+  sdk.window.toggle(5);
+  sdk.window.toggle("b", { s: "x".repeat(20000) });
+  assert.strictEqual(msgs(w, "toggle").length, 2, "bad id or too much data: not sent");
+  assert.strictEqual(msgs(w, "log").length, 2);
+});
+
+test("sdk opened reaches the plugin", () => {
+  const w = fakeWin();
+  const sdk = makeSdk(w);
+  let got;
+  sdk.on("opened", o => { got = o; });
+  w.fromPage({ axidps: 1, type: "opened", from: "summary", data: { team: "squad" } });
+  assert.deepStrictEqual(got, { from: "summary", data: { team: "squad" } });
+  w.fromPage({ axidps: 1, type: "opened", from: null, data: null });
+  assert.deepStrictEqual(got, { from: null, data: null });
+});
