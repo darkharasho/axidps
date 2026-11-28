@@ -170,7 +170,7 @@ pub struct Rule {
     pub softness: f32,
     /// Outline width on minimap icons, pixels of a 32 px icon, 0..=4.
     pub minimap_width: f32,
-    /// Icon scale about its centre, 0.5..=2.
+    /// Icon scale about its centre, 0.5..=3. Past what fits in the texture, the DLL draws the icon bigger.
     pub scale: f32,
     /// Vertical offset, fraction of the icon height, -0.5..=0.5 (positive is down).
     pub offset_y: f32,
@@ -226,7 +226,7 @@ impl Rule {
         self.outline_width = clampf(self.outline_width, 0.0, 16.0, d.outline_width);
         self.softness = clampf(self.softness, 0.5, 8.0, d.softness);
         self.minimap_width = clampf(self.minimap_width, 0.0, 4.0, d.minimap_width);
-        self.scale = clampf(self.scale, 0.5, 2.0, d.scale);
+        self.scale = clampf(self.scale, 0.5, 3.0, d.scale);
         self.offset_y = clampf(self.offset_y, -0.5, 0.5, d.offset_y);
         self.ring_radius = clampf(self.ring_radius, 0.1, 1.0, d.ring_radius);
         self.ring_thickness = clampf(self.ring_thickness, 0.01, 0.5, d.ring_thickness);
@@ -437,6 +437,10 @@ mod tests {
         assert_eq!(d.outline_width, 0.0);
         assert_eq!(d.scale, 0.5);
         assert_eq!(d.flags, F_ALL);
+        r.scale = 9.0;
+        assert_eq!(Rule::decode(&r.encode()).scale, 3.0);
+        r.scale = 2.5;
+        assert_eq!(Rule::decode(&r.encode()).scale, 2.5);
     }
 
     #[test]

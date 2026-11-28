@@ -189,7 +189,7 @@ mod tests {
         assert!(rule(&json!({"target": "target", "mode": "glitter"})).is_none());
         assert!(rule(&json!({"target": "target", "color": "nope"})).is_none());
         let r = rule(&json!({"target": "target", "scale": 50, "opacity": -1})).unwrap();
-        assert_eq!((r.scale, r.opacity), (2.0, 0.0));
+        assert_eq!((r.scale, r.opacity), (3.0, 0.0));
         let list = rules(&json!([{"target": "mentor"}, {"target": "bad"}, 7]));
         assert_eq!(list.len(), 1);
         assert!(rules(&json!({"not": "a list"})).is_empty());

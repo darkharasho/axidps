@@ -343,7 +343,7 @@ A rule: every field but `target` is optional, and values outside their range are
 | `normalize` | true, false | true | `oklab` only: lifts the darkest shading a little. |
 | `outline` | `{style, width, color, outer, softness, minimap}` or absent | none | Drawn under the icon. `style`: `round`, `diamond` (pointed corners) or `double` (the colour inside, `outer` beyond). `width`: pixels of a 128 px icon, 0 to 16 (default 4). `outer`: a colour, or `"auto"` (black or white, whichever stands out). `softness`: 0.5 to 8, higher is a harder edge (default 3). `minimap`: the width on minimap icons, pixels of a 32 px icon, 0 to 4 (default 1). |
 | `ring` | `{radius, thickness, color, outline}` or absent | none | A ring behind the icon. `radius` and `thickness` are fractions of half the icon's width (defaults 0.45 and 0.08). `outline`: a colour, `"auto"`, or absent for none. Not drawn on minimap icons. |
-| `scale` | 0.5 to 2 | 1 | Size about the centre (not on minimap icons). |
+| `scale` | 0.5 to 3 | 1 | Size about the centre (not on minimap icons). Past what fits in the icon's own texture, axidps draws it bigger on screen (not the squad list's commander and lieutenant badges). Older axidps versions stop at 2. |
 | `offsetY` | -0.5 to 0.5 | 0 | Moves the icon down by this fraction of its height. |
 | `opacity` | 0 to 1 | 1 | 0 hides the icon. |
 
