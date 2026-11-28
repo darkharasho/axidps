@@ -240,6 +240,7 @@ fn one(p: &Plugin) -> Value {
             "windows": m.windows.iter().map(|w| json!({
                 "id": w.id, "title": w.title, "entry": w.entry, "description": w.description,
                 "icon": w.icon, "open": w.open, "place": w.place.as_str(),
+                "in": w.shown.as_str(),
                 "settings": w.settings,
             })).collect::<Vec<_>>(),
             "bundled": p.bundled,
@@ -433,6 +434,16 @@ mod tests {
         let j = to_page_json(&r);
         assert_eq!(j[0]["trust"], "bundled");
         assert_eq!(j[0]["store"], false);
+    }
+
+    #[test]
+    fn page_json_carries_window_in() {
+        let mut p = plugin("x.y", false, &[], &[]);
+        let j = to_page_json(std::slice::from_ref(&p));
+        assert_eq!(j[0]["windows"][0]["in"], "overlay");
+        p.manifest.as_mut().unwrap().windows[0].shown = crate::manifest::Shown::Hub;
+        let j = to_page_json(std::slice::from_ref(&p));
+        assert_eq!(j[0]["windows"][0]["in"], "hub");
     }
 
     #[test]

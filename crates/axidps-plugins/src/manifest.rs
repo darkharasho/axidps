@@ -25,6 +25,22 @@ impl Place {
     }
 }
 
+/// Where a window is drawn: as an overlay window, or as a page in the hub's Options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shown {
+    Overlay,
+    Hub,
+}
+
+impl Shown {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Shown::Overlay => "overlay",
+            Shown::Hub => "hub",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowDef {
     pub id: String,
@@ -34,6 +50,7 @@ pub struct WindowDef {
     pub icon: String,
     pub open: bool,
     pub place: Place,
+    pub shown: Shown,
     /// The settings the hub shows for this window, checked and with defaults filled in.
     pub settings: Vec<Value>,
 }
@@ -365,6 +382,15 @@ fn parse_window(w: &Value, i: usize, out: &mut Vec<String>) -> Option<WindowDef>
             Place::BesideMeter
         }
     };
+    let shown = match o.get("in") {
+        None => Shown::Overlay,
+        Some(Value::String(s)) if s == "overlay" => Shown::Overlay,
+        Some(Value::String(s)) if s == "hub" => Shown::Hub,
+        Some(_) => {
+            out.push(format!("{ctx}in: must be \"overlay\" or \"hub\""));
+            Shown::Overlay
+        }
+    };
     let settings = parse_settings(o.get("settings"), &format!("windows[{i}].settings"), out);
     if out.len() != before {
         return None;
@@ -377,6 +403,7 @@ fn parse_window(w: &Value, i: usize, out: &mut Vec<String>) -> Option<WindowDef>
         icon,
         open,
         place,
+        shown,
         settings,
     })
 }
@@ -771,6 +798,29 @@ mod tests {
         assert!(e.len() > 1);
         let e = problems(&with(|v| v["id"] = "X".into()), &tmp()).unwrap_err();
         assert!(e[0].starts_with("id:"));
+    }
+
+    fn win_with(extra: &str) -> Vec<u8> {
+        format!(r#"{{"id":"abc","name":"n","version":"1.0.0","api":1,"windows":[{{"id":"w","title":"t","entry":"a.html"{extra}}}]}}"#).into_bytes()
+    }
+
+    #[test]
+    fn window_in_defaults_to_overlay() {
+        let m = parse(&win_with(""), &tmp()).unwrap();
+        assert_eq!(m.windows[0].shown, Shown::Overlay);
+    }
+
+    #[test]
+    fn window_in_hub() {
+        let m = parse(&win_with(r#","in":"hub""#), &tmp()).unwrap();
+        assert_eq!(m.windows[0].shown, Shown::Hub);
+        assert_eq!(Shown::Hub.as_str(), "hub");
+    }
+
+    #[test]
+    fn window_in_bad_is_error() {
+        let e = parse(&win_with(r#","in":"panel""#), &tmp()).unwrap_err();
+        assert!(e.contains(r#"windows[0].in: must be "overlay" or "hub""#), "{e}");
     }
 
     #[test]
