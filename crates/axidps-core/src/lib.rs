@@ -1,5 +1,6 @@
 //! App-side brain: the agent registry and the WvW fight start/end rules.
 
+pub mod around;
 pub mod assemble;
 pub mod boons;
 pub mod buff_tables;
