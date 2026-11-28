@@ -521,7 +521,7 @@ impl Core {
             if !newer(&new.version, &have.version) {
                 continue;
             }
-            let level = if l.approved(&new, &self.signed) { Trust::Verified } else { Trust::Unverified };
+            let level = l.cleared(&new, &self.signed).unwrap_or(Trust::Unverified);
             if !install::auto_update_ok(m, p.trust.level, &new, level) {
                 println!("store: {id} {} needs the player's OK to update", new.version);
                 continue;
@@ -562,7 +562,7 @@ impl Core {
                 "id": id, "name": raw.name, "author": raw.author, "description": raw.description,
                 "icon": raw.icon, "repo": raw.repo,
                 "version": shown.map(|s| s.version.clone()),
-                "trust": if offer.is_some_and(|o| l.approved(o, &self.signed)) { "verified" } else { "unverified" },
+                "trust": offer.and_then(|o| l.cleared(o, &self.signed)).unwrap_or(Trust::Unverified).as_str(),
                 "awaiting": l.awaiting_review(&self.signed),
                 "permissions": shown.map(|s| s.permissions.clone()).unwrap_or_default(),
                 "network": shown.map(|s| s.network.clone()).unwrap_or_default(),
@@ -727,9 +727,14 @@ mod tests {
 
         /// A package for `ID` `version` asking for `network`, downloadable; its index entry.
         fn publish(&self, version: &str, network: &[&str]) -> Value {
+            self.publish_as(version, &["fight"], network)
+        }
+
+        /// As `publish`, asking for `permissions` too.
+        fn publish_as(&self, version: &str, permissions: &[&str], network: &[&str]) -> Value {
             let manifest = json!({
                 "id": ID, "name": "Card", "version": version, "api": 1,
-                "permissions": ["fight"], "network": network,
+                "permissions": permissions, "network": network,
                 "windows": [{"id": "card", "title": "Card", "entry": "card.html"}],
             });
             let files: Vec<(String, Vec<u8>)> = vec![
@@ -746,7 +751,7 @@ mod tests {
             let v = json!({
                 "version": version, "url": url, "sha256": install::sha256_hex(&zip),
                 "tree": axidps_plugins::tree::hex(&axidps_plugins::tree::hash_files(&files)),
-                "permissions": ["fight"], "network": network, "api": 1,
+                "permissions": permissions, "network": network, "api": 1,
             });
             self.net.set(&url, zip);
             v
@@ -1004,6 +1009,47 @@ mod tests {
         let ev = ask(&mut s, json!({"update": ID}));
         assert_eq!(t.record().plugins[ID].version, "1.3.0");
         assert_eq!(rescans(&ev), 1);
+    }
+
+    fn standing(grant: &[&str]) -> Value {
+        approver_signed("standing", json!({"id": ID, "grant": grant, "signed": "2026-11-27"}))
+    }
+
+    #[test]
+    fn card_trust_approved_under_standing() {
+        let t = t();
+        let v = t.publish_as("1.0.0", &["fight", "textures"], &[]);
+        t.serve(vec![v], json!({"standing": [standing(&["textures"])]}));
+        let mut s = t.store();
+        let p = page(&ask(&mut s, json!("refresh")));
+        assert_eq!(card(&p)["trust"], "approved");
+    }
+
+    #[test]
+    fn auto_update_installs_standing_covered_bump() {
+        let t = t();
+        let v1 = t.publish_as("1.0.0", &["fight", "textures"], &[]);
+        t.serve(vec![v1.clone()], json!({"approvals": [approval(&v1)]}));
+        let mut s = t.store();
+        ask(&mut s, json!("refresh"));
+        ask(&mut s, json!({"install": ID}));
+        assert_eq!(t.record().plugins[ID].version, "1.0.0");
+
+        // 1.1.0 isn't read by anyone, but the standing approval covers it: it goes live.
+        let v11 = t.publish_as("1.1.0", &["fight", "textures"], &[]);
+        t.serve(vec![v1.clone(), v11.clone()],
+                json!({"approvals": [approval(&v1)], "standing": [standing(&["textures"])]}));
+        let ev = ask(&mut s, json!("refresh"));
+        assert_eq!(t.record().plugins[ID].version, "1.1.0");
+        assert_eq!(card(&page(&ev))["trust"], "approved");
+
+        // 1.2.0 asks for world too: offered only once someone approves it.
+        let v12 = t.publish_as("1.2.0", &["fight", "textures", "world"], &[]);
+        t.serve(vec![v1.clone(), v11, v12],
+                json!({"approvals": [approval(&v1)], "standing": [standing(&["textures"])]}));
+        let ev = ask(&mut s, json!("refresh"));
+        assert_eq!(t.record().plugins[ID].version, "1.1.0");
+        assert_eq!(card(&page(&ev))["update"], Value::Null);
     }
 
     #[test]

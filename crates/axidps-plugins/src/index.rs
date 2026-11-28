@@ -6,7 +6,8 @@ use crate::keys::Keys;
 use crate::logline::clean;
 use crate::manifest::valid_id;
 use crate::sign::verify_bytes;
-use crate::trust::Signed;
+use crate::manifest::{Level, level};
+use crate::trust::{Signed, Trust};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 
@@ -206,14 +207,32 @@ impl Listing {
             })
     }
 
-    /// The version the store offers: the newest approved one when any is approved, else the
-    /// newest. Revoked versions are never offered.
-    pub fn offer(&self, signed: &Signed) -> Option<&Version> {
-        let live = || self.versions.iter().rev().filter(|v| !self.pulled(v, signed));
-        live().find(|v| self.approved(v, signed)).or_else(|| live().next())
+    /// How far `v` is cleared to load with its deeper permissions: Verified by its own
+    /// approval, or Approved when a standing approval for this plugin (not revoked) grants every
+    /// deeper permission it asks for, and it asks for at least one. None otherwise.
+    pub fn cleared(&self, v: &Version, signed: &Signed) -> Option<Trust> {
+        if self.approved(v, signed) {
+            return Some(Trust::Verified);
+        }
+        let revoked = signed
+            .revoked
+            .as_ref()
+            .is_some_and(|r| r.standing.iter().any(|(id, _)| *id == self.id));
+        let grant = signed.standing.iter().find(|s| s.id == self.id).map(|s| &s.grant)?;
+        let deeper: Vec<&String> =
+            v.permissions.iter().filter(|p| level(p) == Some(Level::Deeper)).collect();
+        let covered = !deeper.is_empty() && deeper.iter().all(|p| grant.contains(p));
+        (!revoked && !self.pulled(v, signed) && covered).then_some(Trust::Approved)
     }
 
-    /// A version newer than the offered (approved) one is waiting for review.
+    /// The version the store offers: the newest cleared one (approved, or covered by a
+    /// standing approval) when any is, else the newest. Revoked versions are never offered.
+    pub fn offer(&self, signed: &Signed) -> Option<&Version> {
+        let live = || self.versions.iter().rev().filter(|v| !self.pulled(v, signed));
+        live().find(|v| self.cleared(v, signed).is_some()).or_else(|| live().next())
+    }
+
+    /// A version newer than the offered (cleared) one is waiting for review.
     pub fn awaiting_review(&self, signed: &Signed) -> bool {
         let Some(offered) = self.offer(signed) else { return false };
         self.versions
@@ -313,6 +332,77 @@ pub(crate) mod tests {
         let k = Keys { approvers: keys().approvers, index: vec![] };
         assert!(parse(&bytes, &sig, &k).is_err());
         assert!(parse(&bytes, "", &keys()).is_err());
+    }
+
+    fn version_of(v: &str, perms: &[&str]) -> Version {
+        Version {
+            version: v.into(),
+            url: format!("https://example.com/{v}.zip"),
+            sha256: "0".repeat(64),
+            tree: h('a'),
+            permissions: perms.iter().map(|p| p.to_string()).collect(),
+            network: vec![],
+            api: 1,
+        }
+    }
+
+    fn textures_listing() -> Listing {
+        Listing {
+            id: "someone.tags".into(),
+            name: "Tags".into(),
+            author: "someone".into(),
+            description: String::new(),
+            icon: "plug".into(),
+            repo: "someone/tags".into(),
+            versions: vec![version_of("1.0.0", &["textures"]), version_of("1.1.0", &["textures"]),
+                           version_of("1.2.0", &["textures", "world"])],
+        }
+    }
+
+    fn standing_for(id: &str, grant: &[&str]) -> Signed {
+        Signed {
+            standing: vec![crate::trust::Standing {
+                id: id.into(),
+                grant: grant.iter().map(|g| g.to_string()).collect(),
+            }],
+            ..Signed::default()
+        }
+    }
+
+    #[test]
+    fn offer_takes_standing_covered_version() {
+        let l = textures_listing();
+        let s = standing_for("someone.tags", &["textures"]);
+        assert_eq!(l.offer(&s).unwrap().version, "1.1.0");
+        assert_eq!(l.cleared(&l.versions[1], &s), Some(crate::trust::Trust::Approved));
+        assert_eq!(l.cleared(&l.versions[1], &standing_for("other.id", &["textures"])), None);
+    }
+
+    #[test]
+    fn standing_doesnt_clear_extra_permission() {
+        let l = textures_listing();
+        let s = standing_for("someone.tags", &["textures"]);
+        assert_eq!(l.cleared(&l.versions[2], &s), None, "world isn't in the grant");
+        assert!(l.awaiting_review(&s), "1.2.0 waits for review");
+        let mut gone = s.clone();
+        gone.revoked = Some(Revoked {
+            seq: 1,
+            standing: vec![("someone.tags".into(), "why".into())],
+            ..Revoked::default()
+        });
+        assert_eq!(l.cleared(&l.versions[1], &gone), None, "a revoked standing approval clears nothing");
+    }
+
+    #[test]
+    fn awaiting_review_false_when_standing_covers() {
+        let mut l = textures_listing();
+        l.versions.pop();
+        let s = standing_for("someone.tags", &["textures", "world"]);
+        assert_eq!(l.offer(&s).unwrap().version, "1.1.0");
+        assert!(!l.awaiting_review(&s));
+        // A version asking for no deeper permission isn't "approved" by a standing approval.
+        l.versions.push(version_of("1.3.0", &["fight"]));
+        assert_eq!(l.cleared(&l.versions[2], &s), None);
     }
 
     #[test]

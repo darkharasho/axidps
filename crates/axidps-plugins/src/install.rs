@@ -242,9 +242,10 @@ pub fn uninstall(plugins_dir: &Path, store_dir: &Path, id: &str) -> Result<(), S
 }
 
 /// An update may install without asking only if it asks for nothing new and keeps the same
-/// trust level.
+/// trust level (Verified and Permissions approved count as the same).
 pub fn auto_update_ok(installed: &Manifest, old_level: Trust, new: &Version, new_level: Trust) -> bool {
-    old_level == new_level
+    let tier = |t| if t == Trust::Approved { Trust::Verified } else { t };
+    tier(old_level) == tier(new_level)
         && new.permissions.iter().all(|p| installed.permissions.contains(p))
         && new.network.iter().all(|n| installed.network.contains(n))
 }
@@ -882,6 +883,10 @@ mod tests {
         assert!(!auto_update_ok(&m, Trust::Verified, &v, Trust::Verified));
         assert!(!auto_update_ok(&m, Trust::Verified, &base, Trust::Unverified));
         assert!(!auto_update_ok(&m, Trust::Unverified, &base, Trust::Verified));
+        // Verified and Permissions approved are the same tier; Unverified isn't.
+        assert!(auto_update_ok(&m, Trust::Verified, &base, Trust::Approved));
+        assert!(auto_update_ok(&m, Trust::Approved, &base, Trust::Verified));
+        assert!(!auto_update_ok(&m, Trust::Unverified, &base, Trust::Approved));
         // Asking for less is fine.
         let mut v = base.clone();
         v.network.clear();
