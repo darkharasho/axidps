@@ -2477,7 +2477,9 @@ function builderAct(hw, b) {
 
 const PLUGIN_FILTERS = [["all", "Everything"], ["installed", "Installed"], ["updates", "Has an update"]];
 const PLUGIN_BUTTON = {install: "Install", update: "Update", replace: "Replace yours"};
-const PLUGIN_TRUST = {verified: "v", unverified: "u", revoked: "r"};
+const PLUGIN_TRUST = {verified: "v", approved: "v", unverified: "u", revoked: "r"};
+const TRUST_TEXT = {approved: "Permissions approved"};
+const APPROVED = "darkharasho approved what this plugin can do. This version's code hasn't been read.";
 const filterOf = f => PLUGIN_FILTERS.some(x => x[0] === f) ? f : "all";
 const UNCHECKED = "Not checked yet. Nobody has looked at what this plugin does.";
 // A plugin's buttons, as on its Plugins row: Update/Install, Turn on/off (or why it can't be on),
@@ -2553,13 +2555,14 @@ function renderPlugins(w) {
     const uses = r.uses.map(u => u.deep ? `<em>${esc(u.text)}</em>` : esc(u.text)).join(" ");
     const who = r.local ? "Installed from your computer" : r.author;
     return `<div class="srow ${PLUGIN_TRUST[r.trust] || "u"}" data-s="${esc(r.id)}" data-p="${esc(r.id)}"><div class="rtop">` +
-      `<span class="nm"><b>${esc(r.title)}</b>${r.trust ? `<span class="trust">${esc(r.trust)}</span>` : ""}` +
+      `<span class="nm"><b>${esc(r.title)}</b>${r.trust ? `<span class="trust">${esc(TRUST_TEXT[r.trust] || r.trust)}</span>` : ""}` +
       `${who ? `<span class="au">${esc(who)}</span>` : ""}</span>` +
       `<span class="ver${r.store === "update" ? " up" : ""}">${r.version ? esc(r.version) : ""}${r.installed ? ` <span class="have">Installed</span>` : ""}</span>` +
       `<span class="sa">${plugActs(r)}</span></div>` +
       `${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}` +
       `${uses ? `<div class="uses">${uses}</div>` : ""}` +
       `${r.unchecked ? `<div class="snote bad">${esc(UNCHECKED)}</div>` : ""}` +
+      `${r.trust === "approved" ? `<div class="snote">${esc(APPROVED)}</div>` : ""}` +
       `${r.note && r.note !== r.reason ? `<div class="snote${r.bad ? " bad" : ""}">${esc(r.note)}</div>` : ""}</div>`;
   }).join("");
   return nUpdates;

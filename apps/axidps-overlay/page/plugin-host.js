@@ -157,9 +157,11 @@
       .concat(net.filter(x => typeof x === "string").map(h => "Talks to " + h));
   }
 
-  // A player plugin's badge, from the host's trust level: Verified, Unverified (also when the host
-  // gives none), DEV (a developer pass) or Revoked; bundled plugins have none.
-  const TRUST_LABEL = {verified: "Verified", unverified: "Unverified", dev: "DEV", revoked: "Revoked"};
+  // A player plugin's badge, from the host's trust level: Verified, Permissions approved (a
+  // standing approval covers it), Unverified (also when the host gives none), DEV (a developer
+  // pass) or Revoked; bundled plugins have none.
+  const TRUST_LABEL = {verified: "Verified", approved: "Permissions approved", unverified: "Unverified",
+    dev: "DEV", revoked: "Revoked"};
   function trustLabel(p) {
     if (!p || p.bundled === true || p.trust === "bundled") return null;
     return own(TRUST_LABEL, p.trust) ? TRUST_LABEL[p.trust] : "Unverified";
@@ -221,7 +223,7 @@
   // the query under each filter. `list` (the plugin list) marks installed plugins that were
   // revoked. Row action: "install" | "update" | "installed" (Uninstall) | "replace" (over the
   // player's own folder, after asking) | "revoked" (installed but turned off; Uninstall only) |
-  // null (needs a newer axidps). trust: "verified" |
+  // null (needs a newer axidps). trust: "verified" | "approved" (a standing approval) |
   // "unverified" | "revoked". uses: usesOf plus "You have <v>." for an update and the awaiting-
   // review sentence. note: the player's own copy, the revocation or the last error (bad: true for
   // those last two).
@@ -251,7 +253,7 @@
       return {
         id: x.id, title, author: str(x.author), version: str(x.update || x.installed || x.version),
         have: str(x.installed), isUpdate: action === "update",
-        description: str(x.description, 200), trust: revoked ? "revoked" : x.trust === "verified" ? "verified" : "unverified",
+        description: str(x.description, 200), trust: revoked ? "revoked" : x.trust === "verified" || x.trust === "approved" ? x.trust : "unverified",
         uses, action, note, bad: !!(revoked || err), busy: x.busy === true,
       };
     });
@@ -286,7 +288,7 @@
       l("jo.dps-log", "Fight Log", "jo", "Uploads your fights to a log site when they end.",
         {trust: "verified", network: ["dps.report"], installed: "1.0.0", update: "1.1.0", version: "1.1.0"}),
       l("mo.tag-colors", "Tag Colours", "mo", "Commander tags in colours you can tell apart.",
-        {trust: "verified", permissions: ["textures"], installed: "2.0.1", version: "2.0.1"}),
+        {trust: "approved", permissions: ["textures"], installed: "2.0.1", version: "2.0.1"}),
       l("kat.boon-board", "Boon Board", "kat", "Your squad's boon uptime, one row per subgroup.",
         {trust: "verified"}),
       l("rin.squad-map", "Squad Map", "rin", "Where everyone in your squad is, on a small map.",
