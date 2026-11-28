@@ -773,6 +773,16 @@
       const cl = ent.w.el && ent.w.el.classList;
       if (cl) { cl.toggle("nobar", !o.bar); cl.toggle("clear", o.clear); }
       ent.w.clear = o.clear;
+      if (ent.hello) this.postFrame(ent);
+    },
+    // What the frame sits in: a see-through window (clear) or a hub page (page). The SDK marks its
+    // body with them, so text stays readable straight over the game.
+    postFrame(ent) {
+      const clear = !ent.hub && windowOpts(this.env.saved(), ent.fullId).clear === true;
+      const key = clear + "," + !!ent.hub;
+      if (key === ent.frameSent) return;
+      ent.frameSent = key;
+      this.post(ent, "frame", {clear, page: !!ent.hub});
     },
     mount(ent, win) {
       const f = document.createElement("iframe");
@@ -889,6 +899,7 @@
           this.post(ent, "settings", {value: this.settingsOf(ent)});
           this.post(ent, "look", env.look());
           this.post(ent, "edit", {on: !!env.ui.editing});
+          this.postFrame(ent);
           if (this.hasFight(ent)) this.post(ent, "fight", {feed: env.feed()});
           if (this.lastPerf) this.post(ent, "perf", {perf: this.lastPerf});
           ent.lookStale = ent.feedStale = ent.perfStale = false;

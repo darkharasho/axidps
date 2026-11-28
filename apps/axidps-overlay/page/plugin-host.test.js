@@ -851,7 +851,7 @@ test("hello sends declared defaults under the stored values", () => {
   assert.deepStrictEqual(s.value, { big: false, rows: 4, mine: 1 });
 });
 
-test("setWindowOpt saves pwin and applies the classes; the frame never hears of it", () => {
+test("setWindowOpt saves pwin and applies the classes; the frame hears only whether it is see-through", () => {
   const saved = { cfg: {} };
   const { h, ent, toggles, reports } = settingsHost(saved);
   ent.hello = true;
@@ -867,8 +867,10 @@ test("setWindowOpt saves pwin and applies the classes; the frame never hears of 
   assert.strictEqual(h.setWindowOpt("x.y/a", "nope", true), false);
   assert.strictEqual(h.setWindowOpt("x.y/a", "bar", "no"), false);
   assert.strictEqual(h.setWindowOpt("x.y/b", "bar", false), false);
+  // Only whether it is see-through, never the saved options themselves.
   assert.ok(!JSON.stringify(ent.posted).includes("pwin"));
-  assert.deepStrictEqual(ent.posted, []);
+  assert.deepStrictEqual(ent.posted.map(m => [m.type, Object.keys(m).sort().join()]),
+    [["frame", "axidps,clear,page,type"], ["frame", "axidps,clear,page,type"]]);
 });
 
 test("add applies saved window options", () => {
@@ -1113,3 +1115,19 @@ test("hubPages shows a previewed plugin on in the browser demo only", () => {
   assert.strictEqual(ph.hubPages([p], {}, { hosted: true })[0].on, false);
   assert.strictEqual(ph.hubPages([p], {})[0].on, false);
 });
+
+test("frames are told whether their window is see-through or a hub page", () => withFrames(() => {
+  const p = plugin("x.y", { windows: [hubWin("s"), win("w")] });
+  const saved = { plugins: { "x.y": { enabled: true, granted: ["fight"] } }, pos: {}, open: {}, cfg: {}, pwin: { "x.y/w": { bar: true, clear: true } } };
+  const { h } = hubHost([p], saved);
+  h.setList([p]);
+  const [hubEnt, winEnt] = h.entries;
+  for (const e of h.entries) { e.posted = []; e.cw = { postMessage: m => e.posted.push(JSON.parse(JSON.stringify(m))) }; }
+  h.handle(hubEnt, { type: "hello" });
+  h.handle(winEnt, { type: "hello" });
+  const frame = e => e.posted.filter(m => m.type === "frame").map(m => [m.clear, m.page]);
+  assert.deepStrictEqual(frame(hubEnt), [[false, true]]);
+  assert.deepStrictEqual(frame(winEnt), [[true, false]]);
+  h.setWindowOpt("x.y/w", "clear", false);
+  assert.deepStrictEqual(frame(winEnt).at(-1), [false, false]);
+}));

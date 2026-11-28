@@ -208,3 +208,19 @@ test("outline.set posts a copy, clear posts null, bad input logs", () => {
   assert.match(last().msg, /outline.set needs an object/);
   assert.strictEqual(w.posted.length, n + 1);
 });
+
+test("sdk marks the body for a see-through window or a hub page", () => {
+  const w = fakeWin();
+  const cls = new Set();
+  w.document = { documentElement: { style: { setProperty() {} } },
+    body: { getBoundingClientRect: () => ({ width: 300, height: 40 }),
+      classList: { toggle: (c, on) => { if (on) cls.add(c); else cls.delete(c); } } } };
+  const sdk = makeSdk(w);
+  let got = null;
+  sdk.on("frame", f => { got = f; });
+  w.fromPage({ axidps: 1, type: "frame", clear: true, page: false });
+  assert.deepStrictEqual([...cls].sort(), ["axidps-clear"]);
+  assert.deepStrictEqual(got, { clear: true, page: false });
+  w.fromPage({ axidps: 1, type: "frame", clear: false, page: true });
+  assert.deepStrictEqual([...cls].sort(), ["axidps-page"]);
+});
