@@ -187,7 +187,7 @@ Text the page shows (titles, names, statuses) is cut to 80 characters.
 | `world` | deeper | "Draws over the game world" |
 | `position` | deeper | "Reads your position and camera" |
 | `squad` | deeper | "Reads your squad and party" |
-| `enemies` | deeper | "Reads enemy players seen in combat" |
+| `enemies` | deeper | "Reads players around you, enemies included" |
 | `textures` | deeper | "Changes how the game's icons look (commander tags, markers, targets)" |
 | `outline` | privileged | "Outlines your character" |
 
@@ -197,10 +197,10 @@ The hub card lists these lines. When the player clicks Enable, they allow exactl
 plugin asks for at that moment. If a later version of the manifest asks for more, the plugin is
 off until they click Enable again.
 
-Only `fight` works today. A plugin that names a deeper permission is listed with
-"Needs verification" and is never loaded. Deeper permissions will need the axidps team's review
-of the plugin, which arrives with the plugin store in a later release. `textures` has its API
-([`axidps.textures`](#axidpstextures)); the others don't have one yet.
+A plugin that names a deeper permission is listed with "Needs verification" and is not loaded
+until the axidps registry approves that version of the plugin. `textures` has its API
+([`axidps.textures`](#axidpstextures)) and `enemies` has the [players feed](#the-players-feed).
+`world`, `position` and `squad` have no API yet.
 
 `outline` is reserved for plugins built into axidps; any other plugin that names it doesn't load.
 
@@ -235,6 +235,7 @@ don't stop other handlers.
 | `type` | `value` |
 | --- | --- |
 | `"fight"` | The live feed (see [The live feed](#the-live-feed)), or `null` until axidps core has sent one. Only sent if the manifest names `fight`. |
+| `"players"` | The players feed (see [The players feed](#the-players-feed)), or `null` until core sends one. Only sent if the manifest names `enemies`. |
 | `"look"` | `{theme, tokens, style, opacity, compact, rows}` (see [Theming](#theming)). |
 | `"edit"` | `true` while the player is arranging windows. Your frame gets no mouse input then. |
 | `"settings"` | This window's saved settings (`{}` if none). |
@@ -415,6 +416,50 @@ Each player row:
 | `heal_full` | `true` if the healing numbers are complete (you, and players sharing their heals). Otherwise they only count what passed between that player and you. |
 | `boons` | Boon uptime and generation: `{"<boon id>": [up, self, group, squad]}`, in milliseconds since the fight started (stack-milliseconds for Might and Stability). `group` and `squad` are per target: the time the player kept the boon up on subgroup mates (or squad mates), averaged over them. Only boons with a nonzero value appear; the field is left out when there are none. The values can go down a little. See [Boons](../custom-windows-stats.md#boons). |
 
+## The players feed
+
+The `players` event's value: who is around you, by team and specialization, and who fought this
+fight. Only plugins whose manifest names `enemies` get it, and it is never part of the `fight`
+feed. axidps core writes it with the live feed, at most twice a second and only when it
+changes, also between fights, since players arrive and leave then.
+
+```json
+{
+  "you": {"team": 2},
+  "teams": [{"team": 2, "colour": "blue", "name": "Blue"},
+            {"team": 5, "colour": "red", "name": "Red"}],
+  "players": [
+    {"team": 5, "prof": "Guardian", "spec": "Firebrand", "squad": false, "self": false,
+     "here": true, "fought": true}
+  ],
+  "fight": {"active": true}
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `you` | `{team}`: your team id, or `null` before it is known. |
+| `teams` | One entry per team among the rows, plus yours: `{team, colour, name}`. `colour` is `"red"`, `"blue"`, `"green"` or `null` (no colour, for example outside WvW); `name` is `"Red"`, `"Blue"` or `"Green"`, else `"Team N"`. |
+| `players` | One row per player in range now or who fought this fight, you included. Pets, minions, clones and NPCs are never rows. Sorted by team, then spec, then `squad`. |
+| `fight` | `{active}`: whether a fight is running. Between fights, `fought` shows the last fight and resets when the next one starts. |
+| `truncated` | `true` when there were more than 400 rows and the rest were left out. Absent otherwise. |
+
+Each row has seven fields:
+
+| Field | Meaning |
+| --- | --- |
+| `team` | The player's team id, or `null` if not known. |
+| `prof` | Profession name, or `null` if not known. |
+| `spec` | Elite specialization name, or the profession name when there is none; `null` if not known. |
+| `squad` | `true` if the player is in your squad. |
+| `self` | `true` for you. |
+| `here` | `true` if the player is in range now. A player who fought and then left range keeps a row with `here: false` until the next fight starts. |
+| `fought` | `true` if, this fight, the player (or their pet, minion or clone) hit a player on another team for damage, or applied a condition to one. |
+
+Rows are anonymous: they carry no character or account names, no ids, no positions, and nothing
+that tells one player from another between updates. Their order says nothing about when a player
+arrived. A map change empties `teams` and `players` until the new map's players arrive.
+
 ## Theming
 
 The SDK sets the player's theme on your page as CSS variables and keeps them current. Use them
@@ -520,9 +565,10 @@ Page to frame:
 | `look` | `theme`, `tokens`, `style`, `opacity`, `compact`, `rows` | The theme and display settings. |
 | `edit` | `on` | Arrange mode on or off. |
 | `fight` | `feed` | The live feed (only with the `fight` permission). |
+| `players` | `players` | The players feed (only with the `enemies` permission). |
 | `ping` | `n` | Sent every 2 s; answer with `pong`. |
 
-After `hello` the page sends `ready`, `settings`, `look`, `edit`, then `fight`. The page drops
+After `hello` the page sends `ready`, `settings`, `look`, `edit`, then `fight` and `players` (each only with its permission). The page drops
 any message that isn't one of these with fields of the right types.
 
 ## Versioning

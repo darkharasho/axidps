@@ -467,6 +467,11 @@ impl Processor {
         &self.condi
     }
 
+    /// The WvW team ids by colour slot (red, blue, green), as the poll last sent them.
+    pub fn wvw_teams(&self) -> Teams {
+        self.wvw_teams
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
     }

@@ -84,7 +84,7 @@ b, strong { font-weight: 600; }
   border: 1px solid var(--line-hi); border-radius: var(--rs); white-space: nowrap; pointer-events: none;
   font-size: 11px; z-index: 2147483647; }`;
 
-  const TYPES = ["fight", "look", "edit", "settings", "perf", "frame"];
+  const TYPES = ["fight", "players", "look", "edit", "settings", "perf", "frame"];
   const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
   function str(v) {
     if (typeof v === "string") return v;
@@ -114,7 +114,7 @@ b, strong { font-weight: 600; }
       try { parent.postMessage(Object.assign({axidps: 1, type}, body || {}), "*"); } catch (e) { /* page gone */ }
     };
     const log = (level, msg) => post("log", {level, msg: String(msg).slice(0, 1000)});
-    const handlers = {fight: [], look: [], edit: [], settings: [], perf: [], frame: []};
+    const handlers = {fight: [], players: [], look: [], edit: [], settings: [], perf: [], frame: []};
     const last = {};
     let info = null;
     const readyQ = [];
@@ -160,6 +160,7 @@ b, strong { font-weight: 600; }
           for (const fn of readyQ.splice(0)) call(fn, clone(info));
           break;
         case "fight": emit("fight", m.feed); break;
+        case "players": emit("players", m.players); break;
         case "look": {
           const l = {theme: m.theme, tokens: m.tokens, style: m.style, opacity: m.opacity, compact: m.compact, rows: m.rows};
           applyLook(l);
@@ -239,7 +240,7 @@ b, strong { font-weight: 600; }
         if (typeof fn !== "function") return;
         if (info) call(fn, clone(info)); else readyQ.push(fn);
       },
-      // on(type, fn): "fight" (the live feed), "look" (theme and display), "edit" (bool),
+      // on(type, fn): "fight" (the live feed), "players" (the players around you; needs `enemies`), "look" (theme and display), "edit" (bool),
       // "settings" (this window's settings), "perf" ({fps, ping, tick_rate}, once a second;
       // 0 = unknown), "frame" ({clear, page}: a see-through window or a page in the hub's Options;
       // the body gets the classes axidps-clear and axidps-page too). A handler added late gets

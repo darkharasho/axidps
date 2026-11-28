@@ -54,7 +54,7 @@ test("grantsOf and permissionLines", () => {
     ["Reads your fight data", "Talks to api.example.com", "Talks to *.cdn.example.com"]);
   assert.deepStrictEqual(ph.permissionLines(plugin("x.y", { permissions: ["fight", "world", "position", "squad", "enemies"] })),
     ["Reads your fight data", "Draws over the game world", "Reads your position and camera",
-      "Reads your squad and party", "Reads enemy players seen in combat"]);
+      "Reads your squad and party", "Reads players around you, enemies included"]);
 });
 
 test("migrateSaved moves the plugin windows' position and open state back to the built-in ids, once", () => {
@@ -417,6 +417,50 @@ test("a frame that stalls while closed and never changed gets nothing extra", ()
   e.stalled = true;
   h.handle(e, { axidps: 1, type: "pong", n: 1 });
   assert.deepStrictEqual(kinds(e), [], "nothing missed, nothing resent");
+});
+
+test("players_go_to_enemies_plugins", () => {
+  const { h, state, ent } = feedHost();
+  state.feed = { n: 1, around: { players: [1] } };
+  const en = ent("a.enemies", ["enemies"]);
+  h.fight(state.feed);
+  assert.deepStrictEqual(kinds(en), ["players"]);
+  assert.deepStrictEqual(en.posted[0].players.players, [1]);
+});
+
+test("fight_only_never_sees_around", () => {
+  const { h, state, ent } = feedHost();
+  state.feed = { n: 1, around: { players: [1] } };
+  const e = ent("a.fightonly", ["fight"]);
+  h.fight(state.feed);
+  h.handle(e, { axidps: 1, type: "hello" });
+  e.stalled = true;
+  h.fight(state.feed);
+  h.handle(e, { axidps: 1, type: "pong", n: 1 });
+  assert.ok(kinds(e).filter(k => k === "fight").length >= 3, "fight posted by fight, hello and catch-up");
+  assert.ok(!kinds(e).includes("players"));
+  for (const m of e.posted) if (m.type === "fight") {
+    assert.ok(!("around" in m.feed), "no around key");
+    assert.strictEqual(m.feed.n, 1);
+  }
+  assert.ok("around" in state.feed, "the page's own feed is untouched");
+});
+
+test("hidden_frame_catches_up_on_players", () => {
+  const { h, state, ent } = feedHost();
+  state.feed = { n: 1, around: { players: [1] } };
+  const e = ent("a.hidden", ["enemies"]);
+  state.closed.add(e.w);
+  h.fight(state.feed);
+  h.sync();
+  assert.deepStrictEqual(kinds(e), []);
+  state.feed = { n: 2, around: { players: [2] } };
+  state.closed.delete(e.w);
+  h.sync();
+  assert.deepStrictEqual(kinds(e), ["players"]);
+  assert.deepStrictEqual(e.posted[0].players, { players: [2] });
+  h.sync();
+  assert.strictEqual(e.posted.length, 1);
 });
 
 test("accept: textures rules are a bounded list", () => {

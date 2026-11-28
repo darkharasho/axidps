@@ -158,6 +158,11 @@ impl Registry {
             .filter(|a| !self.removed.contains(&a.id))
     }
 
+    /// Whether `id` is known and has not been removed since its last add.
+    pub fn is_live(&self, id: u32) -> bool {
+        self.agents.contains_key(&id) && !self.removed.contains(&id)
+    }
+
     pub fn pov(&self) -> Option<u32> {
         self.pov
     }

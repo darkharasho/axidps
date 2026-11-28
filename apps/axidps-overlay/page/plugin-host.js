@@ -20,7 +20,7 @@
     "download", "columns", "plus"];
   const PERMISSION_TEXT = {fight: "Reads your fight data", world: "Draws over the game world",
     position: "Reads your position and camera", squad: "Reads your squad and party",
-    enemies: "Reads enemy players seen in combat",
+    enemies: "Reads players around you, enemies included",
     textures: "Changes how the game's icons look (commander tags, markers, targets)",
     outline: "Outlines your character"};
   const MAX_TEXTURE_RULES = 64;
@@ -824,6 +824,15 @@
         ent.cw.postMessage(Object.assign({axidps: API, type}, body || {}), "*");
       } catch (e) { /* frame gone */ }
     },
+    // Whether a plugin may read the players around you (the feed's `around`).
+    hasPlayers(ent) { return Array.isArray(ent.plugin.permissions) && ent.plugin.permissions.includes("enemies"); },
+    // A feed as two messages' payloads: `fight` is the feed without `around` (what a `fight`
+    // plugin may see), `players` is the `around` object. Either is null when there is none.
+    split(feed) {
+      if (!feed || typeof feed !== "object") return {fight: null, players: null};
+      const {around, ...fight} = feed;
+      return {fight, players: around === undefined ? null : around};
+    },
     hasFight(ent) { return Array.isArray(ent.plugin.permissions) && ent.plugin.permissions.includes("fight"); },
     // A window in trouble (not responding, or developer mode's error count) shows its title bar
     // even when the player hid it, so the warning isn't lost.
@@ -906,9 +915,11 @@
           this.post(ent, "look", env.look());
           this.post(ent, "edit", {on: !!env.ui.editing});
           this.postFrame(ent);
-          if (this.hasFight(ent)) this.post(ent, "fight", {feed: env.feed()});
+          const sp = this.split(env.feed());
+          if (this.hasFight(ent)) this.post(ent, "fight", {feed: sp.fight});
+          if (this.hasPlayers(ent)) this.post(ent, "players", {players: sp.players});
           if (this.lastPerf) this.post(ent, "perf", {perf: this.lastPerf});
-          ent.lookStale = ent.feedStale = ent.perfStale = false;
+          ent.lookStale = ent.feedStale = ent.perfStale = ent.playersStale = false;
           break;
         }
         case "resize": {
@@ -1018,17 +1029,31 @@
     catchUp(ent) {
       if (!this.fed(ent)) return;
       if (ent.lookStale) this.post(ent, "look", this.env.look());
-      if (ent.feedStale && this.hasFight(ent)) this.post(ent, "fight", {feed: this.env.feed()});
+      if ((ent.feedStale && this.hasFight(ent)) || (ent.playersStale && this.hasPlayers(ent))) {
+        const sp = this.split(this.env.feed());
+        if (ent.feedStale && this.hasFight(ent)) this.post(ent, "fight", {feed: sp.fight});
+        if (ent.playersStale && this.hasPlayers(ent)) this.post(ent, "players", {players: sp.players});
+      }
       if (ent.perfStale && this.lastPerf) this.post(ent, "perf", {perf: this.lastPerf});
-      ent.lookStale = ent.feedStale = ent.perfStale = false;
+      ent.lookStale = ent.feedStale = ent.perfStale = ent.playersStale = false;
     },
     // A window opened or closed (ui.js, after each render): frames that are fed again catch up.
-    sync() { for (const ent of this.entries) if (ent.lookStale || ent.feedStale || ent.perfStale) this.catchUp(ent); },
+    sync() {
+      for (const ent of this.entries) {
+        if (ent.lookStale || ent.feedStale || ent.perfStale || ent.playersStale) this.catchUp(ent);
+      }
+    },
     // Page state the frames follow (ui.js calls these when it changes).
     fight(feed) {
+      const sp = this.split(feed);
       for (const ent of this.entries) {
-        if (!ent.hello || !this.hasFight(ent)) continue;
-        if (this.fed(ent)) this.post(ent, "fight", {feed}); else ent.feedStale = true;
+        if (!ent.hello) continue;
+        if (this.hasFight(ent)) {
+          if (this.fed(ent)) this.post(ent, "fight", {feed: sp.fight}); else ent.feedStale = true;
+        }
+        if (this.hasPlayers(ent)) {
+          if (this.fed(ent)) this.post(ent, "players", {players: sp.players}); else ent.playersStale = true;
+        }
       }
     },
     // The game's frame rate, ping and server tick rate, once a second: no permission needed.

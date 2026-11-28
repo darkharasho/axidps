@@ -73,6 +73,18 @@ test("sdk perf reaches the plugin, and a late handler gets the latest", () => {
   assert.deepStrictEqual(late, { fps: 60, ping: 80, tick_rate: 25 });
 });
 
+test("players_reach_handlers_and_late_handlers_get_latest", () => {
+  const w = fakeWin();
+  const sdk = makeSdk(w);
+  let got = null;
+  sdk.on("players", p => { got = p; });
+  w.fromPage({ axidps: 1, type: "players", players: { x: 1 } });
+  assert.deepStrictEqual(got, { x: 1 });
+  let late = null;
+  sdk.on("players", p => { late = p; });
+  assert.deepStrictEqual(late, { x: 1 });
+});
+
 test("sdk specIcon", () => {
   const sdk = makeSdk(fakeWin());
   assert.strictEqual(sdk.specIcon("Firebrand"), "/_sdk/icons/Firebrand.png");

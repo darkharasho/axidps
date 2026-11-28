@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use axidps_core::around::Around;
 use axidps_core::assemble::{CondiReport, build_log_report};
 use axidps_core::condi::Verdict;
 use axidps_core::live::{self, LiveStats, LiveWriter};
@@ -196,6 +197,7 @@ fn condi_line(r: &CondiReport) -> String {
 /// The live stats feed and where it goes.
 struct Live {
     stats: LiveStats,
+    around: Around,
     writer: LiveWriter,
     /// A write failed and was reported; cleared by the next good write.
     failing: bool,
@@ -393,6 +395,7 @@ impl App {
         let outcome = apply(&mut self.processor, &s);
         if let Some(l) = self.live.as_mut() {
             l.stats.after_step(&self.processor, &s, outcome.as_ref());
+            l.around.after_step(&self.processor, &s);
         }
         self.relay_after_step(&s);
         if let Some(o) = outcome {
@@ -533,27 +536,20 @@ impl App {
                 }
             }
         }
-        let generation = l.stats.generation();
-        let due = if last {
-            l.writer.changed(generation)
-        } else {
-            l.writer.due(now, generation)
-        };
-        if !due {
-            return;
-        }
-        let json = l.stats.snapshot(self.processor.registry(), now_unix_ms());
-        match l.writer.write(now, generation, &json) {
-            Ok(()) => l.failing = false,
-            Err(e) => {
-                if !l.failing {
-                    l.failing = true;
-                    err(format_args!(
-                        "cannot write the live feed {}: {e}",
-                        l.writer.path().display()
-                    ));
-                }
-            }
+        let wrote = live::write_feed(
+            &mut l.writer,
+            &mut l.stats,
+            &l.around,
+            &self.processor,
+            now,
+            now_unix_ms(),
+            last,
+        );
+        if let Some(e) = note_write(&mut l.failing, wrote) {
+            err(format_args!(
+                "cannot write the live feed {}: {e}",
+                l.writer.path().display()
+            ));
         }
     }
 
@@ -780,6 +776,7 @@ fn main() -> ExitCode {
     if args.live_out.as_os_str() != "none" {
         app.live = Some(Live {
             stats: LiveStats::new(),
+            around: Around::new(),
             writer: LiveWriter::new(args.live_out.clone()),
             failing: false,
             settings: ui_json_path(),
@@ -859,6 +856,7 @@ fn main() -> ExitCode {
                     // A new game run: the meter must not show the previous run's last fight.
                     if let Some(l) = app.live.as_mut() {
                         l.stats.clear();
+                        l.around.clear();
                     }
                     said_waiting = false;
                     last_open_err = None;
@@ -937,6 +935,45 @@ fn read_ui_json(path: &std::path::Path) -> Option<serde_json::Value> {
 /// Whether the relay is on in ui.json (on unless switched off).
 fn relay_enabled(v: &serde_json::Value) -> bool {
     v["core"]["relay"].as_bool().unwrap_or(true)
+}
+
+/// Track a feed write's result in `failing`; returns the error when it is a new failure that
+/// should be reported (once, until a write succeeds again).
+fn note_write(failing: &mut bool, wrote: std::io::Result<bool>) -> Option<std::io::Error> {
+    match wrote {
+        Ok(true) => {
+            *failing = false;
+            None
+        }
+        Ok(false) => None,
+        Err(e) => {
+            if *failing {
+                None
+            } else {
+                *failing = true;
+                Some(e)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod write_report_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_write_is_reported_once_until_a_good_write() {
+        let bad = || Err(std::io::Error::other("x"));
+        let mut failing = false;
+        assert!(note_write(&mut failing, bad()).is_some());
+        // Not due (nothing written): still failing, so no second report.
+        assert!(note_write(&mut failing, Ok(false)).is_none());
+        assert!(failing);
+        assert!(note_write(&mut failing, bad()).is_none());
+        assert!(note_write(&mut failing, Ok(true)).is_none());
+        assert!(!failing);
+        assert!(note_write(&mut failing, bad()).is_some());
+    }
 }
 
 #[cfg(test)]
