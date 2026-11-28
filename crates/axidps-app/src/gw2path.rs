@@ -23,12 +23,11 @@ fn game_dir(dir: &Path) -> Option<PathBuf> {
         .file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| n.eq_ignore_ascii_case("bin64"));
-    if is_bin64 {
-        if let Some(parent) = dir.parent() {
-            if has_gw2_exe(parent) {
-                return Some(parent.to_path_buf());
-            }
-        }
+    if is_bin64
+        && let Some(parent) = dir.parent()
+        && has_gw2_exe(parent)
+    {
+        return Some(parent.to_path_buf());
     }
     has_gw2_exe(dir).then(|| dir.to_path_buf())
 }

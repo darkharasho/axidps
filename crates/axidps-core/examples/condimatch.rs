@@ -68,7 +68,7 @@ fn main() {
         let mut tl: std::collections::BTreeMap<u32, Vec<(u64, String)>> = Default::default();
         let mut evs = fight.events.clone();
         evs.sort_by_key(|e| e.0);
-        let mut sweep = |stacks: &mut axidps_core::buffs::Stacks,
+        let sweep = |stacks: &mut axidps_core::buffs::Stacks,
                          model: &mut Vec<(u64, u32, usize)>| {
             for fi in stacks.take_fired() {
                 let n = fi
@@ -118,11 +118,9 @@ fn main() {
                 barrier,
                 ..
             } = ev
-            {
-                if src == pov && b == buff {
+                && src == pov && b == buff {
                     exact.push((t, dst, value, barrier as i32));
                 }
-            }
         }
         stacks.advance(fight.end_ms);
         sweep(&mut stacks, &mut model);

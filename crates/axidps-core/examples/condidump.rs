@@ -12,11 +12,7 @@ fn main() {
     stacks.record_ticks();
     let mut shown = 0;
     let mut last_exact: Vec<(u64, u32, u32, i32)> = vec![];
-    loop {
-        let s = match r.next_step() {
-            Ok(Some(s)) => s,
-            _ => break,
-        };
+    while let Ok(Some(s)) = r.next_step() {
         let (t, ev) = match s {
             Step::Push(t, e) | Step::Prime(t, e) => (t, e),
             _ => continue,

@@ -46,11 +46,9 @@ fn main() {
             buff: 736,
             ..
         } = ev
-        {
-            if src == pov {
+            && src == pov {
                 exact.entry(dst).or_default().push(t);
             }
-        }
     }
     stacks.advance(fight.end_ms);
     sweep(&mut stacks, &mut model);
