@@ -1190,3 +1190,12 @@ test("a plugin updated while running reloads its frames; the same version leaves
   assert.strictEqual(h.entries[0].frame, f, "the same frame, reloaded");
   assert.strictEqual(h.entries[0].plugin.version, "1.1.0");
 }));
+
+test("hubPages marks a page that asks for Pop out, only while on", () => {
+  const on = { plugins: { "a.on": { enabled: true, granted: ["fight"] } } };
+  const pages = ws => ph.hubPages([plugin("a.on", { windows: ws })], on);
+  assert.strictEqual(pages([hubWin("s", { popout: true })])[0].popout, true);
+  assert.strictEqual(pages([hubWin("s")])[0].popout, false);
+  assert.strictEqual(pages([hubWin("s", { popout: "yes" })])[0].popout, false);
+  assert.strictEqual(ph.hubPages([plugin("b.off", { windows: [hubWin("s", { popout: true })] })], {})[0].popout, false);
+});

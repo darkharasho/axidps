@@ -229,3 +229,24 @@ test("hubAt keeps a moved hub on screen, even after the screen shrinks", () => {
   assert.deepStrictEqual(H.hubAt([1280, 720], [1040, 640], [880, 400]), [240, 80]);
   assert.deepStrictEqual(H.hubAt([400, 300], [480, 340], [10, 10]), [0, 0]);
 });
+
+test("popSize is 400 wide and up to 85% of the screen tall", () => {
+  assert.deepStrictEqual(H.popSize([1920, 1080]), [400, 918]);
+  assert.deepStrictEqual(H.popSize([1280, 720]), [400, 612]);
+  assert.deepStrictEqual(H.popSize([360, 300]), [344, 360]); // narrower than the screen; never under the hub's least height
+});
+test("popAt starts at the right edge, vertically centred", () => {
+  assert.deepStrictEqual(H.popAt([1920, 1080], [400, 500], null), [1496, 290]);
+});
+test("popAt keeps a moved popped hub where it was dropped, on screen", () => {
+  assert.deepStrictEqual(H.popAt([1920, 1080], [400, 500], [100, 50]), [100, 50]);
+  assert.deepStrictEqual(H.popAt([1920, 1080], [400, 500], [1800, 900]), [1520, 580]);
+  assert.deepStrictEqual(H.popAt([300, 200], [344, 400], null), [0, 0]);
+});
+test("popPage finds a page that is listed, on and marked", () => {
+  const pg = { fullId: "a/s", on: true, popout: true };
+  assert.strictEqual(H.popPage([pg], "a/s"), pg);
+  assert.strictEqual(H.popPage([{ ...pg, on: false, popout: false }], "a/s"), null);
+  assert.strictEqual(H.popPage([pg], "gone/s"), null);
+  assert.strictEqual(H.popPage(null, "a/s"), null);
+});

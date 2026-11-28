@@ -218,7 +218,7 @@
         card = card || cardModel(p, s);
         const on = framed(p, s, hosted);
         out.push({fullId, id: p.id, title: str(win.title) || win.id, description: str(win.description),
-          icon: ICONS.includes(win.icon) ? win.icon : "plug", on,
+          icon: ICONS.includes(win.icon) ? win.icon : "plug", on, popout: on && win.popout === true,
           action: card.action && (on ? "disable" : "enable"), reason: card.reason, lines: card.lines});
       }
     }

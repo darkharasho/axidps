@@ -23,6 +23,16 @@ const axidpsHub = (() => {
     return [clamp(moved[0], sw - w), clamp(moved[1], sh - h)];
   };
 
+  // A plugin page popped out (session only): a narrow window over the game, first at the right edge,
+  // vertically centred, as tall as its page up to most of the screen. popSize gives [width, max height].
+  const POP_W = 400, POP_EDGE = 24;
+  const popSize = ([sw, sh]) => [Math.min(POP_W, sw - 16), Math.max(HUB_MIN_H, Math.round(sh * 0.85))];
+  const popAt = ([sw, sh], [w, h], moved) => moved ? hubAt([sw, sh], [w, h], moved)
+    : hubAt([sw, sh], [w, h], [sw - w - POP_EDGE, (sh - h) / 2]);
+  // The page a popped hub shows, while it is still listed, on and asking for Pop out; else null.
+  const popPage = (pages, fullId) =>
+    (Array.isArray(pages) ? pages : []).find(p => p && p.fullId === fullId && p.on && p.popout) || null;
+
   // Stable sort by kind: builtin, custom, plugin; `wins` order kept within a kind.
   const byKind = list => KINDS.flatMap(k => list.filter(x => x.kind === k));
 
@@ -145,6 +155,6 @@ const axidpsHub = (() => {
   }
 
   return {TABS, tabFor, hubSize, hubFit, hubAt, windowList, showBlock, notice, groupHead, scrollThumb, scrollForThumb,
-    pageScroll, moveItem, selected, pluginRows, optionNav};
+    pageScroll, moveItem, selected, pluginRows, optionNav, popSize, popAt, popPage};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsHub;
