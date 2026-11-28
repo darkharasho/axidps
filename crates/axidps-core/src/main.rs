@@ -545,17 +545,11 @@ impl App {
             now_unix_ms(),
             last,
         );
-        match wrote {
-            Ok(_) => l.failing = false,
-            Err(e) => {
-                if !l.failing {
-                    l.failing = true;
-                    err(format_args!(
-                        "cannot write the live feed {}: {e}",
-                        l.writer.path().display()
-                    ));
-                }
-            }
+        if let Some(e) = note_write(&mut l.failing, wrote) {
+            err(format_args!(
+                "cannot write the live feed {}: {e}",
+                l.writer.path().display()
+            ));
         }
     }
 
@@ -941,6 +935,45 @@ fn read_ui_json(path: &std::path::Path) -> Option<serde_json::Value> {
 /// Whether the relay is on in ui.json (on unless switched off).
 fn relay_enabled(v: &serde_json::Value) -> bool {
     v["core"]["relay"].as_bool().unwrap_or(true)
+}
+
+/// Track a feed write's result in `failing`; returns the error when it is a new failure that
+/// should be reported (once, until a write succeeds again).
+fn note_write(failing: &mut bool, wrote: std::io::Result<bool>) -> Option<std::io::Error> {
+    match wrote {
+        Ok(true) => {
+            *failing = false;
+            None
+        }
+        Ok(false) => None,
+        Err(e) => {
+            if *failing {
+                None
+            } else {
+                *failing = true;
+                Some(e)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod write_report_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_write_is_reported_once_until_a_good_write() {
+        let bad = || Err(std::io::Error::other("x"));
+        let mut failing = false;
+        assert!(note_write(&mut failing, bad()).is_some());
+        // Not due (nothing written): still failing, so no second report.
+        assert!(note_write(&mut failing, Ok(false)).is_none());
+        assert!(failing);
+        assert!(note_write(&mut failing, bad()).is_none());
+        assert!(note_write(&mut failing, Ok(true)).is_none());
+        assert!(!failing);
+        assert!(note_write(&mut failing, bad()).is_some());
+    }
 }
 
 #[cfg(test)]

@@ -4174,4 +4174,20 @@ mod tests {
         assert!(v.as_object_mut().unwrap().remove("around").is_some());
         assert_eq!(v, l.snapshot(p.registry(), 7));
     }
+
+    #[test]
+    fn last_writes_an_around_only_change_within_the_interval() {
+        let path = feed_path("last");
+        let mut w = LiveWriter::new(path.clone());
+        let (mut p, mut l, mut a) = (processor(), LiveStats::new(), crate::around::Around::new());
+        let t0 = Instant::now();
+        assert!(write_feed(&mut w, &mut l, &a, &p, t0, 0, false).unwrap());
+        let s = Step::Push(0, add_player(5));
+        crate::replay::apply(&mut p, &s);
+        a.after_step(&p, &s);
+        let soon = t0 + Duration::from_millis(100);
+        assert!(!write_feed(&mut w, &mut l, &a, &p, soon, 0, false).unwrap());
+        assert!(write_feed(&mut w, &mut l, &a, &p, soon, 0, true).unwrap());
+        std::fs::remove_file(&path).unwrap();
+    }
 }
