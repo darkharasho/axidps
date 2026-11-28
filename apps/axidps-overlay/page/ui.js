@@ -497,7 +497,9 @@ function report() {
     const fit = axidpsHub.hubFit(axidpsHub.hubSize(ui.screen), hubRoom())[1];
     if (fit !== hubFitH) { hubFitH = fit; renderAll(); return; }
   }
-  const over = overflowing();
+  // Not while a join is previewed or a table pulled: that layout is only for the moment, and a
+  // window hidden for it would stay hidden. refit() checks again once it settles.
+  const over = mdrag || mpull ? null : overflowing();
   if (over) {
     over.overAtlas = true;
     renderAll(); // lays out again and reports (or finds the next one that doesn't fit)
@@ -638,6 +640,7 @@ function dissolve(g) {
   groups.delete(g.gid);
   delete saved.pos[g.key]; delete saved.open[g.key];
   removeWindow(g);
+  refit(); // the layout changed: windows left out of the atlas get another try
 }
 
 // Make the group windows match saved.groups (and the option), before each render.
@@ -726,6 +729,7 @@ function endPreview() {
   clearJoinMark();
   const dragged = d && wins.find(w => w.id === d.name);
   if (dragged) dragged.el.classList.remove("docking");
+  refit();
   const g = d && d.gid && groups.get(d.gid);
   if (!g) return;
   const before = rectsIn(g.el), box = g.el.getBoundingClientRect();
@@ -749,13 +753,17 @@ function onDragging(name, x, y, gx, gy) {
   if (w && w.grab) { w.grab = null; mpull = null; scheduleReport(); } // the DLL took the hand-off
   if (!saved.merge || !ui.editing || !w || !(mergeable(w) || w.def.group) || w.inGroup) return;
   const px = x + gx, py = y + gy;
-  // Inside the open slot (with a little slack): stay.
+  // The dragged window on screen: it joins as one of its edges meets a table's (XM.dockAt).
+  const wr = w.el.getBoundingClientRect(), rect = {x, y, w: wr.width, h: wr.height};
+  // Inside the open slot (with a little slack), or the window lying mostly over it: stay.
   if (mdrag && mdrag.name === name && mdrag.gid) {
     const g = groups.get(mdrag.gid), gh = g && g.grid.querySelector(".ghost");
     if (gh) {
       const [ox, oy] = posOf(g), a = g.el.getBoundingClientRect(), r = gh.getBoundingClientRect();
       const sx = ox + r.left - a.left, sy = oy + r.top - a.top;
       if (px > sx - 14 && px < sx + r.width + 14 && py > sy - 14 && py < sy + r.height + 14) return;
+      const ix = Math.min(x + rect.w, sx + r.width) - Math.max(x, sx), iy = Math.min(y + rect.h, sy + r.height) - Math.max(y, sy);
+      if (ix > 0 && iy > 0 && ix * iy >= 0.4 * r.width * r.height) return;
     }
   }
   const targets = wins.filter(t => t !== w && isOpen(t) && !t.inGroup && (t.def.group ? !(mdrag && mdrag.temp && mdrag.gid === t.gid) : mergeable(t)))
@@ -765,7 +773,7 @@ function onDragging(name, x, y, gx, gy) {
     const g = groups.get(mdrag.gid), k = g.cells.find(c => !c.ghost).k, m = memberWin(k);
     targets.push({id: m.id, cells: [{k, r: 0, c: 0}], rects: {[k]: targetOf(g).rects[k]}, grid: null});
   }
-  let d = XM.dockAt(px, py, targets, XM.BAND);
+  let d = XM.dockAt(px, py, targets, XM.BAND, rect);
   const tw = d && wins.find(v => v.id === d.id);
   const block = blockOf(w);
   const key = d ? `${d.id}|${d.k || d.r + "," + d.c}|${d.side}` : "";
@@ -845,6 +853,7 @@ function onDropped(w) {
   }
   saved.groups = (saved.groups || []).filter(x => x.id !== g.gid && (!w.gid || x.id !== w.gid)).concat([{id: g.gid, cells}]);
   layGroup(g, cells);
+  refit();
   renderAll();
   // The absorbed tables spring in from where they were dropped, squashing against the edge.
   const [gx, gy] = posOf(g), ga = g.el.getBoundingClientRect();
@@ -909,6 +918,7 @@ function onPull(name, x, y) {
     layGroup(g, s.cells);
     animateGroup(g, before, null, null, box);
   }
+  refit();
   save();
   renderAll();
   const side = t.h ? (dx > 0 ? "left" : "right") : (dy > 0 ? "top" : "bottom");
@@ -918,6 +928,7 @@ function onPull(name, x, y) {
 function onPullEnd() {
   const p = mpull;
   mpull = null;
+  if (p) refit();
   for (const w of wins) if (w.grab) { w.grab = null; scheduleReport(); }
   if (!p || !p.m || p.torn) return;
   // Back into place with the spring, from however far it was stretched.

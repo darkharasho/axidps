@@ -93,3 +93,32 @@ test("the spring overshoots a little and settles; the glide never does", () => {
   assert.strictEqual(g.at(-1), 1);
   assert.ok(g.every((v, i) => i === 0 || v >= g[i - 1]));
 });
+
+// The dragged window's own rectangle: it joins when one of its edges comes near a table's edge,
+// wherever the pointer is on it.
+const T1 = { id: "a", cells: [{ k: "a", r: 0, c: 0 }], rects: { a: { x: 100, y: 100, w: 300, h: 200 } }, grid: null };
+test("dockAt joins by the dragged window's edge, not the pointer", () => {
+  // Its left edge 10px right of the table, the pointer far inside it (its title bar).
+  const rect = { x: 410, y: 120, w: 300, h: 200 };
+  assert.deepStrictEqual(M.dockAt(560, 130, [T1], M.BAND, rect), { id: "a", k: "a", side: "right" });
+  // Overlapping the table by 40px still joins on that side.
+  assert.deepStrictEqual(M.dockAt(560, 130, [T1], M.BAND, { x: 360, y: 120, w: 300, h: 200 }).side, "right");
+  // Below it, level enough: the bottom.
+  assert.deepStrictEqual(M.dockAt(250, 320, [T1], M.BAND, { x: 150, y: 305, w: 200, h: 150 }).side, "bottom");
+  // Above and to its left: the left and top edges by its right and bottom.
+  assert.deepStrictEqual(M.dockAt(0, 0, [T1], M.BAND, { x: -205, y: 150, w: 300, h: 100 }).side, "left");
+  assert.deepStrictEqual(M.dockAt(0, 0, [T1], M.BAND, { x: 150, y: -95, w: 200, h: 190 }).side, "top");
+});
+test("dockAt by edge needs the windows level with each other and close", () => {
+  // Too far.
+  assert.strictEqual(M.dockAt(900, 900, [T1], M.BAND, { x: 460, y: 120, w: 300, h: 200 }), null);
+  // Only a corner touching (20px of 200 level): no.
+  assert.strictEqual(M.dockAt(900, 900, [T1], M.BAND, { x: 405, y: 280, w: 300, h: 200 }), null);
+  // Lying mostly over it: not an edge; the pointer decides as before.
+  assert.deepStrictEqual(M.dockAt(390, 200, [T1], M.BAND, { x: 150, y: 120, w: 300, h: 200 }), { id: "a", k: "a", side: "right" });
+});
+test("dockAt by edge picks the nearest edge of several tables", () => {
+  const T2 = { id: "b", cells: [{ k: "b", r: 0, c: 0 }], rects: { b: { x: 100, y: 330, w: 300, h: 200 } }, grid: null };
+  // Lying over a's lower half, its bottom edge 5px above b's top: b's top.
+  assert.deepStrictEqual(M.dockAt(900, 900, [T1, T2], M.BAND, { x: 110, y: 160, w: 280, h: 165 }), { id: "b", k: "b", side: "top" });
+});

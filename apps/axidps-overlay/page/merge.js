@@ -51,8 +51,13 @@ const axidpsMerge = (() => {
   // Where a window dragged with its pointer at (px, py) would dock, in screen space. targets:
   // [{id, cells, rects: {k: {x, y, w, h}}, grid: {x, y, cols: [w], rows: [h]}}]. Over a table: its
   // nearest edge. In an empty cell of a target's grid: that cell. Within `band` outside a table's
-  // edge (and level with it): that edge. Otherwise null.
-  function dockAt(px, py, targets, band) {
+  // edge (and level with it): that edge. Otherwise null. With `rect` (the dragged window on screen),
+  // first: the table edge one of its edges is nearest, within `band` outside or overlapping it by
+  // up to half the smaller window, the two level for at least a quarter of the shorter one (40px
+  // at most); so it joins as its edge meets a table's, wherever it is held.
+  function dockAt(px, py, targets, band, rect) {
+    const byEdge = rect && edgeDock(rect, targets, band);
+    if (byEdge) return byEdge;
     for (const t of targets) {
       for (const x of t.cells) {
         const r = t.rects[x.k];
@@ -77,6 +82,32 @@ const axidpsMerge = (() => {
       }
     }
     return null;
+  }
+
+  function edgeDock(d, targets, band) {
+    let best = null;
+    for (const t of targets) {
+      for (const x of t.cells) {
+        const r = t.rects[x.k];
+        if (!r) continue;
+        const ovY = Math.min(d.y + d.h, r.y + r.h) - Math.max(d.y, r.y);
+        const ovX = Math.min(d.x + d.w, r.x + r.w) - Math.max(d.x, r.x);
+        const needY = Math.min(40, Math.min(d.h, r.h) / 4), needX = Math.min(40, Math.min(d.w, r.w) / 4);
+        const maxX = Math.min(d.w, r.w) / 2, maxY = Math.min(d.h, r.h) / 2;
+        const sides = [
+          ["right", d.x - (r.x + r.w), ovY >= needY, maxX],
+          ["left", r.x - (d.x + d.w), ovY >= needY, maxX],
+          ["bottom", d.y - (r.y + r.h), ovX >= needX, maxY],
+          ["top", r.y - (d.y + d.h), ovX >= needX, maxY],
+        ];
+        for (const [side, gap, level, over] of sides) {
+          if (!level || gap >= band || gap < -over) continue;
+          const score = Math.abs(gap);
+          if (!best || score < best.score) best = {score, id: t.id, k: x.k, side};
+        }
+      }
+    }
+    return best && {id: best.id, k: best.k, side: best.side};
   }
 
   // Saved groups made safe: known keys (`ok(k)`), each key in one group only (the first), whole

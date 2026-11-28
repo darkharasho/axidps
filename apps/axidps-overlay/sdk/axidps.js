@@ -74,12 +74,17 @@
 html, body { margin: 0; background: transparent; overflow: hidden; color: var(--text); font: var(--fs)/1.3 var(--font); }
 body { display: inline-block; width: max-content; vertical-align: top; }
 body.compact { --rh: 16px; --bh: 22px; --fs: 10.5px; font-size: var(--fs); }
+/* In a see-through window, straight over the game: light text with a dark edge, on any theme. */
+body.axidps-clear { --text: #eef1f5; --title: #ffffff; --dim: #d3d8e0; --faint: #b9c0cb; color: var(--text);
+  text-shadow: 0 0 2px #000, 0 1px 2px #000, 0 0 4px rgba(0,0,0,.6); }
+/* A page in the hub's Options: as wide as the page. */
+body.axidps-page { display: block; width: auto; }
 b, strong { font-weight: 600; }
 .axidps-tip { position: fixed; display: none; padding: 3px 8px; background: var(--tip); color: var(--text);
   border: 1px solid var(--line-hi); border-radius: var(--rs); white-space: nowrap; pointer-events: none;
   font-size: 11px; z-index: 2147483647; }`;
 
-  const TYPES = ["fight", "look", "edit", "settings", "perf"];
+  const TYPES = ["fight", "look", "edit", "settings", "perf", "frame"];
   const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
   function str(v) {
     if (typeof v === "string") return v;
@@ -109,7 +114,7 @@ b, strong { font-weight: 600; }
       try { parent.postMessage(Object.assign({axidps: 1, type}, body || {}), "*"); } catch (e) { /* page gone */ }
     };
     const log = (level, msg) => post("log", {level, msg: String(msg).slice(0, 1000)});
-    const handlers = {fight: [], look: [], edit: [], settings: [], perf: []};
+    const handlers = {fight: [], look: [], edit: [], settings: [], perf: [], frame: []};
     const last = {};
     let info = null;
     const readyQ = [];
@@ -162,6 +167,16 @@ b, strong { font-weight: 600; }
           break;
         }
         case "edit": emit("edit", !!m.on); break;
+        case "frame": {
+          const f = {clear: m.clear === true, page: m.page === true};
+          if (doc && doc.body) {
+            doc.body.classList.toggle("axidps-clear", f.clear);
+            doc.body.classList.toggle("axidps-page", f.page);
+          }
+          emit("frame", f);
+          if (f.page) { lastSize = ""; measure(); }
+          break;
+        }
         case "perf": emit("perf", m.perf); break;
         case "settings":
           settings = m.value && typeof m.value === "object" ? m.value : {};
@@ -226,7 +241,9 @@ b, strong { font-weight: 600; }
       },
       // on(type, fn): "fight" (the live feed), "look" (theme and display), "edit" (bool),
       // "settings" (this window's settings), "perf" ({fps, ping, tick_rate}, once a second;
-      // 0 = unknown). A handler added late gets the latest value at once.
+      // 0 = unknown), "frame" ({clear, page}: a see-through window or a page in the hub's Options;
+      // the body gets the classes axidps-clear and axidps-page too). A handler added late gets
+      // the latest value at once.
       on(type, fn) {
         if (!TYPES.includes(type) || typeof fn !== "function") return;
         handlers[type].push(fn);
