@@ -1481,7 +1481,12 @@ mod tests {
         left.sort();
         assert_eq!(
             left,
-            ["axidps-0.4.0.AppImage.part", "axidps.AppImage", "cfg", "other.new"]
+            [
+                "axidps-0.4.0.AppImage.part",
+                "axidps.AppImage",
+                "cfg",
+                "other.new"
+            ]
         );
     }
 }

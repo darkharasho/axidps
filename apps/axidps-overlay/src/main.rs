@@ -365,8 +365,8 @@ impl DevWatch {
     fn manifest(&self, snap: &axidps_plugins::watch::Snapshot, id: &str) -> Option<Vec<u8>> {
         let (folder, _) = snap.plugins.iter().find(|(_, p)| p.id == id)?;
         // Capped, and never a FIFO or device (this runs on the main thread at start).
-        axidps_plugins::scan::read_manifest(&self.dir.join(folder).join(axidps_plugins::MANIFEST_FILE))
-            .ok()
+        let path = self.dir.join(folder).join(axidps_plugins::MANIFEST_FILE);
+        axidps_plugins::scan::read_manifest(&path).ok()
     }
 
     /// One poll: the plugins whose files changed and then stayed still, each with whether its

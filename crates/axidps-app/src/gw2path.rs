@@ -419,8 +419,14 @@ mod tests {
         assert_eq!(check_grant_target(&gw2, "PC\\player"), Ok(()));
         let other = tmp.path().join("Program Files");
         fs::create_dir_all(&other).unwrap();
-        assert!(check_grant_target(&other, "player").is_err(), "no Gw2-64.exe");
-        assert!(check_grant_target(&gw2.join("Gw2-64.exe"), "player").is_err(), "a file");
+        assert!(
+            check_grant_target(&other, "player").is_err(),
+            "no Gw2-64.exe"
+        );
+        assert!(
+            check_grant_target(&gw2.join("Gw2-64.exe"), "player").is_err(),
+            "a file"
+        );
         assert!(check_grant_target(&tmp.path().join("missing"), "player").is_err());
         for user in ["", "Everyone:(F)", "a\"b", "x)(OI)", "tab\tname"] {
             assert!(check_grant_target(&gw2, user).is_err(), "{user:?}");

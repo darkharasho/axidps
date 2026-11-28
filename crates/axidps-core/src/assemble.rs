@@ -13,10 +13,10 @@ use crate::effects::{self, Effects};
 use crate::extension;
 use crate::masters::Masters;
 use crate::names;
+use crate::npc_names::NPC_NAMES;
 use crate::processor::Fight;
 use crate::registry::{AgentInfo, Registry, squad_fields};
 use crate::server::{Server, TickRows, instance_start, tick_before};
-use crate::npc_names::NPC_NAMES;
 use crate::skill_names::SKILL_NAMES;
 
 /// `src_agent` of LOG_START / LOG_END rows (`"arc"`).
@@ -2559,7 +2559,10 @@ mod tests {
         assert_eq!((s[1].iff, s[1].is_fifty), (0, 0));
         assert_eq!(s[2].iff, 2);
         assert_eq!((s[3].is_ninety, s[3].is_fifty), (0, 0));
-        assert_eq!(s[0].is_shields, 1, "damage into barrier marks the strike is_shields");
+        assert_eq!(
+            s[0].is_shields, 1,
+            "damage into barrier marks the strike is_shields"
+        );
         assert_eq!(s[0].is_offcycle, 0);
         // A strike on a downed agent is marked is_offcycle, as in EVTC logs.
         let l = build_log(
@@ -3469,7 +3472,16 @@ mod tests {
                 },
             )
         };
-        let remove = |t, remover, inst| (t, Event::BuffRemove { dst: 1, remover, inst });
+        let remove = |t, remover, inst| {
+            (
+                t,
+                Event::BuffRemove {
+                    dst: 1,
+                    remover,
+                    inst,
+                },
+            )
+        };
         let f = fight(vec![
             health(1500, 1, 9500),
             health(1500, 3, 4000),
@@ -3482,7 +3494,11 @@ mod tests {
         let l = build_log(&f, &r);
         let rm = sc_rows(&l, 71);
         assert_eq!((rm[0].is_ninety, rm[0].is_fifty), (1, 1));
-        assert_eq!((rm[1].is_ninety, rm[1].is_fifty), (0, 0), "holder at 50%, no remover");
+        assert_eq!(
+            (rm[1].is_ninety, rm[1].is_fifty),
+            (0, 0),
+            "holder at 50%, no remover"
+        );
     }
 
     /// BARRIERUPDATE (38): barrier as a share of max health x10000 in `dst_agent`.
