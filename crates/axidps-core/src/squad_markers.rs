@@ -1,5 +1,5 @@
 //! Squad ground markers (EVTC sc 53) between fights: the last slots the poll sent, which seed
-//! the next log's start rows (arcdps writes all 8 at log start while in a squad).
+//! the next log's start rows (EVTC logs carry all 8 at log start while in a squad).
 
 use axidps_protocol::v2::Event;
 

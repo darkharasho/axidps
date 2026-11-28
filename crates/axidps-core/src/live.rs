@@ -101,7 +101,7 @@ struct Acc {
     taken: u64,
     strips: u64,
     cleanses: u64,
-    /// Damage that led to enemy players' downs (axilog's arcdps-methodology down contribution).
+    /// Damage that led to enemy players' downs (axilog's down contribution method).
     down_contrib: u64,
 }
 
@@ -194,7 +194,7 @@ pub(crate) const CONDITIONS: &[u32] = &[
     720, 721, 722, 723, 727, 736, 737, 738, 742, 791, 861, 19426, 26766, 27705,
 ];
 
-/// Down contribution (axilog's arcdps methodology): a down's window opens this long before the
+/// Down contribution (axilog's methodology): a down's window opens this long before the
 /// target was last at [`CONTRIB_FULL_X100`] health or more...
 const CONTRIB_LEAD_IN_MS: u64 = 2000;
 const CONTRIB_FULL_X100: u16 = 9900;
@@ -993,7 +993,7 @@ impl LiveStats {
     /// enter-combat.
     fn track_active(&mut self, ev: &Event) {
         let ids = match *ev {
-            // A zero-value defiance strike on a player is not taking part (arcdps never writes
+            // A zero-value defiance strike on a player is not taking part (EVTC logs never carry
             // these rows; our log still does).
             Event::Strike {
                 dst,
@@ -1178,7 +1178,7 @@ impl LiveStats {
             })
             .collect();
         let target = |c: u32| targets.get(&c).is_some_and(|t| t.1);
-        // Regeneration's stack order reads the agent table's healing field, which arcdps and our
+        // Regeneration's stack order reads the agent table's healing field, which EVTC logs and our
         // writer leave at 0 for every player: 0 is what axilog sees on both logs.
         self.boons.tick(now, &groups, &squad, &target, &|_| 0);
         self.boon_targets = targets;
@@ -1418,7 +1418,7 @@ impl LiveStats {
 
     /// Enemy player `target` went down at `t` (a downing strike): everyone not on its side who
     /// damaged it in its window `[window_start, t]` gets that damage as down contribution
-    /// (axilog's arcdps methodology). A down within 2.1 s of the last one gets nothing more.
+    /// (axilog's methodology). A down within 2.1 s of the last one gets nothing more.
     pub fn enemy_down(&mut self, t: u64, target: u32) {
         if self.state != LiveState::Fight {
             return;
@@ -3728,7 +3728,7 @@ mod tests {
         assert!(!l.boon_squad.contains(&7));
     }
 
-    /// Zero-value defiance strikes on a player (rows arcdps never writes) do not make the player
+    /// Zero-value defiance strikes on a player (rows EVTC logs never carry) do not make the player
     /// take part: 5 gets only those and is not a target; 6 gets a real strike and is.
     #[test]
     fn zero_defiance_strikes_on_players_are_not_taking_part() {

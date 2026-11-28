@@ -1,21 +1,21 @@
-//! Skill casts and the EVTC rows arcdps writes for them.
+//! Skill casts and the EVTC rows EVTC logs carry for them.
 //!
-//! One open cast per agent. arcdps also keeps per-agent flags that outlive the cast they were set
+//! One open cast per agent. EVTC logs also keep per-agent flags that outlive the cast they were set
 //! by (dodge and the per-kind flags); each is cleared only by the end that consumes it, so they are
 //! kept here the same way.
 //!
-//! Skill timing comes from arcdps's reduction over the content table (`content::timing`). Each
-//! agent keeps arcdps's cast progress: reset by a start, grown by elapsed time × the agent's
+//! Skill timing comes from the EVTC reduction over the content table (`content::timing`). Each
+//! agent keeps the EVTC cast progress: reset by a start, grown by elapsed time × the agent's
 //! action speed (sc 92; 1.0 for a speed-immune skill or one the table lacks). An end writes it
 //! as buff_dmg and compares it with the expected time for is_activation 3/4.
-//! Not replicated: arcdps's 10 ms ticker phase (progress is continuous here, ±10 ms) and the
+//! Not replicated: the EVTC 10 ms ticker phase (progress is continuous here, ±10 ms) and the
 //! breakbar rule (speed 1.0 while the agent's breakbar is active).
 
 use std::collections::BTreeMap;
 
 use axidps_protocol::v2::{AgentState, Event};
 
-/// arcdps's cast statechange codes.
+/// The EVTC cast statechange codes.
 pub const CAST_START: u8 = 67;
 pub const CAST_END: u8 = 68;
 /// Weapon swap: dst = the new set (raw), value = the previous set.
@@ -23,7 +23,7 @@ pub const WEAPON_SWAP: u8 = 11;
 /// Stunbreak: value = the ms left of the CC window.
 pub const STUNBREAK: u8 = 56;
 /// Message statechanges, written
-/// here because their state lives on the same arcdps agent record as the cast flags.
+/// here because their state lives on the same agent record as the cast flags.
 pub const TRANSFORMATION: u8 = 73;
 pub const GADGET_ANIMATION: u8 = 77;
 /// Teleport: dst and value carry the target only for squad members (the assembler's rule).
@@ -31,7 +31,7 @@ pub const TELEPORT: u8 = 85;
 pub const JUMP: u8 = 86;
 pub const FLYTO: u8 = 88;
 
-/// arcdps end site codes used here.
+/// EVTC end site codes used here.
 pub mod site {
     pub const INTERRUPTED: u8 = 8;
     pub const DEAD: u8 = 9;
@@ -42,7 +42,7 @@ pub mod site {
     pub const MSG_4C: u8 = 15;
     pub const FLAG_3F: u8 = 19;
     pub const AGENT_REMOVED: u8 = 21;
-    /// The agent is hidden from me (sc 76 = 0): arcdps ends its cast every frame.
+    /// The agent is hidden from me (sc 76 = 0): EVTC logs end its cast every frame.
     pub const HIDDEN: u8 = 24;
     /// Only casts with a skill duration.
     pub const MSG_33: u8 = 22;
@@ -51,7 +51,7 @@ pub mod site {
     pub const FLAG_41: u8 = 26;
     /// Only while flag `f40` is set.
     pub const FLAG_40: u8 = 27;
-    /// arcdps-only sites (not emitted here), for the is_activation rule: 5 and the 10 ms
+    /// EVTC-only sites (not emitted here), for the is_activation rule: 5 and the 10 ms
     /// ticker's 20.
     pub const FAILED: u8 = 5;
     pub const TICKER: u8 = 20;
@@ -65,7 +65,7 @@ const STRIKE_CC: u8 = 12;
 const STRIKE_DOWNED: u8 = 9;
 const STUNBREAK_AFTER_DOWNED_MS: u64 = 2200;
 
-/// arcdps's end is_activation: progress reached the expected time (within 40 ms), fell short,
+/// The EVTC end is_activation: progress reached the expected time (within 40 ms), fell short,
 /// not computed (sites 5, 20, 24), or the expected time is 0 (no timing: pseudo-skills and
 /// skills the content table lacks).
 const ACTIVATION_REACHED: u8 = 3;
@@ -73,7 +73,7 @@ const ACTIVATION_SHORT: u8 = 4;
 const ACTIVATION_NOT_COMPUTED: u8 = 5;
 const ACTIVATION_NO_TIMING: u8 = 6;
 
-/// The site arcdps ends the open cast with when a start of `kind` arrives.
+/// The site EVTC logs end the open cast with when a start of `kind` arrives.
 fn supersede_site(kind: u8) -> u8 {
     match kind {
         1 => 3,
@@ -89,7 +89,7 @@ fn supersede_site(kind: u8) -> u8 {
     }
 }
 
-/// Whether arcdps would find a nonzero skill duration for a cast of `kind`. arcdps reads the
+/// Whether an EVTC log would find a nonzero skill duration for a cast of `kind`. EVTC logs read the
 /// skill's timing; without it, the game-skill kinds 1 and 4 count as timed (logs: every kind-1
 /// site-22 end had a duration; every site-15 end was kind 5).
 fn timed(kind: u8) -> bool {
@@ -102,7 +102,7 @@ pub struct Open {
     pub skill: u32,
     pub kind: u8,
     pub start: u64,
-    /// arcdps's expected time (`min(t_a, t_b)`, ms) for kinds 1/4/5; 0 = none.
+    /// The EVTC expected time (`min(t_a, t_b)`, ms) for kinds 1/4/5; 0 = none.
     pub expected: i32,
 }
 
@@ -119,14 +119,14 @@ struct AgentCasts {
     f40: bool,
     /// Set by a kind 8 pseudo-skill start, cleared by a site-15 end.
     f41: bool,
-    /// The weapon set of the last swap message (arcdps reads it from the game's equipment
+    /// The weapon set of the last swap message (EVTC logs read it from the game's equipment
     /// before the swap stores the new one; 0 before the first).
     set: u8,
     /// Hidden from me (polled visible = 0).
     hidden: bool,
     /// The open CC window `(from, to)`.
     cc: Option<(u64, u64)>,
-    /// Downed or dead (arcdps reads the character's state).
+    /// Downed or dead (EVTC logs read the character's state).
     down: bool,
     /// The last downing strike on the agent.
     downed_hit: Option<u64>,
@@ -148,7 +148,7 @@ struct AgentCasts {
     armed: bool,
 }
 
-/// arcdps's per-agent cast progress: grows with the action speed, reset by every start and kept
+/// The EVTC per-agent cast progress: grows with the action speed, reset by every start and kept
 /// growing after the end.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Progress {
@@ -177,10 +177,10 @@ impl Progress {
     }
 }
 
-/// arcdps's activation marker skill (strike result 11).
+/// The EVTC activation marker skill (strike result 11).
 pub const ACTIVATION_MARKER_SKILL: u32 = 23279;
 
-/// arcdps's transformation fields on its agent record.
+/// The EVTC transformation fields on its agent record.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Transform {
     id: u32,
@@ -190,7 +190,7 @@ struct Transform {
     expiry: Option<u64>,
 }
 
-/// As arcdps: a stunbreak inside the agent's CC window, if it is up and was not
+/// As EVTC logs: a stunbreak inside the agent's CC window, if it is up and was not
 /// downed in the last 2200 ms; the window closes.
 fn stunbreak(now: u64, agent: u32, a: &mut AgentCasts, rows: &mut Vec<Row>) {
     let Some((from, to)) = a.cc else { return };
@@ -238,7 +238,7 @@ fn sc_row(statechange: u8, src: u32, dst: u64) -> Row {
     }
 }
 
-/// Four i16 packed into one u64, first lowest (arcdps writes them consecutively).
+/// Four i16 packed into one u64, first lowest (EVTC logs carry them consecutively).
 fn pack_i16x4(v: [i16; 4]) -> u64 {
     v.iter()
         .enumerate()
@@ -282,9 +282,9 @@ impl Casts {
         self.map.get(&agent).and_then(|a| a.open)
     }
 
-    /// The TRANSFORMATION row arcdps re-emits at log start (`now`) for a transformed agent:
+    /// The TRANSFORMATION row EVTC logs re-emit at log start (`now`) for a transformed agent:
     /// value = the ms left of the last transformation with a duration (negative once past,
-    /// as arcdps's wrapping subtraction), 0 if none had one.
+    /// as the EVTC wrapping subtraction), 0 if none had one.
     pub fn transform_row(&self, agent: u32, now: u64) -> Option<Row> {
         let t = self.map.get(&agent)?.transform;
         (t.id != 0).then(|| Row {
@@ -298,7 +298,7 @@ impl Casts {
         })
     }
 
-    /// Apply an event at `now`; the cast rows arcdps would write for it. Besides the cast events,
+    /// Apply an event at `now`; the cast rows an EVTC log would write for it. Besides the cast events,
     /// a down or death (`State`), an interrupt strike and a despawn end the agent's open cast.
     pub fn apply(&mut self, now: u64, ev: &Event) -> Vec<Row> {
         let mut rows = Vec::new();
@@ -346,7 +346,7 @@ impl Casts {
                 }
                 // Kind 1: X is the overstack; value = min(t_a, t_b) and buff_dmg = the full
                 // animation from the skill's timing (0 for a skill the content table lacks).
-                // Every other kind: value = X, capped like arcdps.
+                // Every other kind: value = X, capped as in EVTC logs.
                 let (value, buff_dmg, overstack) = if kind == 1 {
                     let t = timing;
                     (
@@ -391,7 +391,7 @@ impl Casts {
                         }
                     }
                     site::DODGE_END => {
-                        // arcdps's order on site 23: the dodge, then the jump, then the fly-to.
+                        // The EVTC order on site 23: the dodge, then the jump, then the fly-to.
                         if std::mem::take(&mut a.dodge) {
                             end(now, agent, a, s, &mut rows);
                         }
@@ -552,7 +552,7 @@ impl Casts {
         rows
     }
 
-    /// arcdps's activation markers due by `now`: every
+    /// The EVTC activation markers due by `now`: every
     /// armed agent whose progress passed `t_a`, with the time it did, in agent order. Call before
     /// applying the event at `now` (a start resets the progress).
     pub fn activations(&mut self, now: u64) -> Vec<(u64, u32)> {
@@ -625,7 +625,7 @@ mod tests {
                 result: 1,
                 ..Row::default()
             }],
-            "value/buff_dmg from the skill's timing (as arcdps's logs)"
+            "value/buff_dmg from the skill's timing (as in EVTC logs)"
         );
         assert_eq!(
             (c.apply(120, &start(8, 0, u32::MAX, 1, 0))[0].value),
@@ -638,7 +638,7 @@ mod tests {
             (450, 0, 4)
         );
         let rows = c.apply(150, &start(7, 0, 23285, 3, u32::MAX));
-        assert_eq!(rows[0].value, i32::MAX, "capped like arcdps");
+        assert_eq!(rows[0].value, i32::MAX, "capped as in EVTC logs");
     }
 
     /// The marker fires once per armed cast when progress passes `t_a`, even after the cast
@@ -887,7 +887,7 @@ mod tests {
             }]
         );
         c.apply(30, &start(5, 0, DODGE_SKILL, 2, 0));
-        // Site 23: the dodge's cast end, then the jump end, then the fly-to end (arcdps's order).
+        // Site 23: the dodge's cast end, then the jump end, then the fly-to end (the EVTC order).
         let rows = c.apply(40, &end_ev(5, site::DODGE_END));
         assert_eq!(
             rows,
@@ -985,7 +985,7 @@ mod tests {
             Some(row(844, 1300, 0)),
             "remaining ms"
         );
-        // No duration, so the expiry of the earlier one stays (as arcdps's record).
+        // No duration, so the expiry of the earlier one stays (as the EVTC record).
         assert_eq!(c.apply(2000, &tf(5, 900, 0, true)), vec![row(900, 0, 1)]);
         assert_eq!(c.transform_row(5, 2000), Some(row(900, 500, 1)));
         assert_eq!(

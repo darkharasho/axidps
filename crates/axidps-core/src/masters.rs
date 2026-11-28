@@ -1,4 +1,4 @@
-//! Src/dst master instids for the assembler, as arcdps's event finalizer writes them: every row
+//! Src/dst master instids for the assembler, as the EVTC event finalizer writes them: every row
 //! with a src (dst) agent gets that agent's current master, while the master is a tracked agent.
 
 use std::collections::{BTreeMap, BTreeSet};

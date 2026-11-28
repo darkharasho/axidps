@@ -1,9 +1,9 @@
-//! Per-skill content rows arcdps writes at log save: the skill's GUID (46, content type 2), buff
+//! Per-skill content rows EVTC logs carry at log save: the skill's GUID (46, content type 2), buff
 //! info (30), buff formulas (31), skill info (32), skill timing (33) and timing steps (91). They are game content keyed by skill id,
-//! so they come from a table generated from the owner's arcdps logs (the newest log holding an
+//! so they come from a table generated from the owner's EVTC logs (the newest log holding an
 //! id wins).
 //!
-//! arcdps writes timing (33/91) only for skills cast since it loaded; axidps writes every row it
+//! EVTC logs carry timing (33/91) only for skills cast since it loaded; axidps writes every row it
 //! knows for the log's skills, a superset.
 
 use std::io::Read;
@@ -50,7 +50,7 @@ fn guid_data() -> &'static [u8] {
     })
 }
 
-/// The idtoguid row arcdps writes for content `id` of `ctype`, if the table has one.
+/// The idtoguid row EVTC logs carry for content `id` of `ctype`, if the table has one.
 pub fn guid(ctype: u8, id: u32) -> Option<Event> {
     let d = guid_data();
     let key = |r: &[u8]| (r[0], u32::from_le_bytes([r[1], r[2], r[3], r[4]]));
@@ -94,7 +94,7 @@ pub fn skills() -> impl Iterator<Item = u32> {
     index().iter().map(|&(s, _, _)| s)
 }
 
-/// The content rows arcdps writes for `skill` (none if the table has no entry).
+/// The content rows EVTC logs carry for `skill` (none if the table has no entry).
 pub fn rows(skill: u32) -> Vec<Event> {
     let idx = index();
     let Ok(i) = idx.binary_search_by_key(&skill, |&(s, _, _)| s) else {
@@ -107,7 +107,7 @@ pub fn rows(skill: u32) -> Vec<Event> {
         .collect()
 }
 
-/// arcdps's two buff-info flags behind the zero condition-tick results:
+/// The two EVTC buff-info flags behind the zero condition-tick results:
 /// `invulnerable` (the sc 30 row's `is_flanking`: a target holding such a buff takes result 6)
 /// and `invert` (the row's `is_shields`: result 13). Both false for buffs the table lacks.
 pub fn buff_flags(buff: u32) -> (bool, bool) {
@@ -125,7 +125,7 @@ pub fn buff_flags(buff: u32) -> (bool, bool) {
         .unwrap_or((false, false))
 }
 
-/// A skill's animation timing as arcdps reduces it, variant 0, from the table's 32/33/91 rows.
+/// A skill's animation timing as the EVTC rows reduce it, variant 0, from the table's 32/33/91 rows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Timing {
     /// The activation point `t_a`, ms (40 ms steps; 0 = none).
@@ -139,7 +139,7 @@ pub struct Timing {
 }
 
 impl Timing {
-    /// arcdps's kind-1 cast start `value`: `min(t_a, t_b)` ms, `t_b` only when non-zero.
+    /// The EVTC kind-1 cast start `value`: `min(t_a, t_b)` ms, `t_b` only when non-zero.
     pub fn start_value(&self) -> i32 {
         let a = self.activation_ms as f64 / 1000.0;
         let t_b = f64::from(self.t_b);
@@ -269,7 +269,7 @@ fn reduce(
 pub(crate) mod tests {
     use super::*;
 
-    /// A skill with info, timing and steps rows in every arcdps log (1066).
+    /// A skill with info, timing and steps rows in every EVTC log (1066).
     pub(crate) const KNOWN_SKILL: u32 = 1066;
 
     #[test]
@@ -295,7 +295,7 @@ pub(crate) mod tests {
         assert!(rows(u32::MAX).is_empty());
     }
 
-    /// Values from arcdps's kind-1 starts (24 576 of 24 576 starts in the six 20261124 logs match
+    /// Values from the EVTC kind-1 starts (24 576 of 24 576 starts in the six 20261124 logs match
     /// this reduction): a plain skill and the q40 rounding.
     #[test]
     fn timing_matches_arcdps_starts() {

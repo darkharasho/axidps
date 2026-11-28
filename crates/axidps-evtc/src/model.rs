@@ -2,7 +2,7 @@
 
 /// Build string written into the header (8 ASCII digits).
 pub const FORMAT_BUILD: &str = "20261115";
-/// Boss id arcdps writes for WvW logs.
+/// Boss id EVTC logs carry for WvW logs.
 pub const BOSS_ID_WVW: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

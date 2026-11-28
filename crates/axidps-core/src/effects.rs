@@ -1,10 +1,10 @@
-//! Effect and missile rows (EVTC statechanges 57-63 and 79), as arcdps
-//! writes them.
+//! Effect and missile rows (EVTC statechanges 57-63 and 79), as EVTC logs
+//! carry them.
 //!
-//! Positions and angles arrive quantized (i16, as arcdps writes them); here they are only packed
-//! into the 64-byte event the way arcdps lays them out. Per missile id this keeps the owner and
+//! Positions and angles arrive quantized (i16, as EVTC logs carry them); here they are only packed
+//! into the 64-byte event the way EVTC logs lay them out. Per missile id this keeps the owner and
 //! skill of the create (a fallback when the DLL could not read the game object) and the launch
-//! target arcdps records, which outlives the missile like arcdps's side table (a create resets
+//! target EVTC logs record, which outlives the missile (like the EVTC side table; a create resets
 //! only its hit counters, which are not reproduced: 59's value and is_flanking are written 0).
 
 use std::collections::BTreeMap;
@@ -72,7 +72,7 @@ impl Row {
     }
 }
 
-/// Two i16 as one 32-bit word, low first (arcdps writes consecutive i16s).
+/// Two i16 as one 32-bit word, low first (EVTC logs carry consecutive i16s).
 fn pair(lo: i16, hi: i16) -> u32 {
     u32::from(lo as u16) | (u32::from(hi as u16) << 16)
 }
@@ -81,7 +81,7 @@ fn pair(lo: i16, hi: i16) -> u32 {
 struct Missile {
     owner: u32,
     skill: u32,
-    /// The target arcdps recorded at the last qualifying launch (0 = none).
+    /// The target EVTC logs record at the last qualifying launch (0 = none).
     target: u32,
 }
 
@@ -189,7 +189,7 @@ impl Effects {
             } => {
                 let (owner, skill) = self.owner_skill(id, owner, skill, bits);
                 let still = bits & MISSILE_OBJECT != 0 && bits & MISSILE_STILL != 0;
-                // arcdps records the target of a launch from rest, if it knows the agent.
+                // EVTC logs record the target of a launch from rest, if it knows the agent.
                 if still && target != 0 {
                     self.missiles.entry(id).or_default().target = target;
                 }
@@ -448,7 +448,7 @@ mod tests {
         e.apply(&launch(9, 3, 5491, 0, MISSILE_OBJECT | MISSILE_STILL)); // no target
         assert_eq!(one(&mut e, remove(9, 3, 5491, 0, MISSILE_OBJECT)).dst, 0);
         e.apply(&launch(9, 3, 5491, 7, MISSILE_OBJECT | MISSILE_STILL));
-        // A new missile with the same id keeps the recorded target, as arcdps's side table.
+        // A new missile with the same id keeps the recorded target, as the EVTC side table.
         e.apply(&create(9, 4, 6000));
         assert_eq!(one(&mut e, remove(9, 4, 6000, 0, MISSILE_OBJECT)).dst, 7);
     }

@@ -1,5 +1,5 @@
-// Generated from 5229 arcdps logs. Do not edit.
-//! Buff facts arcdps reads from buff definitions, recovered from its logs.
+// Generated from 5229 EVTC logs. Do not edit.
+//! Buff facts EVTC logs read from buff definitions, recovered from EVTC logs.
 
 /// `(buff id, max stacks)`, sorted by id: an apply onto this many stacks has overstack.
 pub const MAX_STACKS: &[(u32, u16)] = &[

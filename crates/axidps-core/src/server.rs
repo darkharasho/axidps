@@ -1,7 +1,7 @@
-//! The game server's tick, extrapolated as arcdps does, and the server values that ride with it
+//! The game server's tick, extrapolated as the EVTC format expects, and the server values that ride with it
 //! (EVTC sc 84 TICK, 42 INSTANCESTART, 16 SHARDID).
 //!
-//! arcdps keeps its tick state in one object: every agent-action message stores its tick,
+//! The tick state lives in one object: every agent-action message stores its tick,
 //! and it extrapolates from the last one at a rate
 //! measured over a few hundred ms, capped at 640 ms before falling back to the nominal 40 ms per
 //! tick. axidps gets the tick from `Event::ServerTick` (at most every 100 ms, with the event's
@@ -16,7 +16,7 @@ const MEASURED_MS: u64 = 640;
 /// A sc 84 row each time the extrapolated tick passes the next multiple of this many ticks.
 pub const ROW_TICKS: u32 = 25;
 
-/// arcdps's tick state.
+/// The EVTC tick state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TickClock {
     /// Last real tick.
@@ -50,7 +50,7 @@ impl TickClock {
         }
     }
 
-    /// arcdps's reset: the times and both baseline ticks go to 0; the last tick stays.
+    /// The EVTC reset: the times and both baseline ticks go to 0; the last tick stays.
     pub fn reset(&mut self) {
         self.at = 0;
         self.base_at = 0;
@@ -65,7 +65,7 @@ impl TickClock {
     }
 
     /// `(extrapolated tick, ticks extrapolated since the last real one)` at `now`,
-    /// with arcdps's integer widths.
+    /// with the EVTC integer widths.
     pub fn extrapolate(&self, now: u64) -> (u32, u32) {
         let dticks = u64::from(self.base_tick.wrapping_sub(self.prev_tick).max(1));
         let ms_per_tick =
@@ -120,7 +120,7 @@ impl Server {
         }
     }
 
-    /// A map load: arcdps resets the tick; the shard ids and address belong to the old map.
+    /// A map load: EVTC logs reset the tick; the shard ids and address belong to the old map.
     pub fn map_loaded(&mut self) {
         self.clock.reset();
         self.server_ip = 0;
@@ -128,7 +128,7 @@ impl Server {
     }
 }
 
-/// sc 84 rows for one log, as arcdps: `next` is set to the
+/// sc 84 rows for one log, as EVTC logs: `next` is set to the
 /// extrapolated tick at log start. Each evaluation writes at most one row, when the
 /// extrapolated tick is past `next`, and moves `next` on by [`ROW_TICKS`].
 #[derive(Debug, Clone, Copy)]
@@ -153,7 +153,7 @@ impl TickRows {
 }
 
 /// sc 42's src: the instance start in the log's clock, `start - (u32)(tick * 40)`, wrapping
-/// like arcdps (negative when the instance is older than the clock's zero).
+/// as in EVTC logs (negative when the instance is older than the clock's zero).
 pub fn instance_start(start_ms: u64, start_tick: u32) -> u64 {
     start_ms.wrapping_sub(u64::from(start_tick.wrapping_mul(MS_PER_TICK)))
 }
@@ -237,7 +237,7 @@ mod tests {
         );
     }
 
-    /// arcdps log 20261124-211816: log start 396294 at tick 505552, sc 42 src
+    /// EVTC log 20261124-211816: log start 396294 at tick 505552, sc 42 src
     /// 0xfffffffffed17b86; log 211839: start 411860 at tick 505941, src 0xfffffffffed17b8c. // public-check:ok
     #[test]
     fn instance_start_matches_arcdps() {
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(instance_start(411_860, 505_941), 0xffff_ffff_fed1_7b8c); // public-check:ok
     }
 
-    /// arcdps log 211816: sc 84 src 505553, 505578, 505603, 505628 (start tick 505552): the
+    /// EVTC log 211816: sc 84 src 505553, 505578, 505603, 505628 (start tick 505552): the
     /// first row one tick after the start, then each time the tick passes start + 25k.
     #[test]
     fn rows_every_25_ticks_from_log_start() {

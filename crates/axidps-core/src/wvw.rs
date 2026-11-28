@@ -1,4 +1,4 @@
-//! WvW objective status (EVTC sc 75): arcdps's per-objective cache.
+//! WvW objective status (EVTC sc 75): the EVTC per-objective cache.
 //! Keyed by the claimable's GUID and never
 //! cleared (entries outlive map changes; the map test filters them).
 
@@ -22,7 +22,7 @@ pub struct Objectives {
 }
 
 impl Objectives {
-    /// Apply a `WvwObjective` on map `current`; returns the entry when arcdps writes a row: a
+    /// Apply a `WvwObjective` on map `current`; returns the entry when EVTC logs carry a row: a
     /// progress message whose map is the current one, or an owner message for an entry a
     /// progress message already put on the current map.
     pub fn apply(&mut self, ev: &Event, current: Option<u32>) -> Option<Objective> {
@@ -53,7 +53,7 @@ impl Objectives {
         (e.map != 0 && Some(e.map) == current).then_some(*e)
     }
 
-    /// The entries arcdps writes again at a WvW log start: those on map `current`.
+    /// The entries EVTC logs carry again at a WvW log start: those on map `current`.
     pub fn on_map(&self, current: u32) -> impl Iterator<Item = Objective> + '_ {
         self.entries
             .values()
@@ -63,7 +63,7 @@ impl Objectives {
 }
 
 /// Team id and world id per colour (red, blue, green), last seen wins and never reset, like
-/// arcdps's globals behind sc 74. A colour never seen stays 0, as arcdps writes it.
+/// The EVTC globals behind sc 74. A colour never seen stays 0, as EVTC logs carry it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Teams {
     pub teams: [u32; 3],
@@ -85,7 +85,7 @@ impl Teams {
         }
     }
 
-    /// arcdps's sc 74 fields `(src, dst, value, buff_dmg)`: red | blue world << 32,
+    /// The EVTC sc 74 fields `(src, dst, value, buff_dmg)`: red | blue world << 32,
     /// green world | red team << 32, blue team, green team.
     pub fn row(&self) -> Option<(u64, u64, i32, i32)> {
         let [r, b, g] = self.teams;

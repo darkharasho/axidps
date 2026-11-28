@@ -176,7 +176,7 @@ impl LogAction {
     }
 }
 
-/// An agent's life state; core writes these as arcdps CHANGEUP / CHANGEDOWN / CHANGEDEAD.
+/// An agent's life state; core writes these as the EVTC CHANGEUP / CHANGEDOWN / CHANGEDEAD.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -261,7 +261,7 @@ pub enum Event {
         team: u32,
         subgroup: u8,
         /// A player's WvW rank number; 0 = none or unread. Core turns it into
-        /// arcdps's rank-title name for players outside the squad.
+        /// The EVTC rank-title name for players outside the squad.
         wvw_rank: u32,
         /// The per-type index (1..=105) of the player's WvW rank def; 0 = none or unread. Core
         /// uses it when `wvw_rank` is 0.
@@ -306,7 +306,7 @@ pub enum Event {
     LogControl { action: LogAction, reason: u8 },
     /// Kind 12.
     State { id: u32, state: AgentState },
-    /// Kind 13. `xyz` are f32 bit patterns, in game units as arcdps writes them.
+    /// Kind 13. `xyz` are f32 bit patterns, in game units as EVTC logs carry them.
     Motion {
         id: u32,
         kind: MotionKind,
@@ -339,7 +339,7 @@ pub enum Event {
     /// Kind 21. A marker on an agent (`tag` = marker definition id; 0 = clear), and whether it is
     /// a commander tag.
     Tag { id: u32, tag: u32, commander: bool },
-    /// Kind 18. `agent` starts a cast. `target` 0 = none; `kind` is arcdps's start kind (1-9,
+    /// Kind 18. `agent` starts a cast. `target` 0 = none; `kind` is the EVTC start kind (1-9,
     /// written as the row's `result`); `x` is the start's extra value, or the pseudo-skill's
     /// value.
     CastStart {
@@ -349,8 +349,8 @@ pub enum Event {
         kind: u8,
         x: u32,
     },
-    /// Kind 19. A message that ends `agent`'s open cast, by arcdps end site code. Core applies
-    /// arcdps's conditions (sites 12, 15, 22, 23, 27 depend on the open cast and agent flags).
+    /// Kind 19. A message that ends `agent`'s open cast, by EVTC end site code. Core applies
+    /// The EVTC end conditions (sites 12, 15, 22, 23, 27 depend on the open cast and agent flags).
     CastEnd { agent: u32, site: u8 },
     /// Kind 22. An agent's breakbar as the poll read it: `state` (0 active, 1 recover, 2 immune,
     /// 3 none) and the percent's f32 bits; (3, 0.0) when it has no breakbar object. Sent on
@@ -359,8 +359,8 @@ pub enum Event {
     /// Kind 23. A ground effect created (EVTC sc 60). `owner` 0 = none; `duration`
     /// ms, `u32::MAX` = infinite; `tracking` 0 = not trackable. `pos` is game units /10,
     /// `orient` radians x1000 (z only for a single angle, zeros for none), `scale` and `shields`
-    /// x1000, all quantized as arcdps does. `flags` and `flanking` are the message's bytes arcdps
-    /// copies.
+    /// x1000, all quantized as the EVTC format expects. `flags` and `flanking` are the message's bytes the
+    /// EVTC row copies.
     EffectGround {
         effect: u32,
         owner: u32,
@@ -386,7 +386,7 @@ pub enum Event {
     /// Kind 26. A tracked effect on `host` ended (sc 63).
     EffectAgentRemove { host: u32, tracking: u32 },
     /// Kind 27. A missile created (sc 57). `skin` = the missile's skin, `pos` game units /10;
-    /// `word_1e`, `byte_22`, `byte_23` are the message fields arcdps copies (meaning unknown).
+    /// `word_1e`, `byte_22`, `byte_23` are the message fields EVTC logs copy (meaning unknown).
     MissileCreate {
         id: u32,
         owner: u32,
@@ -423,7 +423,7 @@ pub enum Event {
         pos: [i16; 3],
         bits: u8,
     },
-    /// Kind 30. An effect on a missile (sc 79). `effect` and `value` as arcdps writes
+    /// Kind 30. An effect on a missile (sc 79). `effect` and `value` as EVTC logs carry
     /// them; `owner` from the object when `bits & MISSILE_OBJECT`.
     MissileEffect {
         id: u32,
@@ -473,13 +473,13 @@ pub enum Event {
         flag36: bool,
     },
     /// Kind 36. A jump start (sc 86), with the row's `offcycle`. The end rides on the site-23
-    /// end ([`Event::CastEnd`]), as in arcdps.
+    /// end ([`Event::CastEnd`]), as in EVTC logs.
     Jump { id: u32, offcycle: u8 },
-    /// Kind 37. A fly-to start (sc 88): the target and speed, each quantized like arcdps
+    /// Kind 37. A fly-to start (sc 88): the target and speed, each quantized as the EVTC format expects
     /// (clamped, /10, rounded). The end rides on site 23, like the jump's.
     FlyTo { id: u32, pos: [i16; 3], speed: i16 },
     /// Kind 38. A teleport (sc 85): `kind` and `arg` from the message, `dst` and `value` the target
-    /// (x and y as f32 then z). Sent for every such message; core applies arcdps's condition and
+    /// (x and y as f32 then z). Sent for every such message; core applies the EVTC condition and
     /// its squad-only rule for the target.
     Teleport {
         id: u32,
@@ -491,7 +491,7 @@ pub enum Event {
     /// Kind 39. A gadget animation (sc 77), with the animation `token`.
     GadgetAnimation { id: u32, token: u64 },
     /// Kind 40. A transformation (sc 73): timed (`duration` ms, `shields` false) or untimed
-    /// (`duration` 0, `shields` true). `transform` 0 = back to normal; `offcycle` as arcdps
+    /// (`duration` 0, `shields` true). `transform` 0 = back to normal; `offcycle` as EVTC logs
     /// writes it.
     Transform {
         id: u32,
@@ -500,8 +500,8 @@ pub enum Event {
         duration: u32,
         shields: bool,
     },
-    /// Kind 41. The game server's tick and the values arcdps writes with it.
-    /// Pushed when the tick on the game's strike messages (arcdps's source) changed and at least
+    /// Kind 41. The game server's tick and the values EVTC logs carry with it.
+    /// Pushed when the tick on the game's strike messages (the EVTC source) changed and at least
     /// `SERVER_TICK_MIN_MS` passed since the last push; the event time is the "now" of the tick.
     /// `ping` = last ping ms (sc 84 value; 0 = unread), `server_ip` = the game server's IPv4 as
     /// stored in a `sockaddr_in` (sc 42 value; 0 = unread), `shard_ids` = the map load's
@@ -519,7 +519,7 @@ pub enum Event {
     /// Kind 42. A condition (buff) damage tick the game reports for the local player, dealt or
     /// taken: a combat hit on a buff skill with a non-zero stack count. `src` 0 = no
     /// source agent.
-    /// `value` = health plus barrier damage (each truncated, as arcdps sums them; never a heal);
+    /// `value` = health plus barrier damage (each truncated, as EVTC logs sum them; never a heal);
     /// `barrier` = the part barrier absorbed; `stacks` = the hit's stack count.
     BuffDamage {
         src: u32,
@@ -531,7 +531,7 @@ pub enum Event {
     },
     /// Kind 43. A heal or barrier the game reports for the local player (or its pets and minions),
     /// given or received: a combat hit with a positive amount. Core writes it as a
-    /// healing-extension row. `value` = health healed plus barrier given (each truncated, as arcdps
+    /// healing-extension row. `value` = health healed plus barrier given (each truncated, as EVTC logs
     /// sums them; always > 0); `barrier` = the barrier part; `buff` = the skill is a buff
     /// (regeneration and other heal-over-time ticks), else a direct heal.
     Heal {
@@ -578,9 +578,9 @@ pub enum Event {
     },
     /// Kind 47. A player's guild changed: the 16-byte guild GUID as the game keeps it
     /// (client byte order; all zero = none). Sent on change, so a first read of zero sends
-    /// nothing. Core writes it as arcdps's GUILD rows (sc 29) for the squad at log start.
+    /// nothing. Core writes it as the EVTC GUILD rows (sc 29) for the squad at log start.
     AgentGuild { id: u32, guid: [u8; 16] },
-    /// Kind 48. A player's account GUID: 16 bytes (client byte order), the key arcdps gives
+    /// Kind 48. A player's account GUID: 16 bytes (client byte order), the key EVTC logs give
     /// every player but the POV, enemies included. Sent once per life when first
     /// read non-zero, again if it changes, and with the identity re-push; never zero. Core merges
     /// a player's lives in a fight by it.
@@ -643,7 +643,7 @@ pub enum Event {
         value: u32,
     },
     /// Kind 54. A reward (EVTC sc 17): `kind` = the reward type, `id` = the reward id, as
-    /// arcdps writes them.
+    /// EVTC logs carry them.
     Reward { id: u32, kind: u16 },
     /// Kind 55. A WvW team's colour (EVTC sc 74): from the team's content definition:
     /// `team` = its id, `colour` 1 red / 2 blue / 3 green by the definition's GUID (0 = none of
@@ -656,9 +656,9 @@ pub enum Event {
     AttackTarget { id: u32, parent: u32 },
     /// Kind 57. A WvW colour's world (EVTC sc 74 world ids): `colour` 1 red / 2 blue / 3 green,
     /// `world` = the world id (the 11001.. ids). Read when the game resolves the colour's
-    /// guest world, as arcdps does; sent on a change.
+    /// guest world, as the EVTC format expects; sent on a change.
     WvwWorld { colour: u8, world: u32 },
-    /// Kind 58. A player's attribute points from equipped gear, as arcdps rebuilds them:
+    /// Kind 58. A player's attribute points from equipped gear, as EVTC logs rebuild them:
     /// per equipped item, `round(adjustment ×
     /// multiplier)` for each itemstat entry, summed by attribute id (`attrs[i]` = CHAR_ATTRIBUTE
     /// i: 1 Power … 7 Condition Damage … 9 Expertise). `alt` 0: the itemstats' normal lists; 1:

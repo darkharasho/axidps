@@ -1,6 +1,6 @@
 //! Finding the Guild Wars 2 folder. Ported from AxiOM's `electron/arcdps.ts`, restricted to
 //! the 64-bit game: the DLL must sit beside `Gw2-64.exe`, which is where the proxy looks for
-//! arcdps.
+//! the game.
 
 use std::path::{Path, PathBuf};
 
@@ -346,7 +346,7 @@ fn wine_prefix(game: &Path) -> Option<PathBuf> {
         .then(|| steamapps.join("compatdata").join(GW2_APP_ID).join("pfx"))
 }
 
-/// The arcdps log folder inside the Wine prefix the game in `game` runs from, for core's
+/// The EVTC log folder inside the Wine prefix the game in `game` runs from, for core's
 /// `--log-dir`. The prefix user is `steamuser` (Proton), then `user`, then any other with a
 /// Documents folder. `None` when there is no such prefix or folder, or when the prefix's
 /// Documents resolves into `home/Documents`: core never writes to the user's own Documents.

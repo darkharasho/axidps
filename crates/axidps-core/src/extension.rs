@@ -63,7 +63,7 @@ pub fn rows(
 pub const HEALING_SIG: u32 = 0x9c9b_3c99; // public-check:ok
 /// Its EVTC revision; Elite Insights reads revisions 1 and 2.
 pub const HEALING_REVISION: u64 = 2;
-/// `is_statechange` of the addon's combat rows (arcdps `e10`, EXTENSION_COMBAT).
+/// `is_statechange` of the addon's combat rows (extension event `e10`, EXTENSION_COMBAT).
 pub const STATECHANGE_EXTENSION_COMBAT: u8 = 49;
 /// The version string axidps writes in the registration row. The addon writes its own version
 /// (`2.20rc1` in the owner's logs); readers only display it.
@@ -75,7 +75,7 @@ pub const HEAL_TARGET_DOWNED: u8 = 1 << 5;
 pub const HEAL_FROM_DST: u8 = 1 << 6;
 pub const HEAL_FROM_SRC: u8 = 1 << 7;
 
-/// The healing extension's registration row, as the addon writes it with arcdps `e9` at squad
+/// The healing extension's registration row, as the addon writes it with extension event `e9` at squad
 /// combat start: `is_statechange` 40, `pad` 0, `src_agent` = signature | revision << 32 |
 /// version length << 56, `dst_agent` = the version string's bytes.
 pub fn healing_registration(time: u64) -> EvtcEvent {

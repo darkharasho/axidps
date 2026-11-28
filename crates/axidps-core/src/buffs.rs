@@ -1,7 +1,7 @@
-//! Buff stacks and the EVTC rows arcdps writes for them.
+//! Buff stacks and the EVTC rows EVTC logs carry for them.
 //!
 //! The DLL forwards the game's buff messages raw; this keeps each stack (target + instance id)
-//! so removes and stack changes can carry the buff id and times arcdps reads from the game.
+//! so removes and stack changes can carry the buff id and times EVTC logs read from the game.
 
 use std::collections::BTreeMap;
 
@@ -9,7 +9,7 @@ use axidps_protocol::v2::{Event, StackChange};
 
 use crate::buff_tables::{MAX_STACKS, TICKING};
 
-/// arcdps's buff statechange codes (it writes its internal kinds unchanged).
+/// The EVTC buff statechange codes (its internal kinds are written unchanged).
 pub const BUFF_INITIAL: u8 = 18;
 pub const STACK_ACTIVE: u8 = 27;
 pub const STACK_RESET: u8 = 28;
@@ -31,7 +31,7 @@ pub struct Stack {
     /// When the remaining time was last `duration` (applied, or back-dated on STACKACTIVE).
     pub start: u64,
     pub active: bool,
-    /// arcdps's own remaining-time counter (its overstack source): set on apply, duration change
+    /// The EVTC remaining-time counter (the overstack source): set on apply, duration change
     /// and reset, and lowered by up to 1000 ms on each of the target's condition ticks.
     pub left: u32,
     /// The apply's level byte (formula level; 80 in WvW).
@@ -47,7 +47,7 @@ pub struct Fired {
     /// `(src, buff, level, ms)` per active stack, one entry per stack. `ms` is how much of the
     /// second up to the tick the stack was on (1000 for a full second): the game deals a
     /// condition's damage per second of duration, so a stack that lands or ends mid-second
-    /// deals that part of a tick, and arcdps's estimates do the same.
+    /// deals that part of a tick, and the EVTC estimates do the same.
     pub stacks: Vec<(u32, u32, u8, u16)>,
 }
 
@@ -81,11 +81,11 @@ pub struct Row {
     pub pad: u32,
 }
 
-/// arcdps's iff byte for "unknown".
+/// The EVTC iff byte for "unknown".
 pub const IFF_UNKNOWN: u8 = 2;
 
 impl Row {
-    /// The row's iff byte, as arcdps writes it on buff rows that parsers read: a remove with no
+    /// The row's iff byte, as EVTC logs carry it on buff rows that parsers read: a remove with no
     /// remover (an expiry or an overstack) is unknown; everything else is written as 0.
     pub fn iff(&self) -> u8 {
         let remove = matches!(self.statechange, BUFF_REMOVE_ONE | BUFF_REMOVE_ALL);
@@ -119,7 +119,7 @@ fn remove_row(now: u64, dst: u32, remover: u32, inst: u32, s: &Stack, kind: u8) 
     }
 }
 
-/// arcdps's condition tick period.
+/// The EVTC condition tick period.
 const TICK_MS: u64 = 1000;
 
 /// How many ms of the tick's second `(from, at]` a stack on from `applied` to `end` covered.
@@ -128,7 +128,7 @@ fn on_ms(from: u64, at: u64, applied: u64, end: u64) -> u16 {
     u16::try_from(ms.min(TICK_MS)).unwrap_or(1000)
 }
 
-/// A remove with at most this much time left is the stack running out, not a cleanse (arcdps's
+/// A remove with at most this much time left is the stack running out, not a cleanse (the EVTC
 /// own is_offcycle threshold on removes).
 const EXPIRY_SLACK_MS: u32 = 40;
 
@@ -158,13 +158,13 @@ fn starts_tick(buff: u32) -> bool {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stacks {
     map: BTreeMap<(u32, u32), Stack>,
-    /// Next condition tick per target (arcdps model: starts on the first apply of a ticking buff
+    /// Next condition tick per target (EVTC model: starts on the first apply of a ticking buff
     /// and keeps its phase while the target is known).
     ticks: BTreeMap<u32, u64>,
     /// Keep a [`Fired`] per tick in `fired` (the assembler turns it on for its copy).
     record: bool,
     fired: Vec<Fired>,
-    /// Ticking stacks removed since their target's last tick (recorded only): arcdps queues a
+    /// Ticking stacks removed since their target's last tick (recorded only): EVTC logs queue a
     /// stack for the next tick while it is active, so one that ends mid-second still counts.
     /// `(target, src, buff, level, applied, ended)`.
     ended: Vec<(u32, u32, u32, u8, u64, u64)>,
@@ -201,7 +201,7 @@ impl Stacks {
                     }
                 }
             }
-            // Stacks that ended inside this second still tick once (arcdps's queue).
+            // Stacks that ended inside this second still tick once (the EVTC queue).
             let mut i = 0;
             while i < self.ended.len() {
                 let (t, src, buff, level, applied, end) = self.ended[i];
@@ -223,7 +223,7 @@ impl Stacks {
                 });
             }
             if !ticking {
-                // Nothing ticked: the timer stops; the next ticking apply restarts it (arcdps
+                // Nothing ticked: the timer stops; the next ticking apply restarts it (as in EVTC logs
                 // clears its active flag, and the game restarts the phase too).
                 self.ticks.remove(&agent);
                 return;
@@ -242,7 +242,7 @@ impl Stacks {
         }
     }
 
-    /// Whether `agent` holds any stack of a buff matching `pred` (active or not, as arcdps's
+    /// Whether `agent` holds any stack of a buff matching `pred` (active or not, as the EVTC
     /// per-agent buff walk).
     pub fn holds(&self, agent: u32, pred: impl Fn(u32) -> bool) -> bool {
         self.map
@@ -305,7 +305,7 @@ impl Stacks {
         std::mem::take(&mut self.fired)
     }
 
-    /// arcdps's overstack and is_offcycle for an apply of `buff` onto `dst`, before it is added:
+    /// The EVTC overstack and is_offcycle for an apply of `buff` onto `dst`, before it is added:
     /// at max stacks, the least time left on the target's stacks of it.
     fn overstack(&self, dst: u32, buff: u32) -> (u32, u8) {
         let held = self.map.range((dst, 0)..=(dst, u32::MAX)).map(|(_, s)| s);
@@ -324,7 +324,7 @@ impl Stacks {
         (over, u8::from(marker))
     }
 
-    /// Apply a buff event at `now`; the rows arcdps would write for it.
+    /// Apply a buff event at `now`; the rows an EVTC log would carry for it.
     pub fn apply(&mut self, now: u64, ev: &Event) -> Vec<Row> {
         let target = match *ev {
             Event::BuffApply { dst, .. }
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn apply_at_max_carries_shortest_left_without_tick() {
-        // Might never starts a tick: arcdps's remaining stays the full duration.
+        // Might never starts a tick: the EVTC remaining stays the full duration.
         let mut s = Stacks::default();
         s.apply(0, &apply(5, 7, 740, 0, 4000, true));
         for i in 1..25 {
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn a_stack_ending_mid_second_ticks_once_more() {
         // Bleeding 2500 ms from 0: ticks at 1000 and 2000 while held, and at 3000 for the half
-        // second it was still on (arcdps queues it). Then the timer stops.
+        // second it was still on (EVTC logs queue it). Then the timer stops.
         let mut s = Stacks::default();
         s.record_ticks();
         s.apply(0, &apply(5, 7, 736, 1, 2500, true));
@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(s.len(), 1);
     }
 
-    /// Removes with no remover (expiry, overstack) are iff unknown, as arcdps writes them;
+    /// Removes with no remover (expiry, overstack) are iff unknown, as EVTC logs carry them;
     /// removes by someone, and every other row, are 0.
     #[test]
     fn removes_without_a_remover_are_iff_unknown() {

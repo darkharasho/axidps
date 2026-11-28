@@ -1,22 +1,22 @@
-//! The condition model: other players' condition ticks, estimated the way arcdps does,
+//! The condition model: other players' condition ticks, estimated the way EVTC logs record them,
 //! from game data only:
 //!
 //! - **When:** a target ticks every 1000 ms once its first ticking condition lands (the phase
-//!   [`crate::buffs::Stacks`] already keeps for arcdps's overstack). Every stack counts for the
+//!   [`crate::buffs::Stacks`] already keeps for the EVTC overstack). Every stack counts for the
 //!   part of the second before the tick it was on: a stack that lands or ends mid-second deals
-//!   that part of a tick (the game's damage is per second of duration; arcdps's rows match).
+//!   that part of a tick (the game's damage is per second of duration; the EVTC rows match).
 //! - **How much:** the buff's damage modifier from game content (`BuffFormula`, kind 50),
 //!   evaluated as the game's own formula evaluator does, with the source's attributes from
 //!   `CoreStats` (kind 49). Minions use their master's stats.
-//! - **Which modifier is damage:** learned from Poison (723) like arcdps: the `target` kind of
+//! - **Which modifier is damage:** learned from Poison (723) like EVTC logs: the `target` kind of
 //!   its first condition-damage-scaled modifier (formula type 1 or 2).
 //! - **Which modifiers apply:** a buff lists trait and mode variants next to its base formula
 //!   (Bleeding has 9 damage modifiers). Only modifiers whose game-mode context fits the map
 //!   ([`mode_applies`]) and that need no trait or buff (`prereq`) are summed. Recordings from
 //!   before `prereq` was sent have no usable formula.
 //!
-//! Not modelled yet: outgoing/incoming condition-damage % (arcdps builds them from buffs and
-//! traits), the level downscale (1 in WvW, everyone is 80), and arcdps's per-trait special
+//! Not modelled yet: outgoing/incoming condition-damage % (EVTC logs build them from buffs and
+//! traits), the level downscale (1 in WvW, everyone is 80), and the EVTC per-trait special
 //! cases. The self-check against the POV's exact ticks measures what that costs.
 
 use std::collections::BTreeMap;
@@ -27,7 +27,7 @@ use crate::buffs::Fired;
 
 /// Poison: the buff whose condition-damage modifier names the damage kind.
 pub const POISON: u32 = 723;
-/// Attribute indexes in `CoreStats` (game enum; *guess* from arcdps/EI, P6).
+/// Attribute indexes in `CoreStats` (game enum; *guess* from EVTC parsers, P6).
 pub const POWER: usize = 1;
 pub const FEROCITY: usize = 5;
 pub const HEALING: usize = 6;
@@ -67,13 +67,13 @@ pub fn mode_applies(context: u32, mode: GameMode) -> bool {
     }
 }
 
-/// Players' flat base (as arcdps, level 80): +1000 to Power, Precision,
+/// Players' flat base (as in EVTC logs, level 80): +1000 to Power, Precision,
 /// Toughness and Vitality.
 pub const PLAYER_BASE: [(usize, i16); 4] = [(1, 1000), (2, 1000), (3, 1000), (4, 1000)];
 
 /// Buff modifier kind -> attribute index (CHAR_ATTRIBUTE, as `CoreStats` and itemstats number
 /// them). Kinds come in pairs: even flat (gear, food, infusions), odd level-scaled (boons,
-/// signets); arcdps maps both to one slot (Might is 0x7 condition damage and
+/// signets); EVTC logs map both to one slot (Might is 0x7 condition damage and
 /// 0xf power, +30 each at level 80).
 /// Buff modifier kind: incoming condition damage %, added per instance (Vulnerability mod 1;
 /// mod 0, kind 41, is the strike one).
@@ -273,7 +273,7 @@ pub fn eval(m: &Modifier, level: u8, src: &Stats) -> Option<f32> {
     })
 }
 
-/// One estimated condition tick: arcdps's row for `(src, dst, buff)` at `time`.
+/// One estimated condition tick: the EVTC row for `(src, dst, buff)` at `time`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tick {
     pub time: u64,
@@ -516,7 +516,7 @@ impl Model {
         self.rebuilt_stats(id, buffs)
     }
 
-    /// `id`'s attributes rebuilt like arcdps: the player base, itemstat points (the WvW lists
+    /// `id`'s attributes rebuilt like EVTC logs: the player base, itemstat points (the WvW lists
     /// in WvW), and the modifiers of its gear skills and active buffs `buffs(id)` (`(buff,
     /// level)` per active instance). A skill that is both gear and an active buff (item infix
     /// buffs show on the buff bar too) counts max(copies, instances) times. Traits are not

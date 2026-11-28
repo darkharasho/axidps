@@ -87,7 +87,7 @@ pub struct Processor {
     registry: Registry,
     /// Buff stacks, kept in and out of fights.
     buffs: Stacks,
-    /// Open casts and arcdps's per-agent cast flags, kept in and out of fights.
+    /// Open casts and the EVTC per-agent cast flags, kept in and out of fights.
     casts: Casts,
     /// The missile table, kept in and out of fights.
     effects: Effects,
@@ -917,7 +917,7 @@ mod tests {
     }
 
     /// The server tick is kept between fights and seeds the next one; a map change resets it
-    /// (arcdps resets its tick at a map load); in a fight the ticks are recorded.
+    /// (EVTC logs reset their tick at a map load); in a fight the ticks are recorded.
     #[test]
     fn server_tick_seeds_fight_and_map_change_resets_it() {
         let tick = |tick| Event::ServerTick {

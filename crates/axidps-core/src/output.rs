@@ -96,8 +96,8 @@ fn proton_log_dir(home: &Path) -> Option<PathBuf> {
 }
 
 /// Encode `log` and write it as `<end local time>_axidps.zevtc` in `dir`. The suffix matters:
-/// beside arcdps in its log folder, arcdps names the same fight's log by the same time, and when
-/// ours took that name first arcdps could not rename its finished `.tmp.zip` and its log was lost.
+/// beside other loggers in the same log folder, which can name the same fight's log by the same time, and when
+/// ours took that name first the other logger could not rename its finished `.tmp.zip` and its log was lost.
 pub fn write_fight(
     dir: &Path,
     log: &Log,
@@ -208,7 +208,7 @@ mod tests {
         let p = write_fight(&dir, &log, end, to_local).unwrap();
         assert_eq!(p.file_name().unwrap(), "20261118-200601_axidps.zevtc");
         assert!(p.exists());
-        // arcdps's log of the same fight keeps its own name free.
+        // Another logger's log of the same fight keeps its own name free.
         assert!(!dir.join("20261118-200601.zevtc").exists());
     }
 }

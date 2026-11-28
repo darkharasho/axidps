@@ -1,5 +1,5 @@
-// Generated from 5229 arcdps logs. Do not edit.
-//! Skill and buff names by id, as arcdps writes them (newest name wins).
+// Generated from 5229 EVTC logs. Do not edit.
+//! Skill and buff names by id, as EVTC logs carry them (newest name wins).
 
 /// `(skill id, name)`, sorted by id.
 pub const SKILL_NAMES: &[(u32, &str)] = &[

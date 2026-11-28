@@ -1,12 +1,12 @@
-//! Names arcdps writes for players outside the squad: the WvW rank title on WvW maps, else the
+//! Names EVTC logs carry for players outside the squad: the WvW rank title on WvW maps, else the
 //! elite specialization or profession name.
 //!
-//! arcdps decodes these from the game's text (localized); the tables here are the English ones,
+//! EVTC logs decode these from the game's text (localized); the tables here are the English ones,
 //! from the API (`/v2/wvw/ranks`, `/v2/specializations`).
 
 /// Whether a MumbleLink map type is a WvW map: Eternal Battlegrounds (9), the three
 /// borderlands (10-12), Fortune's Vale (13), Obsidian Sanctum (14) and the Edge of the Mists
-/// (15); not the Armistice Bastion lounge (18). arcdps checks the map def's type against 7 WvW
+/// (15); not the Armistice Bastion lounge (18). EVTC logs check the map def's type against 7 WvW
 /// types; the exact set is not recovered.
 pub fn is_wvw_map(map_type: u32) -> bool {
     (9..=15).contains(&map_type)
@@ -70,7 +70,7 @@ pub fn wvw_title(id: u8) -> Option<String> {
     Some(format!("{}{}", TIER.get(i / 15)?, WORD.get(i % 15)?))
 }
 
-/// arcdps's non-WvW name for a player: the elite spec's name, else the profession's; "" for an
+/// The EVTC non-WvW name for a player: the elite spec's name, else the profession's; "" for an
 /// unknown profession.
 pub fn spec_name(prof: u32, elite: u32) -> &'static str {
     let elite = match elite {

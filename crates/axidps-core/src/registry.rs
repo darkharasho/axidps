@@ -6,7 +6,7 @@ use axidps_protocol::v2::{AgentKind, AgentState, Event, NameField};
 
 use crate::names;
 
-/// First agent address handed out (arcdps's POV addr in the fixture is 0x7d0).
+/// First agent address handed out (the EVTC POV addr in the fixture is 0x7d0).
 pub const FIRST_ADDR: u64 = 2000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,16 +40,16 @@ pub struct AgentInfo {
     pub shape: Vec<(u32, u32)>,
     /// Attack targets: the parent gadget (sc 23; also the master). Cleared on despawn.
     pub attack_parent: Option<u32>,
-    /// Players: the WvW rank def id (1..=105) of the first rank read this life; arcdps latches
+    /// Players: the WvW rank def id (1..=105) of the first rank read this life; EVTC logs latch
     /// the title once, at the agent's first init.
     pub wvw_rank_id: Option<u8>,
     /// The agent's master (owner) id, from the poll's `AgentMaster`; cleared on despawn.
     pub master: Option<u32>,
     /// Players: the guild GUID (client byte order) from the poll's `AgentGuild`; `None` = none
-    /// seen (written as zero, like arcdps for a player without a guild). Cleared on despawn.
+    /// seen (written as zero, as in EVTC logs for a player without a guild). Cleared on despawn.
     pub guild: Option<[u8; 16]>,
     /// Players: the account GUID (client byte order) from the poll's
-    /// `AgentGuid`; arcdps's key for every player but the POV. Identity: kept after despawn,
+    /// `AgentGuid`; the EVTC key for every player but the POV. Identity: kept after despawn,
     /// cleared when the id starts a new life (with the names).
     pub account_guid: Option<[u8; 16]>,
 }
@@ -643,7 +643,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// arcdps latches the title once, at the agent's first init: the first title read stands
+    /// EVTC logs latch the title once, at the agent's first init: the first title read stands
     /// for the agent's life (a rank-up or a lost read does not change it); a new life reads again.
     #[test]
     fn wvw_rank_title_is_latched_per_life() {

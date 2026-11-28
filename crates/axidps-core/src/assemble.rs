@@ -1,4 +1,4 @@
-//! Turns a finished [`Fight`] and its [`Registry`] into an arcdps-compatible EVTC [`Log`].
+//! Turns a finished [`Fight`] and its [`Registry`] into a standard EVTC [`Log`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,8 +38,8 @@ const MAX_HEALTH: u8 = 12;
 const POINT_OF_VIEW: u8 = 13;
 const LANGUAGE: u8 = 14;
 const GW2_BUILD: u8 = 15;
-/// arcdps's own build string row (from byte 8). axidps writes the arcdps build its header
-/// claims, for byte parity.
+/// The EVTC build string row (from byte 8). axidps writes the build string its header
+/// claims, so the log reads as a normal EVTC file.
 const ARCBUILD: u8 = 54;
 const ARCDPS_BUILD: &[u8; 24] = b"20261115.180220-613-x64\0";
 const TEAM_CHANGE: u8 = 22;
@@ -72,8 +72,8 @@ const BREAKBAR_STATE: u8 = 34;
 const BREAKBAR_PERCENT: u8 = 35;
 const GUILD: u8 = 29;
 
-/// Buff-damage results, as arcdps writes them: 14 a condition tick, 16 and 18 the on-hit procs its
-/// condition model computes on their own paths. The proc buff ids are every id arcdps wrote with
+/// Buff-damage results, as EVTC logs carry them: 14 a condition tick, 16 and 18 the on-hit procs its
+/// condition model computes on their own paths. The proc buff ids are every id EVTC logs carried with
 /// result 16 or 18 in the owner's logs of 2026-11-24 (15 logs); every other id was 14.
 const BUFF_DAMAGE_TICK: u8 = 14;
 const BUFF_DAMAGE_PROC: u8 = 16;
@@ -81,7 +81,7 @@ const BUFF_DAMAGE_PROC_18: u8 = 18;
 const PROCS_16: &[u32] = &[13814, 30285, 37475, 45026, 57042, 57244, 57409, 58512];
 const PROCS_18: &[u32] = &[13036, 26646, 72975];
 
-/// The result arcdps writes for buff damage from `buff`.
+/// The result EVTC logs carry for buff damage from `buff`.
 fn buff_damage_result(buff: u32) -> u8 {
     if PROCS_16.contains(&buff) {
         BUFF_DAMAGE_PROC
@@ -157,13 +157,13 @@ fn plain_name(s: &str) -> [u8; 64] {
 /// `squad`: the agent is in the POV's squad. `wvw`: the fight is on a WvW map.
 fn agent_row(addr: u64, a: &AgentInfo, squad: bool, wvw: bool) -> Agent {
     let (prof, is_elite, name) = match a.kind {
-        // Like arcdps: a real name, an account and a subgroup only for squad members.
+        // As in EVTC logs: a real name, an account and a subgroup only for squad members.
         AgentKind::Player if squad => (
             a.prof,
             a.elite,
             player_name(&a.character, &a.account, a.subgroup),
         ),
-        // Everyone else, allies included (as arcdps does): the WvW
+        // Everyone else, allies included (as the EVTC format expects): the WvW
         // rank title on a WvW map, else the elite spec or profession name.
         AgentKind::Player => {
             let title = a.wvw_rank_id.filter(|_| wvw).and_then(names::wvw_title);
@@ -240,7 +240,7 @@ fn event_ids(ev: &Event) -> Vec<u32> {
     }
 }
 
-/// The name arcdps writes for `id` (from the owner's arcdps logs), or "" when unknown.
+/// The name EVTC logs carry for `id` (from the owner's EVTC logs), or "" when unknown.
 pub fn skill_name(id: u32) -> &'static str {
     SKILL_NAMES
         .binary_search_by_key(&id, |&(i, _)| i)
@@ -253,7 +253,7 @@ pub fn skill_name(id: u32) -> &'static str {
 struct State {
     team: BTreeMap<u32, u32>,
     health: BTreeMap<u32, u16>,
-    /// Last MAX_HEALTH written per agent: like arcdps, a row only when it changes.
+    /// Last MAX_HEALTH written per agent: a row only when it changes, as in EVTC logs.
     max: BTreeMap<u32, u32>,
     /// Agents last seen in combat: an exit row is written only for one of these.
     in_combat: BTreeSet<u32>,
@@ -264,21 +264,21 @@ struct State {
     subgroup: BTreeMap<u32, (u8, u64)>,
     /// Time spent in each squad subgroup so far, and when it was last entered.
     sub_time: BTreeMap<u32, BTreeMap<u8, (u64, u64)>>,
-    /// arcdps's breakbar caches per agent: last state and last percent written. Absent = reset
+    /// The EVTC breakbar caches per agent: last state and last percent written. Absent = reset
     /// (log start, spawn), so the next read writes both.
     breakbar: BTreeMap<u32, (u16, f32)>,
-    /// arcdps's targetable/visible/named caches per agent; absent = reset (log start, spawn).
+    /// The EVTC targetable/visible/named caches per agent; absent = reset (log start, spawn).
     flags: BTreeMap<u32, (u8, u8, u8)>,
     /// Gadgets with a capture open (cleared at log start).
     capturing: BTreeSet<u32>,
     /// Gadget capture outlines (sc 83), from the start snapshot then the fight's events.
     shapes: BTreeMap<u32, Vec<(u32, u32)>>,
-    /// Agents downed now: arcdps marks buff damage to them `is_offcycle`.
+    /// Agents downed now: EVTC logs mark buff damage to them `is_offcycle`.
     down: BTreeSet<u32>,
 }
 
 impl State {
-    /// The 24/76/78 rows arcdps writes for a flags read: each field on change, unless it does
+    /// The 24/76/78 rows EVTC logs carry for a flags read: each field on change, unless it does
     /// not apply to the agent. 24 also carries value 1.
     fn flags(&mut self, ctx: &Ctx, time: u64, id: u32, new: (u8, u8, u8)) -> Vec<EvtcEvent> {
         let old = self
@@ -302,7 +302,7 @@ impl State {
         rows
     }
 
-    /// The 34/35 rows arcdps writes for a breakbar read: state on change, percent on change
+    /// The 34/35 rows EVTC logs carry for a breakbar read: state on change, percent on change
     /// (compared as floats) when it is at most 1.0.
     fn breakbar(&mut self, ctx: &Ctx, time: u64, id: u32, state: u16, pct: f32) -> Vec<EvtcEvent> {
         let (last_state, last_pct) = self
@@ -398,9 +398,9 @@ impl State {
     }
 }
 
-/// arcdps's sc 23 row: src = the attack target, dst = its parent gadget, src_master = the
-/// parent, iff 2 (arcdps's attitude for them in every log). Written even when the agents are not
-/// in the agent table, as arcdps.
+/// The EVTC sc 23 row: src = the attack target, dst = its parent gadget, src_master = the
+/// parent, iff 2 (the attitude EVTC logs record for them in every log). Written even when the agents are not
+/// in the agent table, as in EVTC logs.
 fn attack_target_row(ctx: &Ctx, time: u64, id: u32, parent: u32) -> Option<EvtcEvent> {
     let mut e = ctx.agent_row(time, ATTACK_TARGET, id)?;
     e.dst_agent = ctx.addr(parent)?;
@@ -410,7 +410,7 @@ fn attack_target_row(ctx: &Ctx, time: u64, id: u32, parent: u32) -> Option<EvtcE
     Some(e)
 }
 
-/// arcdps's sc 75 row: value = map id, buff_dmg = owner team, skillid = objective id, buff =
+/// The EVTC sc 75 row: value = map id, buff_dmg = owner team, skillid = objective id, buff =
 /// type, pad = upgrade progress.
 fn wvw_row(time: u64, o: crate::wvw::Objective) -> EvtcEvent {
     EvtcEvent {
@@ -423,7 +423,7 @@ fn wvw_row(time: u64, o: crate::wvw::Objective) -> EvtcEvent {
     }
 }
 
-/// arcdps's sc 53 row: src = x | y << 32, dst = z, skillid = slot (f32 bits; +inf = empty).
+/// The EVTC sc 53 row: src = x | y << 32, dst = z, skillid = slot (f32 bits; +inf = empty).
 fn squad_marker_row(time: u64, slot: u8, [x, y, z]: [u32; 3]) -> EvtcEvent {
     EvtcEvent {
         src_agent: u64::from(x) | u64::from(y) << 32,
@@ -433,8 +433,8 @@ fn squad_marker_row(time: u64, slot: u8, [x, y, z]: [u32; 3]) -> EvtcEvent {
     }
 }
 
-/// arcdps's sc 83 batch for a gadget's outline: one row per point, `dst` = index, `value` /
-/// `buff_dmg` = the f32 bits, `overstack` = count. Nothing for counts 0 and 2, as arcdps.
+/// The EVTC sc 83 batch for a gadget's outline: one row per point, `dst` = index, `value` /
+/// `buff_dmg` = the f32 bits, `overstack` = count. Nothing for counts 0 and 2, as in EVTC logs.
 fn outline_rows(ctx: &Ctx, time: u64, id: u32, pts: &[(u32, u32)]) -> Vec<EvtcEvent> {
     if pts.len() == 2 {
         return Vec::new();
@@ -477,8 +477,8 @@ fn first_seen(f: &Fight) -> Vec<u32> {
         .collect()
 }
 
-/// arcdps's addr for a player's account GUID: `guid[0..6]`, then `guid[8]`, `guid[9]` as the top
-/// bytes (arcdps also adds a per-session base, taken as 0 here). `None` below 2^32, where it could
+/// The EVTC addr for a player's account GUID: `guid[0..6]`, then `guid[8]`, `guid[9]` as the top
+/// bytes (EVTC logs also add a per-session base, taken as 0 here). `None` below 2^32, where it could
 /// meet a sequential addr (the GUID variant byte `guid[8]` puts real GUIDs far above).
 fn guid_addr(g: &[u8; 16]) -> Option<u64> {
     let addr = u64::from_le_bytes([g[0], g[1], g[2], g[3], g[4], g[5], g[8], g[9]]);
@@ -501,14 +501,14 @@ struct Group {
     members: Vec<(u32, u64)>,
 }
 
-/// One agent per player per fight, as arcdps: it keys every player but the POV by account GUID,
+/// One agent per player per fight, as in EVTC logs: it keys every player but the POV by account GUID,
 /// so a player who leaves range and comes back under a new instance id, or changes character,
 /// keeps one addr.
 ///
 /// Lives are matched on the same team (never across teams) by account GUID (`AgentGuid`; not
 /// for the POV), else by account, else by character name (one character belongs to one
 /// account), unless the two lives have different GUIDs. A player with a GUID is written under
-/// its GUID addr ([`guid_addr`]: the same for the whole session, as arcdps); one without keeps
+/// its GUID addr ([`guid_addr`]: the same for the whole session, as in EVTC logs); one without keeps
 /// its first life's addr in the fight. Squad players are already one addr by account (the
 /// registry). With no `AgentGuid` in the session, only the merges by name apply.
 #[derive(Default)]
@@ -645,7 +645,7 @@ impl Ctx<'_> {
         self.agent_row(time, kind, id)
     }
 
-    /// GUILD (sc 29): the guild GUID's 16 bytes in dst_agent, value and buff_dmg, as arcdps
+    /// GUILD (sc 29): the guild GUID's 16 bytes in dst_agent, value and buff_dmg, as EVTC logs carry it
     /// copies them from the Player object (all zero for a player without a guild).
     fn guild(&self, time: u64, id: u32, guid: [u8; 16]) -> Option<EvtcEvent> {
         let mut e = self.agent_row(time, GUILD, id)?;
@@ -663,7 +663,7 @@ impl Ctx<'_> {
         Some(e)
     }
 
-    /// The max health arcdps writes: none for players (0), the value for everyone else. The DLL
+    /// The max health EVTC logs carry: none for players (0), the value for everyone else. The DLL
     /// sends players' real max health for the condition model's health check.
     fn evtc_max(&self, id: u32, max: u32) -> u32 {
         if self
@@ -754,7 +754,7 @@ impl Ctx<'_> {
     fn cast(&self, time: u64, r: &casts::Row, state: &State) -> Option<EvtcEvent> {
         let mut e = self.agent_row(time, r.statechange, r.src)?;
         if let Some(d) = r.dst_raw {
-            // arcdps writes a teleport's target only for squad members.
+            // EVTC logs carry a teleport's target only for squad members.
             let target = r.statechange != casts::TELEPORT || self.reg.is_squad(r.src);
             e.dst_agent = if target { d } else { 0 };
             e.value = if target { r.value } else { 0 };
@@ -786,7 +786,7 @@ impl Ctx<'_> {
     }
 
     /// An effect or missile row. Agents unknown to the registry are written as addr 0 with the
-    /// instid kept, as arcdps writes agents missing from its table.
+    /// instid kept, as EVTC logs carry agents missing from its table.
     fn effect(&self, time: u64, r: &effects::Row, state: &State) -> EvtcEvent {
         let addr = |id: u32| {
             if id == 0 {
@@ -850,7 +850,7 @@ fn arcbuild_row(time: u64) -> EvtcEvent {
 
 /// The server values for the log-start rows, and the tick at the start. Values unknown at the
 /// start come from the fight's first `ServerTick` that has them; with no tick before the start,
-/// the first one in the fight is back-extrapolated at the nominal rate (arcdps always has one,
+/// the first one in the fight is back-extrapolated at the nominal rate (EVTC logs always have one,
 /// from any agent message; axidps reads only the strike's).
 fn start_server(f: &Fight) -> (Server, Option<u32>) {
     let mut s = f.server;
@@ -878,7 +878,7 @@ fn start_server(f: &Fight) -> (Server, Option<u32>) {
 }
 
 /// A sc 84 row: src = extrapolated tick, dst = ticks extrapolated since the last real one,
-/// value = the last ping as arcdps keeps it (an f32, truncated).
+/// value = the last ping as EVTC logs keep it (an f32, truncated).
 fn tick_row(time: u64, (ext, since): (u32, u32), ping: u32) -> EvtcEvent {
     EvtcEvent {
         src_agent: u64::from(ext),
@@ -915,7 +915,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
     let mut ids: BTreeSet<u32> = BTreeSet::new();
     let (head, start_tick) = start_server(f);
 
-    // LOG_START, POV, LANGUAGE, ARCBUILD, GW2_BUILD, SHARDID, MAP_ID (arcdps's order).
+    // LOG_START, POV, LANGUAGE, ARCBUILD, GW2_BUILD, SHARDID, MAP_ID (the EVTC order).
     events.push(marker(f, f.start_ms, LOG_START));
     if let Some(e) = f
         .pov
@@ -972,7 +972,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
     if heals_live {
         events.push(extension::healing_registration(f.start_ms));
     }
-    // INSTANCESTART after them, where arcdps has it after its own extension rows (50).
+    // INSTANCESTART after them, where logs carry it after the extension rows (50).
     if let Some(tick) = start_tick {
         events.push(EvtcEvent {
             src_agent: instance_start(f.start_ms, tick),
@@ -1002,7 +1002,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
             .filter_map(|(&id, &p)| attack_target_row(&ctx, f.start_ms, id, p)),
     );
     // WvW objectives: on a WvW map, every cached objective of the map at the start, then each
-    // message arcdps writes a row for.
+    // message EVTC logs carry a row for.
     let map_id = match f.map {
         Some(Event::Map { map_id, .. }) => Some(map_id),
         _ => None,
@@ -1016,9 +1016,9 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
     {
         events.extend(wvw.on_map(map_id).map(|o| wvw_row(f.start_ms, o)));
     }
-    // TICK rows: arcdps evaluates every frame; axidps at every fight event and at the end, so a
-    // row's time is the event's (arcdps: the frame's), and a catch-up after a gap with no events
-    // takes one event per row (arcdps: one frame per row).
+    // TICK rows: EVTC logs evaluate every frame; axidps at every fight event and at the end, so a
+    // row's time is the event's (EVTC logs: the frame's), and a catch-up after a gap with no events
+    // takes one event per row (EVTC logs: one frame per row).
     let mut server = f.server;
     let mut tick_rows = start_tick.map(TickRows::new);
 
@@ -1049,12 +1049,12 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
         .and_then(|p| f.start_snapshot.iter().find(|a| a.id == p))
         .and_then(|a| a.team);
     for a in &f.start_snapshot {
-        // GUILD for every squad player present at log start, first of its rows (arcdps's
+        // GUILD for every squad player present at log start, first of its rows (the EVTC
         // log-start pass; it writes no other GUILD rows).
         if a.kind == AgentKind::Player && (f.pov == Some(a.id) || squad_fields(a, start_pov_team)) {
             events.extend(ctx.guild(f.start_ms, a.id, a.guild.unwrap_or_default()));
         }
-        // arcdps re-emits every character's transformation (if any, before) and action speed
+        // EVTC logs re-emit every character's transformation (if any, before) and action speed
         // at log start (1.0 from spawn).
         if matches!(a.kind, AgentKind::Player | AgentKind::Npc) {
             if let Some(r) = f.casts.transform_row(a.id, f.start_ms) {
@@ -1271,10 +1271,10 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 events.push(e);
             }
         }
-        // Cast rows first: arcdps ends the open cast before it writes a down/death row.
+        // Cast rows first: EVTC logs end the open cast before it writes a down/death row.
         for r in casts.apply(time, &ev) {
             ids.extend([r.src, r.dst].into_iter().filter(|&i| i != 0));
-            // Only cast rows carry a skill; a transformation's skillid is not one, and arcdps
+            // Only cast rows carry a skill; a transformation's skillid is not one, and EVTC logs
             // never lists skill 0.
             if matches!(r.statechange, casts::CAST_START | casts::CAST_END) {
                 skills.insert(r.skill);
@@ -1314,7 +1314,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 events.extend(ctx.agent_row(time, DESPAWN, id));
             }
             Event::Combat { id, in_combat } => {
-                // A row only on a change, like arcdps: the game re-sends Combat(true) while an
+                // A row only on a change, as in EVTC logs: the game re-sends Combat(true) while an
                 // agent stays in combat, and sends Combat(false) when an out-of-combat agent
                 // comes into range.
                 let changed = if in_combat {
@@ -1360,7 +1360,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 by,
             } => {
                 let row = |sc| ctx.agent_row(time, sc, id);
-                // arcdps reads the outline just before queuing the 80 row: its 83 batch first.
+                // EVTC logs read the outline just before queuing the 80 row: its 83 batch first.
                 let outline = state.shapes.get(&id).cloned().unwrap_or_default();
                 let start = |team| {
                     outline_rows(&ctx, time, id, &outline)
@@ -1476,7 +1476,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
             }
             Event::Team { id, team } => {
                 // The game sends Team first when an agent comes (back) into range: from here on
-                // it is a fresh agent, and arcdps writes its enter row again.
+                // it is a fresh agent, and EVTC logs carry its enter row again.
                 state.in_combat.remove(&id);
                 state.team.insert(id, team);
                 events.extend(ctx.team(time, id, team));
@@ -1532,7 +1532,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 {
                     model.check.exact(buff, value);
                 }
-                // arcdps's model rows; the amounts are the game's own.
+                // The model rows; the amounts are the game's own.
                 let Some(e) =
                     buff_damage_row(&ctx, &state, reg, time, src, dst, buff, value, barrier)
                 else {
@@ -1576,7 +1576,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                 buff,
                 ..
             } => {
-                // The healing extension's row: arcdps's event for the hit, signs flipped by the
+                // The healing extension's row: the EVTC event for the hit, signs flipped by the
                 // addon, written with e10.
                 // Who sent it (src/dst flags) is set once the masters are filled, below: the
                 // POV for a local heal, the peer for a relayed one.
@@ -1607,7 +1607,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
                     dst_instid: dst as u16,
                     iff: state.iff(reg, src, dst),
                     buff: u8::from(buff),
-                    // arcdps: 1 while the target is downed; the addon adds its flag for buffs.
+                    // EVTC logs: 1 while the target is downed; the addon adds its flag for buffs.
                     is_offcycle: u8::from(down)
                         | if buff && down {
                             extension::HEAL_TARGET_DOWNED
@@ -1701,7 +1701,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
     }
 
     events.push(drops);
-    // WVWTEAMS: arcdps writes it at save, time 0, just before the content rows.
+    // WVWTEAMS: EVTC logs carry it at save, time 0, just before the content rows.
     if let Some((src_agent, dst_agent, value, buff_dmg)) = wvw_teams.row() {
         events.push(EvtcEvent {
             src_agent,
@@ -1711,7 +1711,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
             ..sc(0, WVW_TEAMS)
         });
     }
-    // Content rows for the log's skills, per skill in id order, just before LOG_END (as arcdps
+    // Content rows for the log's skills, per skill in id order, just before LOG_END (as EVTC logs
     // writes them at save).
     for &id in &skills {
         events.extend(content::rows(id));
@@ -1735,11 +1735,11 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
         _ => true,
     };
     let mut table: BTreeMap<u64, Agent> = BTreeMap::new();
-    // A player's lives share an addr: its first life in the fight describes it, as in arcdps.
+    // A player's lives share an addr: its first life in the fight describes it, as in EVTC logs.
     let rank: BTreeMap<u32, usize> = order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
     let mut ids: Vec<u32> = ids.into_iter().collect();
     ids.sort_by_key(|id| (rank.get(id).copied().unwrap_or(usize::MAX), *id));
-    // A team row for every agent in the table, as arcdps writes one whenever it starts tracking
+    // A team row for every agent in the table, as EVTC logs carry one whenever it starts tracking
     // an agent. One that despawned before the fight and acts in it without an add (the poll
     // did not read it again: WvW enemies after a loading screen, 2026-11-27) has none from the
     // snapshot or an add; its last known team goes just before its first row after the header
@@ -1759,7 +1759,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
             continue;
         }
         let inst = id as u16;
-        // The header rows (the POV's included) stay in arcdps's order.
+        // The header rows (the POV's included) stay in the EVTC order.
         let (at, time) = events[snapshot_rows..]
             .iter()
             .position(|e| {
@@ -1858,7 +1858,7 @@ pub fn build_log_report(f: &Fight, reg: &Registry) -> (Log, CondiReport) {
     (log, report)
 }
 
-/// arcdps's activation marker (strike result 11): src 0, dst =
+/// The activation marker (strike result 11): src 0, dst =
 /// the caster, skill 23279, value 1, iff 2; written only while the caster has Confusion.
 fn activation_row(ctx: &Ctx, state: &State, time: u64, agent: u32) -> Option<EvtcEvent> {
     Some(EvtcEvent {
@@ -1873,7 +1873,7 @@ fn activation_row(ctx: &Ctx, state: &State, time: u64, agent: u32) -> Option<Evt
     })
 }
 
-/// arcdps's zero condition-tick rows on a target holding an invulnerability buff (result 6) or
+/// The zero condition-tick rows on a target holding an invulnerability buff (result 6) or
 /// an "invert" category buff (13): one per `(src, buff)` of the tick, buff_dmg
 /// 0, for every source (the game reports no tick then, and the amount needs no formula).
 /// `None` when the target holds neither; the tick then goes to the condition model.
@@ -1915,7 +1915,7 @@ const ACTIVATION_MARKER_RESULT: u8 = 11;
 /// was seen).
 const CONFUSION: u32 = 861;
 
-/// A buff-damage row (arcdps's model-row shape): exact POV ticks and the
+/// A buff-damage row (the EVTC model-row shape): exact POV ticks and the
 /// condition model's estimates. `None` when either agent has no addr.
 #[allow(clippy::too_many_arguments)]
 fn buff_damage_row(
@@ -1935,7 +1935,7 @@ fn buff_damage_row(
         src_agent: sa,
         dst_agent: da,
         buff_dmg: value,
-        // Damage into barrier, like arcdps's own rows.
+        // Damage into barrier, as in the EVTC buff-damage rows.
         overstack: barrier,
         is_shields: u8::from(barrier != 0),
         skillid: buff,
@@ -2100,7 +2100,7 @@ mod tests {
         assert_eq!(l.events[6].is_statechange, 40);
     }
 
-    /// arcdps writes LANGUAGE (14, src = language index, 0 English) and ARCBUILD (54, its build
+    /// EVTC logs carry LANGUAGE (14, src = language index, 0 English) and ARCBUILD (54, the build
     /// string from byte 8) right after the POV row, at the log start.
     #[test]
     fn language_and_arcbuild_rows() {
@@ -2143,8 +2143,8 @@ mod tests {
         f
     }
 
-    /// Log-start rows in arcdps's order: 9, 13, 14, 54, 15, 16, 25, then axidps's extension rows
-    /// (40) where arcdps has 50, then 42.
+    /// Log-start rows in the EVTC order: 9, 13, 14, 54, 15, 16, 25, then axidps's extension rows
+    /// (40) where logs carry 50, then 42.
     #[test]
     fn shard_and_instance_start_rows_in_header_order() {
         let l = build_log(&tick_fight(), &world());
@@ -2172,13 +2172,13 @@ mod tests {
             (1000, 2, 32768, 0)
         );
         let s42 = &l.events[i42];
-        // start - tick * 40 = 1000 - 4800, as arcdps's wrapping u64.
+        // start - tick * 40 = 1000 - 4800, as the EVTC format's wrapping u64.
         assert_eq!(s42.time, 1000);
         assert_eq!(s42.src_agent, 1000u64.wrapping_sub(4800));
         assert_eq!(s42.value, 0xcfdf_3164u32 as i32);
     }
 
-    /// sc 84: arcdps's extrapolation, a row each time it passes start + 25k (first one tick
+    /// sc 84: the EVTC extrapolation, a row each time it passes start + 25k (first one tick
     /// after the start), evaluated at event times and once at the log end; value = last ping.
     #[test]
     fn tick_rows() {
@@ -2351,7 +2351,7 @@ mod tests {
     }
 
     /// The game sends Combat(false) when an out-of-combat agent comes into range (replay
-    /// 2026-11-24: 89 of 132 extra exit rows). Nothing changed, so arcdps writes nothing.
+    /// 2026-11-24: 89 of 132 extra exit rows). Nothing changed, so EVTC logs carry nothing.
     #[test]
     fn exit_combat_only_after_being_in_combat() {
         let off = |id| Event::Combat {
@@ -2381,9 +2381,9 @@ mod tests {
         assert_eq!(exits, vec![(2500, 3), (3500, 1)]);
     }
 
-    /// The game re-sends Combat(true) about every 0.6 s while an agent stays in combat; arcdps
-    /// writes one row. An agent coming back into range gets a Team message first, and arcdps
-    /// writes its enter row again (replay 2026-11-24, instances 4371 and 4878).
+    /// The game re-sends Combat(true) about every 0.6 s while an agent stays in combat; EVTC logs
+    /// carry one row. An agent coming back into range gets a Team message first, and EVTC logs
+    /// carry its enter row again (replay 2026-11-24, instances 4371 and 4878).
     #[test]
     fn enter_combat_once_until_out_or_back_in_range() {
         let on = |id| Event::Combat {
@@ -2520,7 +2520,7 @@ mod tests {
 
     #[test]
     fn max_health_row_only_when_it_changes() {
-        // Live 2026-11-24: one MAX_HEALTH per health update gave 9612 rows to arcdps's 1315.
+        // Live 2026-11-24: one MAX_HEALTH per health update gave 9612 rows against 1315 in the EVTC log.
         let h = |t, pct, max| {
             (
                 t,
@@ -2538,7 +2538,7 @@ mod tests {
         ]);
         let l = build_log(&f, &world());
         let max: Vec<i64> = sc_rows(&l, 12).iter().map(|e| e.dst_agent as i64).collect();
-        // Agent 1 is a player: one row of 0, whatever the DLL's max (arcdps writes none).
+        // Agent 1 is a player: one row of 0, whatever the DLL's max (EVTC logs carry none).
         assert_eq!(max, vec![0]);
         assert_eq!(sc_rows(&l, 8).len(), 3);
         // An NPC (agent 3): a row per change.
@@ -2753,7 +2753,7 @@ mod tests {
             .collect()
     }
 
-    /// arcdps's finalizer writes the src (dst) agent's current master instid on every row with
+    /// The EVTC event finalizer writes the src (dst) agent's current master instid on every row with
     /// a src (dst) agent, while the master is a tracked agent.
     #[test]
     fn minion_rows_carry_their_masters_instid() {
@@ -2815,7 +2815,7 @@ mod tests {
         );
     }
 
-    /// A 64-byte arcdps row from its hex.
+    /// A 64-byte EVTC row from its hex.
     fn arc_row(hex: &str) -> EvtcEvent {
         let b: Vec<u8> = (0..hex.len())
             .step_by(2)
@@ -2824,12 +2824,12 @@ mod tests {
         EvtcEvent::from_bytes(&b.try_into().unwrap())
     }
 
-    /// GUILD (sc 29) rows, as arcdps writes them: one per squad player present
+    /// GUILD (sc 29) rows, as EVTC logs carry them: one per squad player present
     /// at log start, the POV included, with the guild GUID's 16 bytes in dst/value/buff_dmg and
     /// zeros for a player without a guild; none for players outside the squad and none later.
     #[test]
     fn guild_rows_for_the_squad_at_log_start() {
-        // arcdps 20261124-211816: the POV's GUILD row (event 30) and a squad member's without
+        // log 20261124-211816: the POV's GUILD row (event 30) and a squad member's without
         // a guild (event 775).
         let pov = arc_row(
             "060c060000000000d007000000000000d16d17ea5bf111ed81a98fb5cfbe7766\
@@ -2990,7 +2990,7 @@ mod tests {
     }
 
     /// A cast open before the fight ends inside it; starts carry the target and iff; a down
-    /// ends the open cast before its state row, as arcdps.
+    /// ends the open cast before its state row, as in EVTC logs.
     #[test]
     fn cast_rows() {
         let r = world();
@@ -3174,7 +3174,7 @@ mod tests {
         );
     }
 
-    /// Condition ticks on a target holding an invulnerability buff (762 Determined) give arcdps's
+    /// Condition ticks on a target holding an invulnerability buff (762 Determined) give the EVTC
     /// zero rows with result 6, one per (src, buff), from every source and without
     /// `--condi-write`; once the buff is gone, none.
     #[test]
@@ -3300,7 +3300,7 @@ mod tests {
                     active: true,
                 },
             ),
-            // No remover: an expiry or overstack, written iff unknown like arcdps.
+            // No remover: an expiry or overstack, written iff unknown, as in EVTC logs.
             (
                 2700,
                 Event::BuffRemove {
@@ -3397,7 +3397,7 @@ mod tests {
         }
     }
 
-    /// The local player's condition ticks (kind 42) as arcdps writes buff damage: value 0,
+    /// The local player's condition ticks (kind 42) as EVTC logs carry buff damage: value 0,
     /// buff_dmg, buff 1, result 14 (16 and 18 for the on-hit procs it tells apart), iff and the
     /// ninety/fifty flags like a strike, barrier in overstack with is_shields, is_offcycle while
     /// the target is downed.
@@ -3499,7 +3499,7 @@ mod tests {
     /// The local player's heals and barrier (kind 43) as the healing addon's rows: sc 49, pad =
     /// its signature, signs flipped (value or buff_dmg negative), barrier in overstack with
     /// is_shields, is_offcycle = target downed (plus 0x20 on buffs) | 0x80 the POV (or its
-    /// minion) is the source | 0x40 it is the target. Values from arcdps's rows of
+    /// minion) is the source | 0x40 it is the target. Values from the EVTC rows of
     /// 20261124-175441 and 20261124-213145.
     #[test]
     fn healing_extension_rows() {
@@ -3569,10 +3569,10 @@ mod tests {
         assert_eq!(fields(rows[1]), (-1075, 0, 1075, 0, 1, 0x40));
         assert_eq!(fields(rows[2]), (0, -2806, 2806, 1, 1, 0x40));
         assert_eq!(fields(rows[3]), (0, -361, 0, 1, 0, 0x40));
-        // Revive on a downed ally (arcdps: is_offcycle 129), and a buff heal on it (0x80 | 33).
+        // Revive on a downed ally (EVTC logs: is_offcycle 129), and a buff heal on it (0x80 | 33).
         assert_eq!(fields(rows[4]), (-1587, 0, 0, 0, 0, 0x81));
         assert_eq!(fields(rows[5]), (0, -92, 0, 1, 0, 0xa1));
-        // Self heal: both flags (arcdps: 192).
+        // Self heal: both flags (EVTC logs: 192).
         assert_eq!(fields(rows[6]), (-122, 0, 0, 0, 0, 0xc0));
         // The POV's minion heals: the source's master is the POV.
         let m = rows[7];
@@ -3704,7 +3704,7 @@ mod tests {
         };
         // Condition group not live (state 3), no heals: none.
         assert!(reg_rows(&build_log(&fight(vec![]), &world())).is_empty());
-        // Live condition group, no heals: arcdps writes it in every log the addon was loaded.
+        // Live condition group, no heals: EVTC logs carry it in every log the addon was loaded.
         let mut f = fight(vec![]);
         f.status = Some(Event::Status {
             unix_s: 0,
@@ -3730,7 +3730,7 @@ mod tests {
         assert_eq!(reg_rows(&build_log(&f, &world())).len(), 1);
     }
 
-    /// arcdps's own registration row from 20261124-212056 (addon version 2.20rc1) decodes as the
+    /// The registration row from the reference log 20261124-212056 (addon version 2.20rc1) decodes as the
     /// layout above.
     #[test]
     fn healing_registration_layout_matches_arcdps() {
@@ -3807,7 +3807,7 @@ mod tests {
     }
 
     /// BREAKBARSTATE (34) / BREAKBARPERCENT (35): both at the fight start for agents read
-    /// before it (arcdps resets its caches at log start), then each on its own change; a percent
+    /// before it (EVTC logs reset their caches at log start), then each on its own change; a percent
     /// above 1.0 is not written; a despawn resets the caches.
     #[test]
     fn breakbar_rows() {
@@ -4008,7 +4008,7 @@ mod tests {
     }
 
     /// Polled flags: at the fight start each applicable flag (24 targetable with value 1, 76
-    /// visible, 78 named) and agent info (89) for agents known before it, as arcdps resets its
+    /// visible, 78 named) and agent info (89) for agents known before it, as EVTC logs reset their
     /// caches at log start; then one row per changed field; a despawn resets the caches.
     #[test]
     fn agent_flag_and_info_rows() {
@@ -4530,7 +4530,7 @@ mod tests {
             .collect()
     }
 
-    /// arcdps names every player outside the squad by WvW rank title on a WvW map, allies
+    /// EVTC logs name every player outside the squad by WvW rank title on a WvW map, allies
     /// included, with no account or subgroup; the squad keeps real names.
     #[test]
     fn wvw_map_non_squad_players_get_rank_titles() {
@@ -4549,7 +4549,7 @@ mod tests {
         assert_eq!(names[1], b"Diamond Legend\0\0\0");
     }
 
-    /// Off WvW, arcdps names players outside the squad by elite spec, or profession.
+    /// Off WvW, EVTC logs name players outside the squad by elite spec, or profession.
     #[test]
     fn non_wvw_map_non_squad_players_get_spec_names() {
         let names = table_names(Some(5), &[1, 2, 4, 5]);
@@ -4561,7 +4561,7 @@ mod tests {
 
     #[test]
     fn squad_member_who_reads_as_out_of_squad_at_the_end_keeps_start_identity() {
-        // Live 2026-11-24: squad members read as subgroup 0 at the end; arcdps still lists them.
+        // Live 2026-11-24: squad members read as subgroup 0 at the end; EVTC logs still list them.
         let r0 = world();
         let mut f = fight(vec![(2000, strike(1, 3, 10))]);
         f.start_snapshot = r0.live_agents().cloned().collect();
@@ -4577,7 +4577,7 @@ mod tests {
     }
 
     /// A subgroup move mid-fight: the agent table takes the subgroup the player spent most of
-    /// the fight in (replay 2026-11-24: 8 of 11 movers match arcdps, whose own value lags about a
+    /// the fight in (replay 2026-11-24: 8 of 11 movers match the EVTC log, whose own value lags about a
     /// minute), and each combat row carries the subgroup of its own time.
     #[test]
     fn subgroup_move_mid_fight() {
@@ -4671,7 +4671,7 @@ mod tests {
         );
     }
 
-    /// Skill names as arcdps writes them, from the table of the owner's arcdps logs.
+    /// Skill names as EVTC logs carry them, from the table of the owner's EVTC logs.
     #[test]
     fn skills_table_has_names() {
         let f = fight(vec![(2000, strike(1, 3, 29604))]);
@@ -4722,7 +4722,7 @@ mod tests {
     }
 
     /// Recording 20261124-201138: the allied non-squad Vindicator "Rio Rahl" despawned as
-    /// instance 397 and came back 27 s later as 493. arcdps (account GUID addr) writes one
+    /// instance 397 and came back 27 s later as 493. EVTC logs (account GUID addr) carry one
     /// agent; each row keeps its life's instance id.
     #[test]
     fn a_named_player_coming_back_under_a_new_id_is_one_agent() {
@@ -4755,8 +4755,8 @@ mod tests {
         );
     }
 
-    /// Recording 20261124-201138 / arcdps 20261124-212736: enemy "Silver Recruit" was instance
-    /// 3913 (Virtuoso), then 3944 (Reaper: the same account on another character). arcdps writes
+    /// Recording 20261124-201138 / log 20261124-212736: enemy "Silver Recruit" was instance
+    /// 3913 (Virtuoso), then 3944 (Reaper: the same account on another character). EVTC logs carry
     /// one agent (account GUID); without `AgentGuid` core gets no name for enemies, so they stay
     /// two (`enemy_lives_with_one_guid_are_one_agent` has the GUID).
     #[test]
@@ -4796,9 +4796,9 @@ mod tests {
         assert_ne!(a[0].0, c[0].0);
     }
 
-    /// An account names a player across characters (arcdps keys by the account GUID): a
+    /// An account names a player across characters (EVTC logs key by the account GUID): a
     /// non-squad player whose account core knows is one agent after a character change, and
-    /// the agent table describes the first life, as arcdps did for "Silver Recruit".
+    /// the agent table describes the first life, as the reference log does for "Silver Recruit".
     #[test]
     fn account_merges_across_characters_and_the_first_life_describes_the_agent() {
         let mut r = world();
@@ -4853,7 +4853,7 @@ mod tests {
         Event::AgentGuid { id, guid: g }
     }
 
-    /// Silver Recruit (arcdps 20261124-212736): enemy 3913 (Virtuoso), then 3944 (Reaper) of
+    /// Silver Recruit (log 20261124-212736): enemy 3913 (Virtuoso), then 3944 (Reaper) of
     /// the same account. With the GUID: one agent under the GUID addr, each row keeping its
     /// life's instance id, the table entry describing the first life.
     #[test]
@@ -4946,7 +4946,7 @@ mod tests {
         assert_eq!(strikes_by(&l, 72), vec![(addr, 11)]);
     }
 
-    /// arcdps leaves the POV on its own addr; so does core, GUID or not.
+    /// EVTC logs leave the POV on its own addr; so does core, GUID or not.
     #[test]
     fn the_pov_keeps_its_addr_with_a_guid() {
         let mut r = world();
