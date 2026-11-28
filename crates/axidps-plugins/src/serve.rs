@@ -171,6 +171,7 @@ mod tests {
                 description: String::new(),
                 icon: "plug".into(),
                 open: false,
+                popout: false,
                 place: Place::BesideMeter,
                 shown: crate::manifest::Shown::Overlay,
                 settings: Vec::new(),

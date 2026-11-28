@@ -244,6 +244,7 @@ fn one(p: &Plugin) -> Value {
                 "id": w.id, "title": w.title, "entry": w.entry, "description": w.description,
                 "icon": w.icon, "open": w.open, "place": w.place.as_str(),
                 "in": w.shown.as_str(),
+                "popout": w.popout && w.shown == crate::manifest::Shown::Hub,
                 "settings": w.settings,
             })).collect::<Vec<_>>(),
             "bundled": p.bundled,
@@ -447,6 +448,17 @@ mod tests {
         p.manifest.as_mut().unwrap().windows[0].shown = crate::manifest::Shown::Hub;
         let j = to_page_json(std::slice::from_ref(&p));
         assert_eq!(j[0]["windows"][0]["in"], "hub");
+    }
+
+    #[test]
+    fn page_json_carries_popout_only_for_hub_windows() {
+        let mut p = plugin("x.y", false, &[], &[]);
+        p.manifest.as_mut().unwrap().windows[0].popout = true;
+        let j = to_page_json(std::slice::from_ref(&p));
+        assert_eq!(j[0]["windows"][0]["popout"], false);
+        p.manifest.as_mut().unwrap().windows[0].shown = crate::manifest::Shown::Hub;
+        let j = to_page_json(std::slice::from_ref(&p));
+        assert_eq!(j[0]["windows"][0]["popout"], true);
     }
 
     #[test]

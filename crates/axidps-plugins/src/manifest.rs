@@ -49,6 +49,8 @@ pub struct WindowDef {
     pub description: String,
     pub icon: String,
     pub open: bool,
+    /// A hub page that asked for a Pop out button (the page only honours it on hub windows).
+    pub popout: bool,
     pub place: Place,
     pub shown: Shown,
     /// The settings the hub shows for this window, checked and with defaults filled in.
@@ -371,6 +373,14 @@ fn parse_window(w: &Value, i: usize, out: &mut Vec<String>) -> Option<WindowDef>
             false
         }
     };
+    let popout = match o.get("popout") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            out.push(format!("{ctx}popout: must be true or false"));
+            false
+        }
+    };
     let place = match o.get("place") {
         None => Place::BesideMeter,
         Some(Value::String(s)) if s == "beside-meter" => Place::BesideMeter,
@@ -402,6 +412,7 @@ fn parse_window(w: &Value, i: usize, out: &mut Vec<String>) -> Option<WindowDef>
         description,
         icon,
         open,
+        popout,
         place,
         shown,
         settings,
@@ -815,6 +826,22 @@ mod tests {
         let m = parse(&win_with(r#","in":"hub""#), &tmp()).unwrap();
         assert_eq!(m.windows[0].shown, Shown::Hub);
         assert_eq!(Shown::Hub.as_str(), "hub");
+    }
+
+    #[test]
+    fn window_popout_defaults_false() {
+        assert!(!parse(&win_with(r#","in":"hub""#), &tmp()).unwrap().windows[0].popout);
+    }
+
+    #[test]
+    fn window_popout_true() {
+        assert!(parse(&win_with(r#","in":"hub","popout":true"#), &tmp()).unwrap().windows[0].popout);
+    }
+
+    #[test]
+    fn window_popout_bad_is_error() {
+        let e = parse(&win_with(r#","in":"hub","popout":"yes""#), &tmp()).unwrap_err();
+        assert!(e.contains("windows[0].popout: must be true or false"), "{e}");
     }
 
     #[test]
