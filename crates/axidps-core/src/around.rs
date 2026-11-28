@@ -741,4 +741,47 @@ mod tests {
         let v = a.value(&p);
         assert!(players(&v).iter().all(|r| r["fought"] == false));
     }
+
+    /// Name agent 6 with an account, let it fight, and return the fight's next time.
+    fn fought_account_six(p: &mut Processor, a: &mut Around) {
+        for e in name_events(6, NameField::Account, ":Alpha.0006x") {
+            push(p, a, e);
+        }
+        start_fight(p, a, 1000);
+        at(p, a, 1100, hit(6, 1, 0));
+        assert_eq!(fought_in(&a.value(p), 5), 1);
+    }
+
+    fn only_here_dragonhunter(v: &Value) {
+        assert!(players(v).iter().all(|r| r["here"] == true));
+        let dh: Vec<_> = players(v).iter().filter(|r| r["spec"] == "Dragonhunter").collect();
+        assert_eq!(dh.len(), 1);
+        assert_eq!(dh[0]["fought"], true);
+    }
+
+    #[test]
+    fn fighter_removed_while_same_account_sibling_is_live() {
+        let (mut p, mut a) = world();
+        fought_account_six(&mut p, &mut a);
+        at(&mut p, &mut a, 1150, player(20, 5, 1, 27, 0));
+        for e in name_events(20, NameField::Account, ":Alpha.0006x") {
+            push(&mut p, &mut a, e);
+        }
+        at(&mut p, &mut a, 1200, Event::AgentRemove { id: 6 });
+        only_here_dragonhunter(&a.value(&p));
+        assert_eq!(players(&a.value(&p)).len(), 5);
+    }
+
+    #[test]
+    fn fighter_back_under_new_id_is_one_row() {
+        let (mut p, mut a) = world();
+        fought_account_six(&mut p, &mut a);
+        at(&mut p, &mut a, 1200, Event::AgentRemove { id: 6 });
+        at(&mut p, &mut a, 1300, player(30, 5, 1, 27, 0));
+        for e in name_events(30, NameField::Account, ":Alpha.0006x") {
+            push(&mut p, &mut a, e);
+        }
+        only_here_dragonhunter(&a.value(&p));
+        assert_eq!(players(&a.value(&p)).len(), 5);
+    }
 }
