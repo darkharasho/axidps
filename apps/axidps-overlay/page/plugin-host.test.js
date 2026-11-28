@@ -1227,3 +1227,25 @@ test("hubPages marks a page that asks for Pop out, only while on", () => {
   assert.strictEqual(pages([hubWin("s", { popout: "yes" })])[0].popout, false);
   assert.strictEqual(ph.hubPages([plugin("b.off", { windows: [hubWin("s", { popout: true })] })], {})[0].popout, false);
 });
+
+test("store update adds the card's grants to what was granted", () => {
+  const s = storePayload([listing("i.on", { installed: "1.0.0", update: "1.1.0", permissions: ["enemies"] })]);
+  const saved = { plugins: { "i.on": { enabled: true, granted: ["fight", "squad"] } }, pos: {}, open: {}, cfg: {} };
+  storeHost(s, saved, true).h.storeAct("i.on", "update");
+  assert.deepStrictEqual(saved.plugins["i.on"], { enabled: true, granted: ["fight", "squad", "enemies"] });
+});
+
+test("a store install that fails forgets the enable it saved", () => {
+  const saved = { plugins: {}, pos: {}, open: {}, cfg: {} };
+  const { h } = storeHost(storePayload([listing("a.one")]), saved, true);
+  h.storeAct("a.one", "install");
+  h.setStore(storePayload([listing("a.one", { busy: true })]));
+  assert.ok(saved.plugins["a.one"], "kept while it installs");
+  h.setStore(storePayload([listing("a.one", { error: "download failed" })]));
+  assert.strictEqual(saved.plugins["a.one"], undefined);
+  // One that lands keeps it.
+  h.storeAct("a.one", "install");
+  h.setStore(storePayload([listing("a.one", { installed: "1.0.0" })]));
+  h.setStore(storePayload([listing("a.one", { installed: "1.0.0", error: "later refresh failed" })]));
+  assert.deepStrictEqual(saved.plugins["a.one"], { enabled: true, granted: ["fight"] });
+});

@@ -620,6 +620,7 @@
     // player's) forgets the plugin; an error while it's still there was a refusal, so it's kept.
     setStore(payload) {
       this.store = payload && typeof payload === "object" ? payload : null;
+      this.settleInstalls();
       const env = this.env, pending = this.uninstalling;
       if (!env || !pending || !pending.size || !this.store || !Array.isArray(this.store.plugins)) return;
       let forgot = false;
@@ -633,6 +634,25 @@
           for (const k of Object.keys(saved.cfg || {})) if (k.startsWith(id + "/")) delete saved.cfg[k];
           forgot = true;
         } else if (c.error) pending.delete(id);
+      }
+      if (forgot) env.saveNow();
+    },
+    // Ids whose Install saved an enable: kept once the card says installed, forgotten if the
+    // install fails (an error while it is still not installed).
+    installing: null,
+    settleInstalls() {
+      const env = this.env, pending = this.installing;
+      if (!env || !pending || !pending.size || !this.store || !Array.isArray(this.store.plugins)) return;
+      let forgot = false;
+      for (const id of [...pending]) {
+        const c = this.store.plugins.find(x => x && x.id === id);
+        if (c && c.busy === true) continue;
+        if (c && c.installed) { pending.delete(id); continue; }
+        if (!c || c.error) {
+          pending.delete(id);
+          const saved = env.saved();
+          if (saved.plugins && own(saved.plugins, id)) { delete saved.plugins[id]; forgot = true; }
+        }
       }
       if (forgot) env.saveNow();
     },
@@ -654,10 +674,16 @@
         if (!saved.plugins || typeof saved.plugins !== "object") saved.plugins = {};
         const was = own(saved.plugins, id) ? saved.plugins[id] : null;
         if (!on && !(was && was.enabled === true)) return;
-        saved.plugins[id] = {enabled: true, granted: grantsOf(card)};
+        const kept = !on && Array.isArray(was.granted) ? was.granted : [];
+        saved.plugins[id] = {enabled: true, granted: [...new Set(kept.concat(grantsOf(card)))]};
         env.saveNow();
       };
-      if (act === "install" && m.action === "install") { grant(true); go("install"); }
+      if (act === "install" && m.action === "install") {
+        grant(true);
+        if (!this.installing) this.installing = new Set();
+        this.installing.add(id);
+        go("install");
+      }
       else if (act === "update" && m.action === "update") { grant(false); go("update"); }
       else if (act === "replace" && m.action === "replace") {
         env.confirm(`Replace the plugin you added yourself with the store version of ${m.title}? ` +
