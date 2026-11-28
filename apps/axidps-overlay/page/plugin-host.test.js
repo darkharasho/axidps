@@ -940,3 +940,61 @@ test("a plugin under a standing approval reads Permissions approved", () => {
   assert.deepStrictEqual(ph.storeModel(s, "").cards.map(c => c.trust), ["approved", "unverified"]);
   assert.strictEqual(ph.cardModel(plugin("x.y", { trust: "approved" }), {}).label, "Permissions approved");
 });
+
+const hubWin = (id, extra) => win(id, Object.assign({ in: "hub", title: "Page " + id, description: "What " + id + " does" }, extra));
+
+test("hubPages lists hub windows on and off", () => {
+  const list = [
+    plugin("a.on", { windows: [hubWin("s"), win("w")] }),
+    plugin("b.off", { windows: [win("w"), hubWin("s")] }),
+  ];
+  const saved = { plugins: { "a.on": { enabled: true, granted: ["fight"] } } };
+  const pages = ph.hubPages(list, saved);
+  assert.deepStrictEqual(pages.map(x => [x.fullId, x.on, x.action]), [["a.on/s", true, "disable"], ["b.off/s", false, "enable"]]);
+  assert.strictEqual(pages[0].id, "a.on");
+  assert.strictEqual(pages[0].title, "Page s");
+  assert.strictEqual(pages[0].description, "What s does");
+  assert.strictEqual(pages[0].icon, "chart");
+  assert.deepStrictEqual(pages[0].lines, ph.permissionLines(list[0]));
+  assert.strictEqual(ph.isHub(hubWin("s")), true);
+  assert.strictEqual(ph.isHub(win("w")), false);
+});
+
+test("hubPages lists a plugin with an error and no action", () => {
+  const pages = ph.hubPages([plugin("c.bad", { error: "needs verification", windows: [hubWin("s")] })], {});
+  assert.strictEqual(pages.length, 1);
+  assert.strictEqual(pages[0].action, null);
+  assert.strictEqual(pages[0].reason, "Needs verification");
+  assert.strictEqual(pages[0].on, false);
+  assert.deepStrictEqual(ph.hubPages([{ id: "d.none", error: "bad manifest", windows: [] }], {}), []);
+  assert.deepStrictEqual(ph.hubPages(null, null), []);
+});
+
+test("outline is off by default", () => {
+  const outline = plugin("axidps.outline", { bundled: true });
+  assert.strictEqual(ph.isEnabled(outline, {}), false);
+  assert.strictEqual(ph.isEnabled(outline, { "axidps.outline": { enabled: true, granted: [] } }), true);
+  assert.strictEqual(ph.isEnabled(outline, { "axidps.outline": { enabled: false } }), false);
+  assert.strictEqual(ph.isEnabled(plugin("axidps.perf", { bundled: true }), {}), true);
+});
+
+test("migrateSaved carries the old outline toggle", () => {
+  const K = "axidps.outline/settings";
+  const run = s => {
+    ph.migrateSaved(s);
+    const once = JSON.stringify(s);
+    ph.migrateSaved(s);
+    assert.strictEqual(JSON.stringify(s), once);
+    assert.ok(!s.cfg || !s.cfg[K] || !("on" in s.cfg[K]), once);
+    return s;
+  };
+  let s = run({ cfg: { [K]: { on: true, pve: true } } });
+  assert.strictEqual(s.plugins["axidps.outline"].enabled, true);
+  assert.strictEqual(s.cfg[K].pve, true);
+  s = run({ cfg: { [K]: { on: false } } });
+  assert.strictEqual(s.plugins["axidps.outline"].enabled, false);
+  s = run({ plugins: { "axidps.outline": { enabled: false, granted: [] } }, cfg: { [K]: { on: true } } });
+  assert.strictEqual(s.plugins["axidps.outline"].enabled, false);
+  s = run({ cfg: {} });
+  assert.ok(!s.plugins || !s.plugins["axidps.outline"]);
+});

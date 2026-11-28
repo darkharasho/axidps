@@ -139,12 +139,14 @@
     return perms.filter(x => typeof x === "string").concat(net.filter(x => typeof x === "string").map(h => "net:" + h));
   }
 
-  // Bundled plugins are on unless switched off. A player's plugin is on only once enabled, and
-  // only while the manifest asks for nothing beyond what was granted then.
+  // Bundled plugins are on unless switched off, except those in OFF_BY_DEFAULT, which are on only
+  // once switched on. A player's plugin is on only once enabled, and only while the manifest asks
+  // for nothing beyond what was granted then.
+  const OFF_BY_DEFAULT = ["axidps.outline"];
   function isEnabled(p, savedPlugins) {
     if (!p || typeof p !== "object" || p.error) return false;
     const s = own(savedPlugins, p.id) ? savedPlugins[p.id] : null;
-    if (p.bundled === true) return !(s && s.enabled === false);
+    if (p.bundled === true) return OFF_BY_DEFAULT.includes(p.id) ? !!(s && s.enabled === true) : !(s && s.enabled === false);
     if (!s || s.enabled !== true || !Array.isArray(s.granted)) return false;
     return grantsOf(p).every(g => s.granted.includes(g));
   }
@@ -187,6 +189,33 @@
       label: trustLabel(p),
       reload: !err && on && !bundled && s.dev === true,
     };
+  }
+
+  // A window drawn as a page in the hub's Options tab instead of as an overlay window.
+  const isHub = win => !!win && win.in === "hub";
+
+  // The Options tab's plugin pages: one per hub window of every listed plugin whose manifest
+  // parsed (on or off, or failed to load), in list order. on: isEnabled; action, reason and lines
+  // as on the plugin's card.
+  function hubPages(list, saved) {
+    const s = saved && typeof saved === "object" ? saved : {};
+    const str = v => typeof v === "string" ? v.slice(0, MAX_TEXT) : "";
+    const out = [], seen = new Set();
+    for (const p of Array.isArray(list) ? list : []) {
+      if (!p || typeof p !== "object" || typeof p.id !== "string" || !PLUGIN_ID.test(p.id) || !Array.isArray(p.windows)) continue;
+      let card = null;
+      for (const win of p.windows.slice(0, 4)) {
+        if (!isHub(win) || typeof win.id !== "string" || !WINDOW_ID.test(win.id) || typeof win.entry !== "string") continue;
+        const fullId = p.id + "/" + win.id;
+        if (seen.has(fullId)) continue;
+        seen.add(fullId);
+        card = card || cardModel(p, s);
+        out.push({fullId, id: p.id, title: str(win.title) || win.id, description: str(win.description),
+          icon: ICONS.includes(win.icon) ? win.icon : "plug", on: isEnabled(p, s.plugins),
+          action: card.action, reason: card.reason, lines: card.lines});
+      }
+    }
+    return out;
   }
 
   const OFFLINE = "Can't reach the plugin store. Installed plugins still work.";
@@ -324,6 +353,15 @@
         if (m !== "cfg") o[id] = o[full];
         delete o[full];
       }
+    }
+    // Character Outline's own On toggle became the plugin's switch: carry it over once (an
+    // explicit switch-off on its card stays off), then drop it.
+    const OK = "axidps.outline", cfg = saved.cfg && saved.cfg[OK + "/settings"];
+    if (cfg && typeof cfg === "object" && own(cfg, "on")) {
+      if (!saved.plugins || typeof saved.plugins !== "object") saved.plugins = {};
+      const cur = own(saved.plugins, OK) ? saved.plugins[OK] : null;
+      if (!(cur && cur.enabled === false)) saved.plugins[OK] = {enabled: cfg.on === true, granted: []};
+      delete cfg.on;
     }
     return saved;
   }
@@ -977,7 +1015,7 @@
 
   const pure = {validManifestWindows, isEnabled, grantsOf, permissionLines, cardModel, trustLabel, storeModel, usesOf, sampleStore, sampleStoreList, migrateSaved, clampSize, accept,
     logGate, resizeGate, route, mergeTextures, overCap, nameTaken, errorBadge, settingsModel, settingValues, windowOpts,
-    panelModel, fitSetting, MAX_OPEN};
+    panelModel, fitSetting, MAX_OPEN, isHub, hubPages, OFF_BY_DEFAULT};
   Object.assign(host, pure);
   if (typeof window !== "undefined") window.pluginHost = host;
   if (typeof module !== "undefined" && module.exports) module.exports = Object.assign({host}, pure);
