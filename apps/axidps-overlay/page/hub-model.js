@@ -127,7 +127,17 @@ const axidpsHub = (() => {
     return {rows, counts};
   }
 
+  // The Options tab's left list: the built-in pages, then one per plugin hub page (hubPages) under
+  // "Plugins". sel: the chosen id if it is still listed, else Look.
+  const OPTION_PAGES = [["look", "Look"], ["windows", "Windows"], ["counted", "What gets counted"], ["updates", "Updates"]];
+  function optionNav(pages, sel) {
+    const items = OPTION_PAGES.map(([id, label]) => ({id, label}))
+      .concat((Array.isArray(pages) ? pages : []).map(p => ({id: "p:" + p.fullId, label: p.title, group: "Plugins",
+        icon: p.icon, on: !!p.on})));
+    return {items, sel: items.some(i => i.id === sel) ? sel : "look"};
+  }
+
   return {TABS, tabFor, hubSize, hubFit, windowList, showBlock, notice, groupHead, scrollThumb, scrollForThumb,
-    pageScroll, moveItem, selected, pluginRows};
+    pageScroll, moveItem, selected, pluginRows, optionNav};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsHub;
