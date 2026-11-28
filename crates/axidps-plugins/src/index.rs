@@ -29,6 +29,21 @@ pub struct Version {
     pub api: u32,
 }
 
+impl Signed {
+    /// Fills `covered` with the versions in `plugins` that a standing approval clears.
+    pub fn cover(&mut self, plugins: &[Listing]) {
+        let mut covered = HashSet::new();
+        for l in plugins {
+            for v in &l.versions {
+                if l.cleared(v, self) == Some(Trust::Approved) {
+                    covered.insert((l.id.clone(), v.version.clone(), v.tree.clone()));
+                }
+            }
+        }
+        self.covered = covered;
+    }
+}
+
 /// A plugin in the index, its versions oldest first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listing {
@@ -214,15 +229,15 @@ impl Listing {
         if self.approved(v, signed) {
             return Some(Trust::Verified);
         }
-        let revoked = signed
-            .revoked
-            .as_ref()
-            .is_some_and(|r| r.standing.iter().any(|(id, _)| *id == self.id));
-        let grant = signed.standing.iter().find(|s| s.id == self.id).map(|s| &s.grant)?;
+        // A revoked verification takes the version's grants away, standing or not.
+        let lost = signed.revoked.as_ref().is_some_and(|r| {
+            r.verifications.iter().any(|(id, ver, _)| *id == self.id && *ver == v.version)
+        });
+        let grant = &signed.live_standing(&self.id)?.grant;
         let deeper: Vec<&String> =
             v.permissions.iter().filter(|p| level(p) == Some(Level::Deeper)).collect();
         let covered = !deeper.is_empty() && deeper.iter().all(|p| grant.contains(p));
-        (!revoked && !self.pulled(v, signed) && covered).then_some(Trust::Approved)
+        (!lost && !self.pulled(v, signed) && covered).then_some(Trust::Approved)
     }
 
     /// The version the store offers: the newest cleared one (approved, or covered by a
@@ -364,6 +379,7 @@ pub(crate) mod tests {
             standing: vec![crate::trust::Standing {
                 id: id.into(),
                 grant: grant.iter().map(|g| g.to_string()).collect(),
+                sig: "c2ln".into(),
             }],
             ..Signed::default()
         }
@@ -374,7 +390,7 @@ pub(crate) mod tests {
         let l = textures_listing();
         let s = standing_for("someone.tags", &["textures"]);
         assert_eq!(l.offer(&s).unwrap().version, "1.1.0");
-        assert_eq!(l.cleared(&l.versions[1], &s), Some(crate::trust::Trust::Approved));
+        assert_eq!(l.cleared(&l.versions[1], &s), Some(Trust::Approved));
         assert_eq!(l.cleared(&l.versions[1], &standing_for("other.id", &["textures"])), None);
     }
 
@@ -387,10 +403,47 @@ pub(crate) mod tests {
         let mut gone = s.clone();
         gone.revoked = Some(Revoked {
             seq: 1,
-            standing: vec![("someone.tags".into(), "why".into())],
+            standing: vec![("someone.tags".into(), "c2ln".into(), "why".into())],
             ..Revoked::default()
         });
         assert_eq!(l.cleared(&l.versions[1], &gone), None, "a revoked standing approval clears nothing");
+    }
+
+    #[test]
+    fn revoking_another_standing_object_doesnt_matter() {
+        let l = textures_listing();
+        let mut s = standing_for("someone.tags", &["textures"]);
+        s.revoked = Some(Revoked {
+            seq: 1,
+            standing: vec![("someone.tags".into(), "b2xk".into(), "replaced".into())],
+            ..Revoked::default()
+        });
+        assert_eq!(l.cleared(&l.versions[1], &s), Some(Trust::Approved));
+    }
+
+    #[test]
+    fn verification_revoked_isnt_cleared_by_standing() {
+        let l = textures_listing();
+        let mut s = standing_for("someone.tags", &["textures"]);
+        s.revoked = Some(Revoked {
+            seq: 1,
+            verifications: vec![("someone.tags".into(), "1.1.0".into(), "bad".into())],
+            ..Revoked::default()
+        });
+        assert_eq!(l.cleared(&l.versions[1], &s), None);
+        assert_eq!(l.offer(&s).unwrap().version, "1.0.0");
+    }
+
+    #[test]
+    fn cover_lists_the_versions_standing_clears() {
+        let l = textures_listing();
+        let mut s = standing_for("someone.tags", &["textures"]);
+        s.cover(std::slice::from_ref(&l));
+        let want: HashSet<(String, String, String)> = ["1.0.0", "1.1.0"]
+            .iter()
+            .map(|v| ("someone.tags".to_string(), v.to_string(), h('a')))
+            .collect();
+        assert_eq!(s.covered, want, "1.2.0 asks for world");
     }
 
     #[test]

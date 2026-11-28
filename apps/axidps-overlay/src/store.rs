@@ -317,8 +317,9 @@ impl Core {
         if let (Ok(bytes), Ok(sig)) = (read("index.json"), read("index.json.sig")) {
             match index::parse(&bytes, &String::from_utf8_lossy(&sig), &self.keys) {
                 Ok(idx) => {
-                    let (signed, log) = Signed::from_index(&idx.raw, &self.keys, self.seq);
+                    let (mut signed, log) = Signed::from_index(&idx.raw, &self.keys, self.seq);
                     print_log(&log);
+                    signed.cover(&idx.plugins);
                     self.signed = signed;
                     self.cache = Some(idx);
                     self.fetched = std::fs::metadata(self.store_dir.join("index.json"))
@@ -410,6 +411,8 @@ impl Core {
                 Err(e) => println!("store: can't save revoked-seq: {}", clean(&e)),
             }
         }
+        let mut signed = signed;
+        signed.cover(&idx.plugins);
         self.cache = Some(idx);
         self.signed = signed;
         self.fetched = Some(now_ms());
@@ -1042,6 +1045,9 @@ mod tests {
         let ev = ask(&mut s, json!("refresh"));
         assert_eq!(t.record().plugins[ID].version, "1.1.0");
         assert_eq!(card(&page(&ev))["trust"], "approved");
+        // And the loader grants it: the scan's context covers exactly that listed version.
+        let listed = (ID.to_string(), "1.1.0".to_string(), v11["tree"].as_str().unwrap().to_string());
+        assert!(s.ctx(false).signed.covered.contains(&listed));
 
         // 1.2.0 asks for world too: offered only once someone approves it.
         let v12 = t.publish_as("1.2.0", &["fight", "textures", "world"], &[]);
