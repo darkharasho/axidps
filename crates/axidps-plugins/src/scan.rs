@@ -203,9 +203,13 @@ pub fn grants(m: &Manifest) -> Vec<String> {
         .collect()
 }
 
+/// Bundled plugins that are off until the player switches them on (`OFF_BY_DEFAULT` in
+/// plugin-host.js).
+const OFF_BY_DEFAULT: &[&str] = &["axidps.outline"];
+
 /// Whether the player has plugin `p` on, by the page's rule (`isEnabled` in plugin-host.js), with
 /// `saved` the `plugins` object of the saved ui.json (`{<id>: {enabled, granted}}`): a loadable
-/// bundled plugin unless switched off; a loadable player plugin only once enabled, and only while
+/// bundled plugin unless switched off (or, for OFF_BY_DEFAULT, once switched on); a loadable player plugin only once enabled, and only while
 /// its manifest asks for nothing beyond what was granted then.
 pub fn enabled(p: &Plugin, saved: &Value) -> bool {
     let Some(m) = p.manifest.as_ref().filter(|_| loadable(p)) else {
@@ -213,7 +217,11 @@ pub fn enabled(p: &Plugin, saved: &Value) -> bool {
     };
     let s = saved.get(&m.id);
     if p.bundled {
-        return s.and_then(|s| s.get("enabled")) != Some(&Value::Bool(false));
+        let flag = s.and_then(|s| s.get("enabled"));
+        if OFF_BY_DEFAULT.contains(&m.id.as_str()) {
+            return flag == Some(&Value::Bool(true));
+        }
+        return flag != Some(&Value::Bool(false));
     }
     let Some(s) = s else { return false };
     if s.get("enabled") != Some(&Value::Bool(true)) {
@@ -521,7 +529,7 @@ mod tests {
     fn privileged_only_loads_bundled() {
         let b = plugin("axidps.outline", true, &["outline"], &[]);
         assert!(loadable(&b));
-        assert!(enabled(&b, &Value::Null));
+        assert!(enabled(&b, &json!({"axidps.outline": {"enabled": true}})));
         let p = plugin("x.outline", false, &["outline"], &[]);
         assert!(!loadable(&p));
         assert!(!enabled(&p, &json!({"x.outline": {"enabled": true, "granted": ["outline"]}})));
@@ -537,6 +545,10 @@ mod tests {
         assert!(enabled(&b, &json!({"axidps.fight": {"enabled": true}})));
         assert!(enabled(&b, &json!({"axidps.fight": 3})));
         assert!(!enabled(&b, &json!({"axidps.fight": {"enabled": false}})));
+        let o = plugin("axidps.outline", true, &["outline"], &[]);
+        assert!(!enabled(&o, &Value::Null), "outline: off until switched on");
+        assert!(!enabled(&o, &json!({"axidps.outline": {"enabled": false}})));
+        assert!(enabled(&o, &json!({"axidps.outline": {"enabled": true}})));
 
         let p = plugin("x.y", false, &["fight"], &["api.example.com"]);
         let all = json!(["fight", "net:api.example.com"]);
