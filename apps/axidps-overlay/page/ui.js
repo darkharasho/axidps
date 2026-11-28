@@ -7,6 +7,17 @@ const {fmt, esc, PROF} = axidpsKit;
 // Rows a player table shows at most (Settings; any value up to a full squad), the rest by wheel.
 const MAX_ROWS = 50;
 function maxRows() { return Math.max(1, Math.min(MAX_ROWS, Math.round(Number(saved.rows) || 15))); }
+// Text size (Settings): the meter windows' text as a factor of the theme's (1 = Normal). Compact
+// mode is spacing only; rows, bars and widths follow both (sdk/axidps.js, axidpsText).
+const textScale = () => axidpsText.size(saved.textSize) / 100;
+// A table column's width, and a text-sized box's (a name column, a body, a chart), in px.
+const colW = n => axidpsText.col(n, textScale(), !!saved.compact);
+const boxW = n => axidpsText.box(n, textScale(), !!saved.compact);
+// What a window's layout depends on besides its own content: compact mode and the text size.
+const sizeKey = () => (saved.compact ? "c" : "") + axidpsText.size(saved.textSize);
+// A chart's label font, and its left (value labels) and bottom (time labels) margins, for the text size.
+const chartFont = () => Math.round(10 * textScale() * 10) / 10 + "px " + theme.s.font;
+const chartPads = () => [Math.round(40 * textScale()), Math.round(16 * textScale())];
 
 
 // ---- themes --------------------------------------------------------------------------------
@@ -88,6 +99,7 @@ function applyTheme() {
   const st = theme.s;
   root.setProperty("--font", st.font);
   for (const k of ["fs", "r", "rs", "bw", "rh", "bh"]) root.setProperty("--" + k, st[k] + "px");
+  applyText();
   // The hub stays readable whatever the windows' opacity.
   root.setProperty("--bg-modal", alpha(T("bg"), Math.max(op, 0.9)));
   root.setProperty("--nav-modal", alpha(T("raise"), Math.max(op, 0.9)));
@@ -98,6 +110,18 @@ function applyTheme() {
   // Fonts load asynchronously: lay out and report again once they have.
   setTimeout(renderAll, 300);
   setTimeout(renderAll, 1500);
+}
+// The text size and compact mode for the meter windows (index.html: `.win:not(.bare)` reads these;
+// the hub, Arrange's banner and the axidps button are bare and keep their sizes).
+let appliedText = "";
+function applyText() {
+  const s = textScale(), m = axidpsText.metrics(theme.s, s, !!saved.compact);
+  const key = JSON.stringify([s, m]);
+  if (key === appliedText) return;
+  appliedText = key;
+  const root = document.documentElement.style;
+  root.setProperty("--text-scale", String(s));
+  for (const k of ["rh", "bh", "hh", "fh", "tbh"]) root.setProperty("--m-" + k, m[k] + "px");
 }
 // Pick a theme: it brings its own look.
 function pickTheme(id) {
@@ -234,7 +258,7 @@ const ui = {
 // else its id); plugins: {<plugin id>: {enabled, granted}}; dev: developer mode (the host reads it at
 // start); pwin: {<plugin window full id>: {bar, clear}}, the host's own options for that window.
 let saved = {v: 1, pos: {}, open: {}, cfg: {}, theme: "midnight", opacity: 0.94, blur: 1, rows: 15, core: {}, app: {},
-  tables: [], custom: [], hideZones: false, compact: false, plugins: {}, pwin: {}, dev: false, storeAutoUpdate: true,
+  tables: [], custom: [], hideZones: false, compact: false, textSize: 100, plugins: {}, pwin: {}, dev: false, storeAutoUpdate: true,
   merge: false, groups: []};
 const wins = [];
 // The live feed's history, for custom windows' spans other than "fight" and their charts
@@ -448,6 +472,7 @@ function renderAll() {
   applyCap();
   document.body.classList.toggle("editing", ui.editing);
   document.body.classList.toggle("compact", !!saved.compact);
+  applyText();
   trackCharts();
   for (const w of wins) {
     const open = isOpen(w);
@@ -471,7 +496,8 @@ function feedView() {
 // The theme and display settings (plugin `look`).
 function lookOf() {
   return {theme: theme.id, tokens: Object.assign({}, lookTokens), style: Object.assign({}, theme.s),
-    opacity: Math.max(0.5, Math.min(1, Number(saved.opacity) || 1)), compact: !!saved.compact, rows: maxRows()};
+    opacity: Math.max(0.5, Math.min(1, Number(saved.opacity) || 1)), compact: !!saved.compact, rows: maxRows(),
+    textScale: textScale()};
 }
 const sentToPlugins = {look: "", edit: false, live: undefined, cleared: false};
 // Forward what changed since the last render to the frames.
@@ -1022,21 +1048,19 @@ function nameCell(p, frac) {
     `${p.spec ? `<img src="icons/${encodeURIComponent(p.spec)}.png" alt="">` : ""}${esc(p.name)}</td>`;
 }
 
-// What a table's layout depends on: its columns and compact mode.
-const tableKey = w => colsOf(w).join() + (saved.compact ? "/c" : "");
+// What a table's layout depends on: its columns, compact mode and the text size.
+const tableKey = w => colsOf(w).join() + "/" + sizeKey();
 // def: {cols: default column keys, nameW: name column width, sum(ps): footer, rows(ps): which
 // players it lists (default all)}; the rank and
 // name columns are added automatically. "My subgroup only" (cfg.groupOnly) was set in the old
 // Tables tab; the hub's Defaults clears it.
 function tableWindow(def) {
   const build = w => {
-    // Compact (Settings) narrows every column with the smaller type.
-    const k = saved.compact ? 0.8 : 1, px = n => Math.round(n * k);
-    const cols = colsOf(w).map(c => Object.assign({k: c}, STATS[c], {w: px(STATS[c].w)}));
+    // The text size (Settings) widens or narrows every column with its text; compact trims padding.
+    const cols = colsOf(w).map(c => Object.assign({k: c}, STATS[c], {w: colW(STATS[c].w)}));
     w.colKey = tableKey(w);
-    w.body.style.width = (Math.round(def.nameW * (saved.compact ? 0.72 : 1)) + px(28) +
-      cols.reduce((n, c) => n + c.w, 0)) + "px";
-    w.body.innerHTML = `<table><colgroup><col style="width:${px(28)}px"><col>` +
+    w.body.style.width = (boxW(def.nameW) + colW(28) + cols.reduce((n, c) => n + c.w, 0)) + "px";
+    w.body.innerHTML = `<table><colgroup><col style="width:${colW(28)}px"><col>` +
       cols.map(c => `<col style="width:${c.w}px">`).join("") + `</colgroup><thead><tr><th>#</th>` +
       `<th class="l" data-k="name">Name</th>` +
       cols.map(c => `<th data-k="${c.k}" data-tip="${esc(c.tip)}">${esc(c.label)}</th>`).join("") +
@@ -1176,20 +1200,19 @@ defineWindow({
     return [Math.max(0, Math.min(mx, sw - 430)), Math.max(0, Math.min(my + m.el.offsetHeight + 6, sh - 200))];
   },
   mount(w) {
-    const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
-    w.body.innerHTML = `<canvas class="chart" width="${px(420)}" height="${px(150)}"></canvas>` +
+    w.body.innerHTML = `<canvas class="chart" width="${boxW(420)}" height="${boxW(150)}"></canvas>` +
       `<div class="foot"><span><b class="good">dealt</b> · <b class="bad">taken</b> per second</span><span class="peak"></span></div>`;
-    w.compact = saved.compact;
+    w.sizeKey = sizeKey();
   },
   render(w) {
-    if (w.compact !== saved.compact) w.def.mount(w);
+    if (w.sizeKey !== sizeKey()) w.def.mount(w);
     fightState(w);
     const tl = ui.live && !ui.cleared ? ui.live.timeline : null;
-    const key = `${JSON.stringify(tl)}|${theme.id}|${theme.s.font}|${saved.compact}|${ui.cleared}`;
+    const key = `${JSON.stringify(tl)}|${theme.id}|${theme.s.font}|${sizeKey()}|${ui.cleared}`;
     if (w.drawn === key) return;
     w.drawn = key;
     const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
-    const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 6, padR = 6;
+    const W = cv.width, H = cv.height, [padL, padB] = chartPads(), padT = 6, padR = 6;
     g.clearRect(0, 0, W, H);
     const bucket = (tl && tl.bucket_ms) || 1000;
     const out = smoothRate((tl && tl.out) || [], bucket), inc = smoothRate((tl && tl.in) || [], bucket);
@@ -1198,7 +1221,7 @@ defineWindow({
     const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
     const y = v => H - padB - v / top * (H - padB - padT);
     g.strokeStyle = T("line"); g.lineWidth = 1;
-    g.font = "10px " + theme.s.font; g.fillStyle = T("text");
+    g.font = chartFont(); g.fillStyle = T("text");
     for (const f of [0, 0.5, 1]) {
       const yy = Math.round(y(top * f)) + 0.5;
       g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
@@ -1452,15 +1475,14 @@ defineWindow({
   },
   at: besideSource,
   mount(w) {
-    const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
     w.body.style.width = "";
-    w.body.innerHTML = `<div class="dmain" style="width:${px(620)}px"><div class="dhead"><span class="who"></span><div class="seg by">` +
+    w.body.innerHTML = `<div class="dmain" style="width:${boxW(620)}px"><div class="dhead"><span class="who"></span><div class="seg by">` +
       `<button data-by="skill">By skill</button><button data-by="player">By player</button></div></div>` +
       `<div class="seg views">` + DETAIL_VIEWS.map(([k, label]) => `<button data-view="${k}">${label}</button>`).join("") + `</div>` +
-      `<canvas class="chart" width="${px(620)}" height="${px(140)}"></canvas>` +
+      `<canvas class="chart" width="${boxW(620)}" height="${boxW(140)}"></canvas>` +
       `<table><colgroup></colgroup><thead><tr></tr></thead><tbody></tbody></table><div class="empty"></div>` +
       `<div class="foot"><span class="sum"></span><span class="scroll"></span></div></div>` +
-      `<div class="dside" style="width:${px(210)}px"><div class="din"><div class="dtop"></div><div class="dscroll"></div></div></div>`;
+      `<div class="dside" style="width:${boxW(210)}px"><div class="din"><div class="dtop"></div><div class="dscroll"></div></div></div>`;
     w.body.querySelectorAll("[data-view]").forEach(b => b.onclick = () => {
       w.cfg.view = b.dataset.view; w.offset = 0; w.drawn = ""; w.drawnTable = ""; w.pin = 0; w.hover = 0; pickSkill(0); save(); w.def.render(w);
     });
@@ -1501,12 +1523,11 @@ defineWindow({
     w.body.querySelectorAll("[data-by]").forEach(b => b.onclick = () => {
       w.cfg.by = b.dataset.by; w.offset = 0; w.drawnTable = ""; w.drawn = ""; w.pin = 0; w.hover = 0; pickSkill(0); save(); w.def.render(w);
     });
-    w.compact = saved.compact;
+    w.sizeKey = sizeKey();
   },
   render(w) {
-    if (w.compact !== saved.compact) w.def.mount(w);
+    if (w.sizeKey !== sizeKey()) w.def.mount(w);
     fightState(w);
-    const px = n => Math.round(n * (saved.compact ? 0.8 : 1));
     const want = saved.detail || "";
     const d = ui.live && !ui.cleared && ui.live.detail && ui.live.detail.account === want ? ui.live.detail : null;
     const view = DETAIL_VIEWS.some(([k]) => k === w.cfg.view) ? w.cfg.view : "damage";
@@ -1525,11 +1546,11 @@ defineWindow({
     if (cls) v.col = cls;
     w.body.querySelector(".seg.by").style.visibility = v.byToggle ? "visible" : "hidden";
     // The table: columns per view (rebuilt when the view changes).
-    const layout = `${view}|${by}|${saved.compact}`;
+    const layout = `${view}|${by}|${sizeKey()}`;
     if (w.layoutKey !== layout) {
       if (w.layoutKey && w.layoutKey.split("|")[0] !== view) w.sort = null;
       w.layoutKey = layout;
-      w.body.querySelector("colgroup").innerHTML = `<col>` + v.head.map(() => `<col style="width:${px(78)}px">`).join("");
+      w.body.querySelector("colgroup").innerHTML = `<col>` + v.head.map(() => `<col style="width:${colW(78)}px">`).join("");
       w.body.querySelector("thead tr").innerHTML = `<th class="l" data-col="-1">${esc(v.nameHead || "Skill")}</th>` +
         v.head.map((h, i) => `<th data-col="${i}">${esc(h)}</th>`).join("");
     }
@@ -1639,12 +1660,12 @@ function drawDetail(w, d, series, col, view, perSecond, pick) {
   // The selected skill: its amount per bucket (once the core sends it) and its cast starts.
   const sk = pick && d && d.skill && d.skill.id === pick.id ? d.skill[pick.of] || [] : null;
   const casts = pick && d && Array.isArray(d.casts) ? d.casts.filter(c => c[1] === pick.id).map(c => c[0]) : [];
-  const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${view}|${theme.id}|${theme.s.font}|${saved.compact}` +
+  const key = `${JSON.stringify(series)}|${d ? JSON.stringify(d.states) : ""}|${view}|${theme.id}|${theme.s.font}|${sizeKey()}` +
     `|${pick ? pick.id : ""}|${JSON.stringify(sk)}|${casts.length}`;
   if (w.drawn === key) return;
   w.drawn = key;
   const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
-  const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 8, padR = 8;
+  const W = cv.width, H = cv.height, [padL, padB] = chartPads(), padT = 8, padR = 8;
   g.clearRect(0, 0, W, H);
   const bucket = (d && d.bucket_ms) || 1000;
   const a = smoothRate(series, perSecond ? bucket : 1000);
@@ -1653,7 +1674,7 @@ function drawDetail(w, d, series, col, view, perSecond, pick) {
   const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
   const y = v => H - padB - v / top * (H - padB - padT);
   g.strokeStyle = T("line"); g.lineWidth = 1;
-  g.font = "10px " + theme.s.font; g.fillStyle = T("text");
+  g.font = chartFont(); g.fillStyle = T("text");
   for (const f of [0, 0.5, 1]) {
     const yy = Math.round(y(top * f)) + 0.5;
     g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
@@ -1774,7 +1795,7 @@ function drawChart(w, spec) {
   if (w.drawn === drawKey) return;
   w.drawn = drawKey;
   const cv = w.body.querySelector("canvas"), g = cv.getContext("2d");
-  const W = cv.width, H = cv.height, padL = 40, padB = 16, padT = 6, padR = 6;
+  const W = cv.width, H = cv.height, [padL, padB] = chartPads(), padT = 6, padR = 6;
   g.clearRect(0, 0, W, H);
   const lines = data ? data.lines : [];
   const n = lines.length ? lines[0].length : 0;
@@ -1783,7 +1804,7 @@ function drawChart(w, spec) {
   const x = i => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
   const y = v => H - padB - v / top * (H - padB - padT);
   g.strokeStyle = T("line"); g.lineWidth = 1;
-  g.font = "10px " + theme.s.font; g.fillStyle = T("text");
+  g.font = chartFont(); g.fillStyle = T("text");
   for (const fr of [0, 0.5, 1]) {
     const yy = Math.round(y(top * fr)) + 0.5;
     g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
@@ -1812,7 +1833,7 @@ function drawChart(w, spec) {
     : n > 1 ? `peak ${fmt(Math.max(...lines[0]))} ${st.label.toLowerCase()}${st.rate ? "" : "/s"}` : "";
 }
 
-// A custom window's body for its look (again whenever the spec or compact mode changes).
+// A custom window's body for its look (again whenever the spec, compact mode or the text size changes).
 function buildCustom(w) {
   const spec = w.def.spec;
   // A click on a player (not the Total row) opens their breakdown beside this window.
@@ -1820,14 +1841,13 @@ function buildCustom(w) {
     const r = e.target.closest("[data-acct]");
     if (r && r.dataset.acct && !ui.editing) openDetails(r.dataset.acct, w, statOfClick(e, w));
   };
-  const k = saved.compact ? 0.8 : 1, px = n => Math.round(n * k);
-  w.layout = JSON.stringify(spec) + (saved.compact ? "/c" : "");
+  w.layout = JSON.stringify(spec) + "/" + sizeKey();
   w.drawn = "";
   const foot = `<div class="foot"><span class="sum"></span><span class="scroll"></span></div>`;
   if (spec.look === "table") {
-    const cols = spec.stats.map(s => ({s, w: px(STATS[s.key].w + (s.as === "total" ? 0 : 8))}));
-    w.body.style.width = (Math.round(170 * (saved.compact ? 0.72 : 1)) + px(28) + cols.reduce((n, c) => n + c.w, 0)) + "px";
-    w.body.innerHTML = `<table><colgroup><col style="width:${px(28)}px"><col>` +
+    const cols = spec.stats.map(s => ({s, w: colW(STATS[s.key].w + (s.as === "total" ? 0 : 8))}));
+    w.body.style.width = (boxW(170) + colW(28) + cols.reduce((n, c) => n + c.w, 0)) + "px";
+    w.body.innerHTML = `<table><colgroup><col style="width:${colW(28)}px"><col>` +
       cols.map(c => `<col style="width:${c.w}px">`).join("") + `</colgroup><thead><tr><th>#</th>` +
       `<th class="l" data-k="name">Name</th>` +
       cols.map(c => `<th data-k="${c.s.key}" data-tip="${esc(statTip(c.s))}">${esc(statHead(c.s))}</th>`).join("") +
@@ -1837,14 +1857,14 @@ function buildCustom(w) {
       updateSpec(w.id, {sort: cur.key === key ? {key, asc: !cur.asc} : {key, asc: key === "name"}});
     });
   } else if (spec.look === "bars") {
-    w.body.style.width = px(250) + "px";
+    w.body.style.width = boxW(250) + "px";
     w.body.innerHTML = `<div class="cbars"></div><div class="empty"></div>` + foot;
   } else if (spec.look === "number") {
-    w.body.style.width = px(180) + "px";
+    w.body.style.width = boxW(180) + "px";
     w.body.innerHTML = `<div class="big"><b></b><small></small></div>`;
   } else {
     w.body.style.width = "";
-    w.body.innerHTML = `<canvas class="chart" width="${px(420)}" height="${px(150)}"></canvas>` +
+    w.body.innerHTML = `<canvas class="chart" width="${boxW(420)}" height="${boxW(150)}"></canvas>` +
       `<div class="foot"><span>${spec.stats.map((s, i) =>
         `<b style="color:${esc(chartInk(i))}">${esc(STATS[s.key].label)}</b>`).join(" · ")} per second</span>` +
       `<span class="peak"></span></div>`;
@@ -1855,7 +1875,7 @@ const spanText = sp => SPAN_TEXT[sp] || `last ${sp.slice(5)} s`;
 
 function renderCustom(w) {
   const spec = w.def.spec;
-  if (w.layout !== JSON.stringify(spec) + (saved.compact ? "/c" : "")) buildCustom(w);
+  if (w.layout !== JSON.stringify(spec) + "/" + sizeKey()) buildCustom(w);
   fightState(w);
   if (spec.look === "chart") return drawChart(w, spec);
   const view = customView(spec);
@@ -2759,7 +2779,11 @@ const hub = defineWindow({
       `<u></u><em></em></div><b class="slide-n"></b></div>` +
       `<div class="opt"><div>Blur<small>Softens the game behind see-through windows.</small></div>` +
       `<div class="seg" data-look="blur">${BLUR.map((b, i) => `<button data-v="${i}">${b}</button>`).join("")}</div></div>` +
-      `<div class="opt" data-compact><div>Smaller text and rows<small>Smaller rows, text and columns, so each window takes less room.</small></div>` +
+      `<div class="opt"><div>Text size<small>The text in the meter windows. Rows and columns grow or shrink to fit it.</small></div>` +
+      `<div class="seg" data-look="textSize">${axidpsText.SIZES.map(([v, label]) =>
+        `<button data-v="${v}" data-tip="${v}%">${label}</button>`).join("")}</div></div>` +
+      `<div class="opt" data-compact><div>Compact windows<small>Tighter rows, padding and title bars, so each window ` +
+      `takes less room. The text keeps its size.</small></div>` +
       `<span class="tog"><i></i></span></div></div>` +
       `<div class="opage" data-op="windows"><h3>Windows</h3>` +
       `<div class="opt"><div>How many players to show<small>Every party or squad member up to this many; scroll for the rest.</small></div>` +
@@ -2950,6 +2974,8 @@ const hub = defineWindow({
     w.body.querySelector(".slide-n").textContent = Math.round(near * 100) + "%";
     w.body.querySelectorAll('.seg[data-look="blur"] button').forEach(b =>
       b.classList.toggle("on", Number(b.dataset.v) === (saved.blur | 0)));
+    w.body.querySelectorAll('.seg[data-look="textSize"] button').forEach(b =>
+      b.classList.toggle("on", Number(b.dataset.v) === axidpsText.size(saved.textSize)));
     w.body.querySelectorAll("[data-opt]").forEach(o =>
       o.querySelector(".tog").classList.toggle("on", coreOpt(o.dataset.opt)));
     w.body.querySelector(".rows-n").textContent = maxRows();
@@ -2989,6 +3015,7 @@ window.axidps = {
       saved = {v: 1, pos: s.pos || {}, open: s.open || {}, cfg: s.cfg || {}, theme: t.id,
         opacity: s.opacity ?? t.look[0], blur: s.blur ?? t.look[1], core: s.core || {}, app: s.app || {},
         tables: Array.isArray(s.tables) ? s.tables : [], custom: s.custom, hideZones: !!s.hideZones, compact: !!s.compact,
+        textSize: axidpsText.size(s.textSize),
         plugins: s.plugins && typeof s.plugins === "object" && !Array.isArray(s.plugins) ? s.plugins : {},
         pwin: s.pwin && typeof s.pwin === "object" && !Array.isArray(s.pwin) ? s.pwin : {},
         dev: s.dev === true, storeAutoUpdate: s.storeAutoUpdate !== false,

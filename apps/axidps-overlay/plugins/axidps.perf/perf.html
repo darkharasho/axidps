@@ -6,12 +6,12 @@
 <script src="/_sdk/axidps.js"></script>
 <style>
   .line { padding: 4px 10px; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text); }
-  body.compact .line { padding: 2px 6px; font-size: 10.5px; }
+  body.compact .line { padding: 2px 6px; }
   .line i { font-style: normal; }
   .line b { color: var(--faint); font-weight: 600; margin-right: 2px; }
   .line span + span { margin-left: 10px; }
-  body.big .line { font-size: 16px; }
-  body.big .line b { font-size: 12px; }
+  body.big .line { font-size: calc(16px * var(--text-scale)); }
+  body.big .line b { font-size: calc(12px * var(--text-scale)); }
   .warn { color: var(--bad); }
 </style>
 </head>

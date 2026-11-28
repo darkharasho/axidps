@@ -47,6 +47,36 @@
   }
   const kit = {fmt, clock, esc, PROF, profColor, fightStatus, emptyText};
 
+  // Text size (Settings): the meter windows' text as a percentage of the theme's size. Compact
+  // mode is spacing only; rows, title bars and columns follow the text so it is never clipped.
+  // The page and the SDK share these (the page as `axidpsText`).
+  const TEXT_SIZES = [[80, "Smallest"], [90, "Small"], [100, "Normal"], [115, "Large"], [130, "Larger"],
+    [150, "Largest"]];
+  // A stored text size, or 100 for anything that isn't a step.
+  const textSize = v => typeof v === "number" && TEXT_SIZES.some(([p]) => p === v) ? v : 100;
+  const LH = 1.3; // the page's line-height
+  const lineOf = (f, s) => Math.ceil(f * s * LH - 1e-6);
+  // Row, title bar, table header, footer and title bar button heights (px) for a theme's style
+  // ({fs, rh, bh}) at scale s. Without compact, the theme's sizes grow or shrink with the text
+  // line; compact rows are the text line and nothing more, its bar, header and footer a few px over.
+  function textMetrics(st, s, compact) {
+    const n = (v, d) => typeof v === "number" && v > 0 ? v : d;
+    const fs = n(st && st.fs, 12), rh = n(st && st.rh, 21), bh = n(st && st.bh, 32);
+    const grow = f => f * (s - 1) * LH;
+    const tbh = Math.round(22 * s);
+    if (compact) return {rh: lineOf(fs, s), bh: Math.max(lineOf(fs, s) + 6, tbh), hh: lineOf(10.5, s) + 2,
+      fh: lineOf(11, s) + 1, tbh};
+    return {rh: Math.round(rh + grow(fs)), bh: Math.max(Math.round(bh + grow(fs)), tbh + 4),
+      hh: Math.round(22 + grow(10.5)), fh: Math.round(22 + grow(11)), tbh};
+  }
+  // A table column w px wide at Normal without compact: its text part (w less 6 px padding a side)
+  // scales with the text; compact pads 4 px a side.
+  const colWidth = (w, s, compact) => Math.round((w - 12) * s + (compact ? 8 : 12));
+  // A box sized for its text (a name column, a window's body, a chart): scales with the text, and
+  // compact takes 80% of it.
+  const boxWidth = (n, s, compact) => Math.round(n * s * (compact ? 0.8 : 1));
+  const text = {SIZES: TEXT_SIZES, size: textSize, metrics: textMetrics, col: colWidth, box: boxWidth};
+
   // Where a tooltip goes inside a frame of W x H for an element at rect r: centred under it, above
   // it when there is no room below, and always kept inside the frame (an autosized frame is only
   // as big as its content, so the tip may overlap the element rather than be cut off).
@@ -69,11 +99,10 @@
   --dim: #8d96a5; --faint: #646d7a; --accent: #7aa2f7; --accent-hi: #a9c1ff; --accent-line: #34456a;
   --accent-soft: rgba(122,162,247,.13); --good: #9ece6a; --bad: #f7768e; --tip: #0b0d11;
   --font: "IBM Plex Sans", system-ui, sans-serif; --fs: 12px; --r: 10px; --rs: 6px; --bw: 1px;
-  --rh: 21px; --bh: 32px; }
+  --rh: 21px; --bh: 32px; --text-scale: 1; }
 * { user-select: none; -webkit-user-select: none; cursor: default; box-sizing: border-box; }
 html, body { margin: 0; background: transparent; overflow: hidden; color: var(--text); font: var(--fs)/1.3 var(--font); }
 body { display: inline-block; width: max-content; vertical-align: top; }
-body.compact { --rh: 16px; --bh: 22px; --fs: 10.5px; font-size: var(--fs); }
 /* In a see-through window, straight over the game: light text with a dark edge, on any theme. */
 body.axidps-clear { --text: #eef1f5; --title: #ffffff; --dim: #d3d8e0; --faint: #b9c0cb; color: var(--text);
   text-shadow: 0 0 2px #000, 0 1px 2px #000, 0 0 4px rgba(0,0,0,.6); }
@@ -82,7 +111,7 @@ body.axidps-page { display: block; width: auto; }
 b, strong { font-weight: 600; }
 .axidps-tip { position: fixed; display: none; padding: 3px 8px; background: var(--tip); color: var(--text);
   border: 1px solid var(--line-hi); border-radius: var(--rs); white-space: nowrap; pointer-events: none;
-  font-size: 11px; z-index: 2147483647; }`;
+  font-size: calc(11px * var(--text-scale)); z-index: 2147483647; }`;
 
   const TYPES = ["fight", "players", "look", "edit", "settings", "perf", "frame"];
   const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
@@ -124,6 +153,7 @@ b, strong { font-weight: 600; }
     const emit = (type, v) => { last[type] = {v}; for (const fn of handlers[type].slice()) call(fn, clone(v)); };
 
     const doc = win.document;
+    let inPage = false; // a page in the hub's Options (the `frame` event): the hub's own text size
     function applyLook(l) {
       if (!doc || !doc.documentElement) return;
       const root = doc.documentElement.style;
@@ -132,7 +162,13 @@ b, strong { font-weight: 600; }
       }
       const st = l.style || {};
       if (typeof st.font === "string") root.setProperty("--font", st.font);
-      for (const k of ["fs", "r", "rs", "bw", "rh", "bh"]) if (typeof st[k] === "number") root.setProperty("--" + k, st[k] + "px");
+      for (const k of ["r", "rs", "bw"]) if (typeof st[k] === "number") root.setProperty("--" + k, st[k] + "px");
+      // The text size and compact mode: --fs, --rh and --bh as the page's own windows have them.
+      const s = inPage ? 1 : l.textScale, m = textMetrics(st, s, !!l.compact);
+      root.setProperty("--text-scale", String(s));
+      root.setProperty("--fs", Math.round((typeof st.fs === "number" ? st.fs : 12) * s * 100) / 100 + "px");
+      root.setProperty("--rh", m.rh + "px");
+      root.setProperty("--bh", m.bh + "px");
       if (doc.body) {
         doc.body.classList.toggle("compact", !!l.compact);
         doc.body.classList.toggle("caps", !!st.caps);
@@ -162,7 +198,10 @@ b, strong { font-weight: 600; }
         case "fight": emit("fight", m.feed); break;
         case "players": emit("players", m.players); break;
         case "look": {
-          const l = {theme: m.theme, tokens: m.tokens, style: m.style, opacity: m.opacity, compact: m.compact, rows: m.rows};
+          // textScale: the text size as a factor (1 = Normal; a page without the setting sends none).
+          const ts = typeof m.textScale === "number" ? textSize(Math.round(m.textScale * 100)) / 100 : 1;
+          const l = {theme: m.theme, tokens: m.tokens, style: m.style, opacity: m.opacity, compact: m.compact, rows: m.rows,
+            textScale: ts};
           applyLook(l);
           emit("look", l);
           break;
@@ -174,6 +213,7 @@ b, strong { font-weight: 600; }
             doc.body.classList.toggle("axidps-clear", f.clear);
             doc.body.classList.toggle("axidps-page", f.page);
           }
+          if (inPage !== f.page) { inPage = f.page; if (last.look) applyLook(last.look.v); }
           emit("frame", f);
           if (f.page) { lastSize = ""; measure(); }
           break;
@@ -315,6 +355,7 @@ b, strong { font-weight: 600; }
 
   const root = typeof globalThis !== "undefined" ? globalThis : this;
   root.axidpsKit = kit;
+  root.axidpsText = text;
   if (typeof window !== "undefined" && window.parent && window.parent !== window) window.axidps = makeSdk(window);
-  if (typeof module !== "undefined" && module.exports) module.exports = {kit, makeSdk, tipPos};
+  if (typeof module !== "undefined" && module.exports) module.exports = {kit, makeSdk, tipPos, text};
 })();
