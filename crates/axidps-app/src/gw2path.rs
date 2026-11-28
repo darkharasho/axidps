@@ -21,12 +21,14 @@ fn has_gw2_exe(dir: &Path) -> bool {
 /// name, so that a UAC prompt approved for the game folder cannot be turned into write access
 /// to another folder, or into other rights through the `icacls` argument. Returns the resolved
 /// folder, which is what should be granted.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn check_grant_target(path: &Path, user: &str) -> Result<PathBuf, String> {
     let real = std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !real.is_dir() || !has_gw2_exe(&real) {
         return Err(format!("{} is not a Guild Wars 2 folder", path.display()));
     }
-    let bad = |c: char| c.is_control() || matches!(c, ':' | '(' | ')' | '"' | ',' | '*');
+    // `:` would end the name in the `icacls` argument; `(`, `)` are allowed in Windows names.
+    let bad = |c: char| c.is_control() || matches!(c, ':' | '"' | ',' | '*');
     if user.trim().is_empty() || user.chars().any(bad) {
         return Err(format!("{user:?} is not an account name"));
     }
@@ -34,6 +36,7 @@ pub fn check_grant_target(path: &Path, user: &str) -> Result<PathBuf, String> {
 }
 
 /// `p` without the `\\?\` prefix `canonicalize` adds on Windows, which `icacls` may refuse.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn without_verbatim(p: PathBuf) -> PathBuf {
     let Some(s) = p.to_str() else { return p };
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
@@ -132,6 +135,7 @@ pub fn axiom_gw2_path(axiom_config_json: &str) -> Option<PathBuf> {
 
 /// The folder a registry value names: a folder, or an exe path (possibly quoted, possibly
 /// with an icon index `,0` after it), whose folder is meant.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn folder_from_registry_value(value: &str) -> Option<PathBuf> {
     let mut v = value.trim().trim_matches('\0');
     if let Some((path, index)) = v.rsplit_once(',')
@@ -423,8 +427,6 @@ mod tests {
         dir
     }
 
-    /// The elevated grant runs on whatever command line it is given, so it checks for itself that
-    /// the folder is a game folder and that the account name is only a name.
     #[test]
     fn verbatim_prefix_is_dropped_for_icacls() {
         let p = |s: &str| without_verbatim(PathBuf::from(s));
@@ -439,12 +441,19 @@ mod tests {
         assert_eq!(p("/home/u/gw2"), PathBuf::from("/home/u/gw2"));
     }
 
+    /// The elevated grant runs on whatever command line it is given, so it checks for itself that
+    /// the folder is a game folder and that the account name is only a name.
     #[test]
     fn grant_target_must_be_a_game_folder() {
         let tmp = tempfile::tempdir().unwrap();
         let gw2 = game(tmp.path(), "Guild Wars 2");
         let real = fs::canonicalize(&gw2).unwrap();
         assert_eq!(check_grant_target(&gw2, "PC\\player"), Ok(real.clone()));
+        // Windows allows parentheses in account names; only `:` splits the icacls argument.
+        assert_eq!(
+            check_grant_target(&gw2, "PC\\Player (Home)"),
+            Ok(real.clone())
+        );
         #[cfg(unix)]
         {
             let link = tmp.path().join("link");
@@ -466,7 +475,7 @@ mod tests {
             "a file"
         );
         assert!(check_grant_target(&tmp.path().join("missing"), "player").is_err());
-        for user in ["", "Everyone:(F)", "a\"b", "x)(OI)", "tab\tname"] {
+        for user in ["", "Everyone:(F)", "a\"b", "x:(OI)", "tab\tname"] {
             assert!(check_grant_target(&gw2, user).is_err(), "{user:?}");
         }
     }

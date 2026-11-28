@@ -881,8 +881,20 @@ fn cleanup_stale(config: Option<&Path>, appimage: Option<&Path>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
+    // Versions before `PART` wrote `.part`, which a browser downloading the next AppImage may
+    // be writing right now: only one untouched for a day is ours.
+    let legacy = Regex::new(r"(?i)^axidps.*\.AppImage\.part$").unwrap();
+    let day = std::time::Duration::from_secs(24 * 3600);
+    let old = |e: &fs::DirEntry| {
+        e.metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > day))
+    };
     for e in entries.flatten() {
-        if e.file_name().to_str().is_some_and(|n| stale.is_match(n)) {
+        let Some(n) = e.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if stale.is_match(&n) || (legacy.is_match(&n) && old(&e)) {
             let _ = fs::remove_file(e.path());
         }
     }
@@ -1472,6 +1484,13 @@ mod tests {
         ] {
             fs::write(tmp.path().join(n), b"x").unwrap();
         }
+        // An older version's own partial download: long untouched, so not a browser's.
+        let legacy = tmp.path().join("axidps-0.3.0.AppImage.part");
+        let two_days = std::time::Duration::from_secs(2 * 24 * 3600);
+        fs::File::create(&legacy)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - two_days)
+            .unwrap();
         cleanup_stale(Some(&cfg), Some(&app));
         assert!(!cfg.join("updates").exists());
         let mut left: Vec<_> = fs::read_dir(tmp.path())

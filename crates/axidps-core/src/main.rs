@@ -380,10 +380,12 @@ impl LogWriter {
         let worker = std::thread::Builder::new()
             .name("log-writer".into())
             .spawn(move || {
-                // Every job runs, failed or not.
+                // Every job runs, failed or not; a panicking one is a failed write and must not
+                // take the log queued behind it down with the worker.
                 let mut failed = false;
                 for job in rx {
-                    if !job() {
+                    let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                    if !ok.unwrap_or(false) {
                         failed = true;
                     }
                 }
@@ -1050,23 +1052,79 @@ mod log_writer_tests {
         let mut w = LogWriter::start();
         let order = Arc::new(Mutex::new(Vec::new()));
         let main = std::thread::current().id();
+        // The first job holds the worker until released, so the second one is still queued.
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let mut gate = Some(gate);
         for i in 0..3 {
-            let order = order.clone();
+            let seen = order.clone();
+            let gate = gate.take();
             w.submit(Box::new(move || {
-                std::thread::sleep(Duration::from_millis(30));
+                if let Some(g) = gate {
+                    let _ = g.recv();
+                }
                 assert_ne!(std::thread::current().id(), main);
-                order.lock().unwrap().push(i);
+                seen.lock().unwrap().push(i);
                 true
             }));
+            if i == 1 {
+                // Submitting did not wait for the jobs.
+                assert!(order.lock().unwrap().is_empty());
+                release.send(()).unwrap();
+            }
         }
-        // Submitting did not wait for the jobs.
-        assert!(order.lock().unwrap().len() < 3);
         assert!(!w.finish());
         assert_eq!(*order.lock().unwrap(), [0, 1, 2]);
         let mut w = LogWriter::start();
         w.submit(Box::new(|| false));
         w.submit(Box::new(|| true));
         assert!(w.finish(), "a failed write is reported");
+    }
+
+    /// A log job that panics is a failed write; the log queued behind it is still written.
+    #[test]
+    fn a_panicking_job_does_not_lose_the_next() {
+        let mut w = LogWriter::start();
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        w.submit(Box::new(move || {
+            let _ = gate.recv();
+            panic!("assembly failed");
+        }));
+        let r = ran.clone();
+        w.submit(Box::new(move || {
+            r.lock().unwrap().push(1);
+            true
+        }));
+        release.send(()).unwrap();
+        let r = ran.clone();
+        w.submit(Box::new(move || {
+            r.lock().unwrap().push(2);
+            true
+        }));
+        assert!(w.finish(), "the panic is reported as a failed write");
+        assert_eq!(*ran.lock().unwrap(), [1, 2]);
+    }
+
+    /// Dropping the writer without `finish` still waits for every log.
+    #[test]
+    fn drop_waits_for_every_job() {
+        let ran = Arc::new(Mutex::new(0));
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        {
+            let mut w = LogWriter::start();
+            w.submit(Box::new(move || gate.recv().is_ok()));
+            for i in 0..2 {
+                let r = ran.clone();
+                w.submit(Box::new(move || {
+                    *r.lock().unwrap() += 1;
+                    true
+                }));
+                if i == 0 {
+                    release.send(()).unwrap();
+                }
+            }
+        }
+        assert_eq!(*ran.lock().unwrap(), 2);
     }
 }
 

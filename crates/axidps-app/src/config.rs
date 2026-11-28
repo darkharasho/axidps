@@ -28,6 +28,7 @@ pub struct GameState {
 
 impl GameState {
     /// Records a grant for `folder`.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn record_grant(&mut self, folder: &Path) {
         self.granted = true;
         self.granted_for = Some(folder.to_path_buf());

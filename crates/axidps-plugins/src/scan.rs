@@ -163,14 +163,20 @@ fn scan_dir(dir: &Path, bundled: bool, log: &mut Vec<String>) -> Vec<Plugin> {
 }
 
 /// The manifest's bytes: a regular file only (a FIFO or device would block or never end), and at
-/// most one byte past the size limit, which `problems` then reports as too big.
+/// most one byte past the size limit, which `problems` then reports as too big. The type is
+/// checked on the opened file, and the open does not wait for a FIFO's writer, so a manifest
+/// swapped for a FIFO after a check cannot block.
 pub fn read_manifest(path: &Path) -> std::io::Result<Vec<u8>> {
-    if !std::fs::metadata(path)?.is_file() {
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open, libc::O_NONBLOCK);
+    let file = open.open(path)?;
+    if !file.metadata()?.is_file() {
         return Err(std::io::Error::other("not a regular file"));
     }
     let mut buf = Vec::new();
-    std::fs::File::open(path)?
-        .take(MAX_MANIFEST_BYTES as u64 + 1)
+    file.take(MAX_MANIFEST_BYTES as u64 + 1)
         .read_to_end(&mut buf)?;
     Ok(buf)
 }
