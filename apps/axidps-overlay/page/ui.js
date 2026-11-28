@@ -245,6 +245,8 @@ const ui = {
   screen: [2560, 1440],
   hubMoved: null,      // where the hub was dragged to (this session; null = centred), and when
   hubMovedAt: 0,
+  popout: null,        // a plugin page popped out of the hub (session only): {fullId, moved: null | [x, y]}
+  popMovedAt: 0,       // when the popped hub was last dropped (its double-click), apart from the full hub's
   editing: false,      // the DLL's edit mode, as reported by the host
   editSeq: 0,          // our edit requests: odd = on, even = off
   session: {},         // open state of windows that always start closed (the hub, Details)
@@ -406,9 +408,32 @@ function setOpen(w, on) {
   refit();
   // The hub's plugin buttons (Update, Remove) need the store's view of each plugin.
   if (on && w.id === "hub") pluginHost.storeOpen();
+  if (w === hub && !on) ui.popout = null;
   if (w.def.session) ui.session[w.id] = on;
   else { saved.open[w.key] = on; save(); }
   renderAll();
+}
+// Pop a plugin's options page out: the hub shrinks to just that page, not modal, so the game stays
+// in view and clickable. Its frame stays where it is, so the page never reloads.
+function popOut(fullId) {
+  ui.popout = {fullId, moved: null};
+  hub.tab = "options";
+  hub.opt = "p:" + fullId;
+  renderAll();
+  scheduleReport();
+}
+// Back to the full hub, on the same page.
+function popIn() {
+  ui.popout = null;
+  renderAll();
+  scheduleReport();
+}
+// The popped page went away (its plugin turned off, failed or removed), or the hub closed: back
+// to the full hub.
+function syncPopout() {
+  if (!ui.popout) return;
+  const pages = pluginHost.hubPages(pluginHost.list, saved, {hosted: HOSTED});
+  if (!isOpen(hub) || !axidpsHub.popPage(pages, ui.popout.fullId)) ui.popout = null;
 }
 function posOf(w) {
   if (w.def.fixed) return w.def.at(ui.screen, w.el);
@@ -469,6 +494,7 @@ function requestEdit(on) {
 }
 
 function renderAll() {
+  syncPopout();
   if (ui.text && !isOpen(hub)) endText(true); // the hub closed: keep what was typed
   layoutGroups();
   applyCap();
@@ -476,6 +502,7 @@ function renderAll() {
   document.body.classList.toggle("compact", !!saved.compact);
   applyText();
   hub.el.classList.toggle("moved", !!ui.hubMoved); // its Centre button
+  hub.el.classList.toggle("popped", !!ui.popout);
   trackCharts();
   for (const w of wins) {
     const open = isOpen(w);
@@ -523,7 +550,9 @@ function scheduleReport() {
 function report() {
   reportTimer = 0;
   if (isOpen(hub)) {
-    const fit = axidpsHub.hubFit(axidpsHub.hubSize(ui.screen), hubRoom())[1];
+    // Popped, the hub may grow to most of the screen (popSize), not just the full hub's height.
+    const size = ui.popout ? axidpsHub.popSize(ui.screen) : axidpsHub.hubSize(ui.screen);
+    const fit = axidpsHub.hubFit(size, hubRoom())[1];
     if (fit !== hubFitH) { hubFitH = fit; renderAll(); return; }
   }
   // Not while a join is previewed or a table pulled: that layout is only for the moment, and a
@@ -535,6 +564,9 @@ function report() {
     return;
   }
   const windows = [];
+  // A popped hub is not modal: the game isn't dimmed, and Esc and clicks outside go to it. It keeps
+  // its own rounded, blurred backdrop.
+  const modalNow = w => !!w.def.modal && !(w === hub && ui.popout);
   for (const w of wins) {
     if (!isOpen(w) || w.inGroup) continue;
     const r = w.el.getBoundingClientRect();
@@ -551,11 +583,13 @@ function report() {
         : w === hub ? hubGrip(r) : [0, 0, 0, 0],
       r: flat ? 0 : theme.s.r,
       blur: flat ? 0 : w.def.modal ? Math.max(2, blurLevel()) : blurLevel(),
-      flags: (w.def.ed ? 1 : 0) | (w.def.modal ? 2 : 0) | (w.def.group ? FLAG_GROUP : 0) | (w.grab ? FLAG_GRAB : 0)});
+      flags: (w.def.ed ? 1 : 0) | (modalNow(w) ? 2 : 0) | (w.def.group ? FLAG_GROUP : 0) | (w.grab ? FLAG_GRAB : 0)});
   }
-  // Never more than the DLL's table holds; the interactive and modal windows go first.
+  // Never more than the DLL's table holds; the interactive and modal windows go first, and the hub
+  // (popped, it isn't modal).
   if (windows.length > MAX_OPEN) {
-    const first = windows.filter(x => x.flags & 3), rest = windows.filter(x => !(x.flags & 3));
+    const keep = x => (x.flags & 3) || x.name === "hub";
+    const first = windows.filter(keep), rest = windows.filter(x => !keep(x));
     windows.splice(0, windows.length, ...first.concat(rest).slice(0, MAX_OPEN));
   }
   const msg = JSON.stringify({windows, edit_seq: ui.editSeq, hide_zones: !!saved.hideZones,
@@ -2180,7 +2214,8 @@ const launcher = defineWindow({
   mount(w) {
     w.body.innerHTML = `<div class="launch"><canvas width="32" height="32"></canvas></div>`;
     const b = w.body.firstChild;
-    b.onclick = () => { if (!ui.editing) setOpen(hub, !isOpen(hub)); };
+    // Popped out, the button brings the full hub back rather than closing it.
+    b.onclick = () => { if (!ui.editing) { if (ui.popout) popIn(); else setOpen(hub, !isOpen(hub)); } };
     b.onmouseenter = () => { w.hot = true; w.def.render(w); };
     b.onmouseleave = () => { w.hot = false; w.def.render(w); };
   },
@@ -2567,7 +2602,9 @@ function renderOptions(w) {
     const st = pg.on ? pluginHost.hubStatusOf(pg.fullId) : null;
     const sw = pg.action ? `<span class="tog${pg.on ? " on" : ""}" data-pact="${pg.action}" ` +
       `data-tip="${pg.on ? "turn it off" : "turn it on"}"><i></i></span>` : `<span class="have off">${esc(pg.reason)}</span>`;
-    putHtml(el.querySelector(".ohead"), `<div class="otop" data-p="${esc(pg.id)}"><h3>${esc(pg.title)}</h3>${sw}</div>` +
+    const pop = pg.popout && !ui.popout
+      ? `<button class="quiet pop" data-pop data-tip="see the game change while you set it">Pop out</button>` : "";
+    putHtml(el.querySelector(".ohead"), `<div class="otop" data-p="${esc(pg.id)}"><h3>${esc(pg.title)}</h3>${pop}${sw}</div>` +
       (pg.description ? `<p class="odesc">${esc(pg.description)}</p>` : "") +
       (pg.lines.length ? `<p class="olines">${pg.lines.map(l => esc(l)).join(" · ")}</p>` : "") +
       (st ? `<p class="ostat${st.bad ? " bad" : ""}"${st.tip ? ` data-tip="${esc(st.tip)}"` : ""}>${esc(st.text)}</p>` : ""));
@@ -2744,6 +2781,14 @@ function scrollBarEvents(root) {
 // The hub drags by the left end of its top bar (its name, up to the tabs), so it can be moved off
 // whatever the player wants to watch while changing settings; window-local [x, y, w, h].
 function hubGrip(r) {
+  if (ui.popout) {
+    // Popped: it drags by the page's title.
+    const t = hub.body.querySelector(".ptitle"), top = hub.body.querySelector(".top");
+    if (!t || !top) return [0, 0, 0, 0];
+    const b = t.getBoundingClientRect(), bar = top.getBoundingClientRect();
+    return [Math.max(0, Math.round(b.left - r.left)), Math.max(0, Math.round(bar.top - r.top)),
+      Math.max(0, Math.round(b.width)), Math.round(bar.height)];
+  }
   const top = hub.body.querySelector(".top"), nav = top && top.querySelector("nav");
   if (!top || !nav) return [0, 0, 0, 0];
   const t = top.getBoundingClientRect();
@@ -2755,6 +2800,14 @@ function hubGrip(r) {
 function hubDropped(x, y) {
   const now = Date.now(), [hx, hy] = posOf(hub);
   const still = Math.abs(x - hx) < 3 && Math.abs(y - hy) < 3;
+  if (ui.popout) {
+    // Popped: its own spot (back to the right edge on a double-click); the full hub's stays put.
+    const p = ui.popout;
+    p.moved = still && now - ui.popMovedAt < 450 ? null : still && !p.moved ? null : [Math.round(x), Math.round(y)];
+    ui.popMovedAt = now;
+    renderAll();
+    return;
+  }
   ui.hubMoved = still && now - ui.hubMovedAt < 450 ? null : still && !ui.hubMoved ? null : [Math.round(x), Math.round(y)];
   ui.hubMovedAt = now;
   renderAll();
@@ -2765,15 +2818,18 @@ function hubDropped(x, y) {
 const hub = defineWindow({
   id: "hub", title: "axidps", session: true, bare: true, modal: true, fixed: true,
   // Centred, or where it was dragged by its name (`hubGrip`) this session.
-  at: sc => axidpsHub.hubAt(sc, hubSizeNow(sc), ui.hubMoved),
+  at: sc => ui.popout ? axidpsHub.popAt(sc, [hub.el.offsetWidth, hub.el.offsetHeight], ui.popout.moved)
+    : axidpsHub.hubAt(sc, hubSizeNow(sc), ui.hubMoved),
   mount(w) {
     w.tab = "windows";
     w.body.innerHTML = `<div class="hub"><div class="top">` +
       `<div class="brand" data-tip="drag to move · double-click to centre">${icon("chart", 18, "accent")}<b>axidps</b></div>` +
+      `<b class="ptitle" data-tip="drag to move · double-click to put it back"></b>` +
       `<nav>${TABS.map(([id, label]) => `<div class="tabb" data-tab="${id}">${esc(label)}` +
         `${id === "plugins" ? '<span class="n"></span>' : ""}</div>`).join("")}</nav>` +
       `<span class="grow"></span><span class="kbd">Alt+Shift+M opens and closes this</span>` +
       `<button class="quiet recentre" data-act="recentre" data-tip="put it back in the middle">Centre</button>` +
+      `<button class="quiet unpop" data-act="unpop" data-tip="back to all the options">Options</button>` +
       `<button class="x" data-act="close" data-tip="close (Esc)">${icon("x", 12)}</button></div>` +
       `<main>` +
       // Windows: the list on the left, the selected window's settings and the bottom bar on the right
@@ -2866,6 +2922,7 @@ const hub = defineWindow({
     };
     q('[data-act="layout"]').onclick = () => { ui.session.hub = false; ui.fromHub = true; refit(); requestEdit(true); renderAll(); };
     q('[data-act="close"]').onclick = () => setOpen(w, false);
+    q('[data-act="unpop"]').onclick = popIn;
     q('[data-act="recentre"]').onclick = () => { ui.hubMoved = null; renderAll(); };
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
@@ -2950,6 +3007,8 @@ const hub = defineWindow({
     q('section[data-tab="options"]').onclick = e => {
       const nav = e.target.closest("[data-onav]");
       if (nav) { w.opt = nav.dataset.onav; renderAll(); scheduleReport(); return; }
+      const pop = e.target.closest("[data-pop]"), pageEl = pop && pop.closest(".hpage");
+      if (pageEl) { popOut(pageEl.dataset.op.replace(/^p:/, "")); return; }
       if (plugActClick(e)) return;
       if (plugSettingClick(e)) return;
       if (e.target.closest("[data-autoupdate]")) {
@@ -2970,8 +3029,20 @@ const hub = defineWindow({
   render(w) {
     const [hw, hh] = hubSizeNow(ui.screen);
     const hubEl = w.body.querySelector(".hub");
-    hubEl.style.width = hw + "px";
-    hubEl.style.height = hh + "px";
+    const pg = ui.popout && axidpsHub.popPage(pluginHost.hubPages(pluginHost.list, saved, {hosted: HOSTED}), ui.popout.fullId);
+    if (pg) {
+      // Popped: narrow, as tall as the page up to most of the screen (and the atlas room), scrolling past.
+      const [pw, ph] = axidpsHub.popSize(ui.screen);
+      hubEl.style.width = pw + "px";
+      hubEl.style.height = "auto";
+      hubEl.style.maxHeight = Math.min(ph, hubFitH || Infinity) + "px";
+    } else {
+      hubEl.style.width = hw + "px";
+      hubEl.style.height = hh + "px";
+      hubEl.style.maxHeight = "";
+    }
+    w.body.querySelector(".ptitle").textContent = pg ? pg.title : "";
+    w.body.querySelector('[data-act="close"]').dataset.tip = pg ? "close" : "close (Esc)";
     w.body.querySelectorAll(".tabb").forEach(n => n.classList.toggle("on", n.dataset.tab === w.tab));
     w.body.querySelectorAll("section").forEach(sc => sc.classList.toggle("on", sc.dataset.tab === w.tab));
     if (w.tab === "windows") renderWindows(w);

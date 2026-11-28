@@ -182,6 +182,18 @@
   .tabb .n { font-size: 11px; line-height: 16px; padding: 0 7px; border-radius: 8px; color: var(--accent-hi);
     background: var(--accent-soft); border: 1px solid var(--accent-line); }
   .hub .top .kbd { color: var(--faint); font-size: 11.5px; }
+  /* A plugin page popped out: just that page, narrow, its title the drag grip. */
+  .hub .top .ptitle, .hub .top .unpop { display: none; }
+  .win.popped .hub .top { height: 40px; gap: 8px; padding: 0 8px 0 14px; }
+  .win.popped .hub .top .brand, .win.popped .hub nav, .win.popped .hub .top .kbd,
+  .win.popped .hub .top .recentre, .win.popped .hub .top .grow { display: none !important; }
+  .win.popped .hub .top .ptitle { display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: var(--title); font-size: 14px; cursor: move; }
+  .win.popped .hub .top .unpop { display: inline-flex; align-items: center; height: 28px; }
+  .win.popped .hub section[data-tab="options"] .pfcol { display: none; }
+  .win.popped .hub .opane { padding: 14px 16px 16px; }
+  .win.popped .hpage .otop h3, .win.popped .hpage .odesc, .win.popped .hpage .olines { display: none; }
+  .win.popped .hpage .otop { justify-content: flex-end; }
   .hub main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .hub section { display: none; padding: 20px 28px 24px; overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; }
   .hub section.on { display: block; }
@@ -270,6 +282,7 @@
   .hpage .otop { display: flex; align-items: center; gap: 12px; }
   .hpage .otop h3 { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
   .hpage .otop .have.off { color: var(--bad); font-size: 11px; }
+  .hpage .otop .pop { height: 28px; }
   .hpage .odesc { margin: 8px 0 0; color: var(--text); }
   .hpage .olines { margin: 4px 0 0; color: var(--dim); font-size: 11px; }
   .hpage .ostat { margin: 6px 0 0; color: var(--dim); font-size: 11px; }

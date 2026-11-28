@@ -1,13 +1,13 @@
 {
   "id": "axidps.outline",
   "name": "Character Outline",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "axidps",
   "api": 1,
   "permissions": ["outline"],
   "windows": [
     {"id": "settings", "title": "Character Outline", "entry": "settings.html",
      "description": "outline your character so you can find it in a crowd",
-     "icon": "sliders", "in": "hub"}
+     "icon": "sliders", "in": "hub", "popout": true}
   ]
 }
