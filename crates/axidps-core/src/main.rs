@@ -359,13 +359,90 @@ fn err(msg: std::fmt::Arguments) {
     let _ = writeln!(std::io::stderr(), "{msg}");
 }
 
+/// A log to build and write; `false` when it could not be written.
+type LogJob = Box<dyn FnOnce() -> bool + Send>;
+
+/// Builds and writes finished fights' logs on one worker thread, in submission order, so the
+/// ring keeps being drained while a long fight's log is assembled and compressed (the ring holds
+/// only seconds of a busy fight).
+struct LogWriter {
+    tx: Option<std::sync::mpsc::SyncSender<LogJob>>,
+    worker: Option<std::thread::JoinHandle<bool>>,
+    /// A job that ran here because there is no worker (it could not be started).
+    failed_inline: bool,
+}
+
+impl LogWriter {
+    fn start() -> Self {
+        // One log waiting beside the one being built: a reader that outpaces the writer (a
+        // replay, or fights ending back to back) waits rather than queueing fights in memory.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<LogJob>(1);
+        let worker = std::thread::Builder::new()
+            .name("log-writer".into())
+            .spawn(move || {
+                // Every job runs, failed or not.
+                let mut failed = false;
+                for job in rx {
+                    if !job() {
+                        failed = true;
+                    }
+                }
+                failed
+            });
+        match worker {
+            Ok(w) => LogWriter {
+                tx: Some(tx),
+                worker: Some(w),
+                failed_inline: false,
+            },
+            Err(e) => {
+                err(format_args!(
+                    "logs are written inline: no worker thread: {e}"
+                ));
+                LogWriter {
+                    tx: None,
+                    worker: None,
+                    failed_inline: false,
+                }
+            }
+        }
+    }
+
+    fn submit(&mut self, job: LogJob) {
+        let job = match self.tx.as_ref() {
+            Some(tx) => match tx.send(job) {
+                Ok(()) => return,
+                // The worker is gone (it panicked): write here instead.
+                Err(std::sync::mpsc::SendError(job)) => job,
+            },
+            None => job,
+        };
+        self.failed_inline |= !job();
+    }
+
+    /// Waits for every submitted log; `true` if any could not be written. Later logs are
+    /// written inline.
+    fn finish(&mut self) -> bool {
+        self.tx = None;
+        let worker_failed = self.worker.take().is_some_and(|w| w.join().unwrap_or(true));
+        worker_failed || self.failed_inline
+    }
+}
+
+/// An exit that did not wait for the logs still waits: a finished fight is never lost.
+impl Drop for LogWriter {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 struct App {
     processor: Processor,
     dir: PathBuf,
     /// Last event time seen (game ms) and when it was read, to estimate "now" for `tick`.
     clock: Option<(u64, Instant)>,
-    /// A log could not be written.
-    write_failed: bool,
+    /// Writes finished fights' logs off the reading thread.
+    writer: LogWriter,
     /// `--record`: where the steps go. Dropped (with one message) after a write error.
     rec: Option<RecFile>,
     /// The last header status applied, so an unchanged one is not recorded every read.
@@ -573,17 +650,21 @@ impl App {
                     }
                     None => now_unix_s(),
                 };
-                let (log, condi) = build_log_report(&fight, &registry);
-                match write_fight(&self.dir, &log, end_unix_s, to_local) {
-                    Ok(p) => {
-                        out(format_args!("wrote {}", p.display()));
-                        out(format_args!("{}", condi_line(&condi)));
+                let dir = self.dir.clone();
+                self.writer.submit(Box::new(move || {
+                    let (log, condi) = build_log_report(&fight, &registry);
+                    match write_fight(&dir, &log, end_unix_s, to_local) {
+                        Ok(p) => {
+                            out(format_args!("wrote {}", p.display()));
+                            out(format_args!("{}", condi_line(&condi)));
+                            true
+                        }
+                        Err(e) => {
+                            err(format_args!("write failed: {e}"));
+                            false
+                        }
                     }
-                    Err(e) => {
-                        self.write_failed = true;
-                        err(format_args!("write failed: {e}"));
-                    }
-                }
+                }));
             }
             FightOutcome::Discarded {
                 reason,
@@ -679,7 +760,7 @@ fn replay(app: &mut App, path: &std::path::Path) -> ExitCode {
     }
     // A recording cut off by a killed core has no final flush.
     app.step(Step::Flush);
-    if failed || app.write_failed {
+    if app.writer.finish() || failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -763,7 +844,7 @@ fn main() -> ExitCode {
         processor: Processor::new(rules),
         dir,
         clock: None,
-        write_failed: false,
+        writer: LogWriter::start(),
         rec: None,
         header: None,
         live: None,
@@ -828,7 +909,7 @@ fn main() -> ExitCode {
             app.step(Step::Flush);
             app.flush_recording();
             app.write_live(true);
-            return if app.write_failed {
+            return if app.writer.finish() {
                 ExitCode::FAILURE
             } else {
                 ExitCode::SUCCESS
@@ -906,7 +987,7 @@ fn main() -> ExitCode {
             }
             if args.exit_when_idle {
                 app.write_live(true);
-                return if app.write_failed {
+                return if app.writer.finish() {
                     ExitCode::FAILURE
                 } else {
                     ExitCode::SUCCESS
@@ -954,6 +1035,38 @@ fn note_write(failing: &mut bool, wrote: std::io::Result<bool>) -> Option<std::i
                 Some(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod log_writer_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Logs are built off the reading thread, one at a time in submission order; finishing
+    /// waits for all of them and says whether any failed.
+    #[test]
+    fn jobs_run_in_order_off_thread_and_finish_waits() {
+        let mut w = LogWriter::start();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let main = std::thread::current().id();
+        for i in 0..3 {
+            let order = order.clone();
+            w.submit(Box::new(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                assert_ne!(std::thread::current().id(), main);
+                order.lock().unwrap().push(i);
+                true
+            }));
+        }
+        // Submitting did not wait for the jobs.
+        assert!(order.lock().unwrap().len() < 3);
+        assert!(!w.finish());
+        assert_eq!(*order.lock().unwrap(), [0, 1, 2]);
+        let mut w = LogWriter::start();
+        w.submit(Box::new(|| false));
+        w.submit(Box::new(|| true));
+        assert!(w.finish(), "a failed write is reported");
     }
 }
 
