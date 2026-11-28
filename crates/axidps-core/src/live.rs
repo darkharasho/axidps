@@ -938,6 +938,8 @@ impl LiveStats {
                 if self.boon_map.is_some_and(|m| m != (map_id, shard)) {
                     // Instance ids are reused per map.
                     self.buff_stacks.clear();
+                    self.stacks.clear();
+                    self.masters.clear();
                     self.roster.clear();
                     self.roster_pov = None;
                     self.by_account.clear();
@@ -3970,6 +3972,39 @@ mod tests {
         assert_eq!(v["fight"]["map"], 38);
         assert_eq!(player(&v, "Char 1").unwrap()["damage"], 100);
         assert_eq!(v["players"].as_array().unwrap().len(), 2);
+    }
+
+    /// Instance ids are reused per map: a pet's master, or a stack's holder, from the old map
+    /// says nothing about the agent with that id on the new one.
+    #[test]
+    fn map_change_forgets_masters_and_stacks() {
+        let mut p = processor();
+        let mut l = LiveStats::new();
+        let map = |map_id| Event::Map {
+            map_id,
+            map_type: 11,
+            shard: 0,
+            gw2_build: 1,
+        };
+        run(&mut p, &mut l, Step::Push(0, map(38)));
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(10, Event::AgentMaster { id: 50, master: 1 }),
+        );
+        l.stacks.insert(7, (50, 740));
+        assert_eq!(l.owner(50), 1);
+        run(&mut p, &mut l, Step::Push(20, map(95)));
+        assert_eq!(l.owner(50), 50);
+        assert!(l.stacks.is_empty());
+        // The same map again (a fresh status) keeps them.
+        run(
+            &mut p,
+            &mut l,
+            Step::Push(30, Event::AgentMaster { id: 50, master: 1 }),
+        );
+        run(&mut p, &mut l, Step::Push(40, map(95)));
+        assert_eq!(l.owner(50), 1);
     }
 
     #[test]
