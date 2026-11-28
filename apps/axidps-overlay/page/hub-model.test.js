@@ -264,3 +264,27 @@ test("popPlace re-centres on a new screen size, and a drop wins over the anchor"
   assert.deepStrictEqual(moved.at, [856, 110]);
   assert.deepStrictEqual(H.popPlace([1920, 1080], [400, 500], [100, 50], first.anchor).at, [100, 50]);
 });
+
+test("textMatch: every word is in one of the texts, case-insensitive", () => {
+  assert.strictEqual(H.textMatch("", ["Damage"]), true);
+  assert.strictEqual(H.textMatch("  ", ["Damage"]), true);
+  assert.strictEqual(H.textMatch("dam", ["Damage", "DMG"]), true);
+  assert.strictEqual(H.textMatch("DMG", ["Damage", "dmg"]), true);
+  assert.strictEqual(H.textMatch("down con", ["Down contribution"]), true);
+  assert.strictEqual(H.textMatch("quick squad", ["Quickness", "Squad"]), true);
+  assert.strictEqual(H.textMatch("heal", ["Damage", "DMG"]), false);
+  assert.strictEqual(H.textMatch("down xyz", ["Down contribution"]), false);
+});
+
+test("dropSlot: where a dragged row lands, from its centre against the rows' midpoints", () => {
+  const mids = [10, 30, 50, 70];
+  assert.strictEqual(H.dropSlot(mids, 0, 10), 0);
+  assert.strictEqual(H.dropSlot(mids, 0, 29), 0);
+  assert.strictEqual(H.dropSlot(mids, 0, 31), 1);
+  assert.strictEqual(H.dropSlot(mids, 0, 99), 3);
+  assert.strictEqual(H.dropSlot(mids, 3, 69), 3);
+  assert.strictEqual(H.dropSlot(mids, 3, 49), 2);
+  assert.strictEqual(H.dropSlot(mids, 3, -5), 0);
+  assert.strictEqual(H.dropSlot(mids, 2, 50), 2);
+  assert.strictEqual(H.dropSlot([10], 0, 99), 0);
+});

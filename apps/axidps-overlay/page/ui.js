@@ -2037,12 +2037,15 @@ function updateSpec(id, patch) {
 // (commit), Esc (cancel), a click elsewhere or the hub closing (commit).
 // The Store tab's search box uses the same field (id STORE_SEARCH): it filters as you type, Esc
 // puts back what was there, and Enter or a click elsewhere keeps it.
-const STORE_SEARCH = "store-search";
+// The column picker's search (COL_SEARCH) works the same way, except that Enter adds the first
+// match that isn't a column yet and starts a new search.
+const STORE_SEARCH = "store-search", COL_SEARCH = "col-search";
+const SEARCH_QUERY = {[STORE_SEARCH]: "storeQuery", [COL_SEARCH]: "colQuery"};
 function startText(id) {
-  if (id === STORE_SEARCH) {
+  if (SEARCH_QUERY[id]) {
     if (ui.text && ui.text.id === id) return;
     if (ui.text) endText(true);
-    const v = hub.storeQuery || "";
+    const v = hub[SEARCH_QUERY[id]] || "";
     ui.text = {id, value: v, caret: v.length, orig: v};
     renderAll();
     return;
@@ -2057,8 +2060,8 @@ function endText(commit) {
   const t = ui.text;
   if (!t) return;
   ui.text = null;
-  if (t.id === STORE_SEARCH) {
-    if (!commit) hub.storeQuery = t.orig;
+  if (SEARCH_QUERY[t.id]) {
+    if (!commit) hub[SEARCH_QUERY[t.id]] = t.orig;
     renderAll();
     return;
   }
@@ -2068,9 +2071,17 @@ function endText(commit) {
 function textKey(k) {
   if (!ui.text) return;
   const r = axidpsCustom.applyKey(ui.text, k);
+  const spec = r.done === "commit" && ui.text.id === COL_SEARCH ? saved.custom.find(s => s.id === hub.addCol) : null;
+  const add = spec && spec.stats.length < axidpsCustom.MAX_STATS ? firstPick(spec, r.value) : null;
+  if (add) {
+    ui.text = Object.assign({}, ui.text, {value: "", caret: 0, orig: ""});
+    hub.colQuery = "";
+    updateSpec(spec.id, {stats: spec.stats.concat({key: add, as: "total"})});
+    return;
+  }
   if (r.done) { endText(r.done === "commit"); return; }
   ui.text = Object.assign({}, ui.text, {value: r.value, caret: r.caret});
-  if (ui.text.id === STORE_SEARCH) hub.storeQuery = r.value;
+  if (SEARCH_QUERY[ui.text.id]) hub[SEARCH_QUERY[ui.text.id]] = r.value;
   renderAll();
 }
 // The hub's question before something that can't be taken back: `text`, a `ok` button that runs
@@ -2302,6 +2313,23 @@ const HEAL_KEY = k => /^heal/.test(k) || k === "hps" || k === "barrier";
 // Column or subgroup choices a built-in table kept from before custom windows (they can no longer
 // be made, only reset).
 const builtinChanged = t => { const c = t.cfg; return Array.isArray(c.cols) || !!c.groupOnly; };
+// The column picker's choices for a search: fight stats (or a boons window's measures) by name or
+// header, and squad boons by name (or by a measure's name, which shows every boon). Boon stats are
+// not offered to charts (summing uptime over players over time means nothing).
+const BOON_MEAS = [["up", "Uptime"], ["self", "Self"], ["group", "Group"], ["squad", "Squad"]];
+function pickerMatches(spec, query) {
+  const C = axidpsCustom, match = texts => axidpsHub.textMatch(query, texts);
+  if (spec.rows === "boons") return {fight: C.BOON_MEASURE_KEYS.filter(k => match([STATS[k].name])), boons: []};
+  const fight = Object.keys(STATS).filter(k => !STATS[k].kind && match([STATS[k].name, STATS[k].head, STATS[k].label]));
+  const boons = spec.look === "chart" ? [] : C.SQUAD_BOONS.filter(b =>
+    match([STATS[`boon:${b}:up`].label, "boons", ...BOON_MEAS.map(x => x[1])]));
+  return {fight, boons};
+}
+// Enter in the picker's search: the first match that isn't a column yet.
+function firstPick(spec, query) {
+  const m = pickerMatches(spec, query), has = k => spec.stats.some(s => s.key === k);
+  return m.fight.concat(...m.boons.map(b => BOON_MEAS.map(x => `boon:${b}:${x[0]}`))).find(k => !has(k)) || null;
+}
 // A custom window's settings, in two columns: the left says what it counts, the right what it shows.
 function customSettings(spec, full, filterOpen, note, addOpen) {
   const C = axidpsCustom, n = spec.stats.length, chart = spec.look === "chart", boons = spec.rows === "boons";
@@ -2321,25 +2349,29 @@ function customSettings(spec, full, filterOpen, note, addOpen) {
     ? `<button class="pk on" disabled data-tip="already a column"><span>&#10003; ${esc(text)}</span>${sub ? `<i>${esc(sub)}</i>` : ""}</button>`
     : `<button class="pk" data-cact="add" data-k="${esc(k)}" data-tip="${esc(STATS[k].tip)}"${colsFull ? " disabled" : ""}>` +
       `<span>${esc(text)}</span>${sub ? `<i>${esc(sub)}</i>` : ""}</button>`;
-  const MEAS = {up: "Uptime", self: "Self", group: "Group", squad: "Squad"};
   let adder;
   if (!addOpen) {
     adder = `<button class="addslot" data-cact="addopen"${colsFull ? ` disabled data-tip="A window shows up to ${C.MAX_STATS} columns. Remove one to add another."` : ""}>` +
       `+ Add a column</button>`;
   } else {
-    let body;
+    const t = ui.text && ui.text.id === COL_SEARCH ? ui.text : null, query = t ? t.value : (hub.colQuery || "");
+    const m = pickerMatches(spec, query);
+    let body = "";
     if (boons) {
       // A boons window's rows are the boons; its columns are the measures.
-      body = `<div class="pgrid">` + C.BOON_MEASURE_KEYS.map(k => pick(k, STATS[k].name)).join("") + `</div>`;
+      if (m.fight.length) body = `<div class="pgrid">` + m.fight.map(k => pick(k, STATS[k].name)).join("") + `</div>`;
     } else {
-      body = `<span class="grp">Fight</span><div class="pgrid">` +
-        Object.keys(STATS).filter(k => !STATS[k].kind).map(k => pick(k, STATS[k].name, STATS[k].head)).join("") + `</div>`;
-      // Boon stats are not for charts (summing uptime over players over time means nothing).
-      if (!chart) body += `<span class="grp">Boons</span><span class="bhint">uptime, or how much each player gives to themself, their group or the squad</span>` +
-        `<div class="bgrid">` + C.SQUAD_BOONS.map(b => `<span class="bn">${esc(STATS[`boon:${b}:up`].label)}</span>` +
-          ["up", "self", "group", "squad"].map(m => pick(`boon:${b}:${m}`, MEAS[m])).join("")).join("") + `</div>`;
+      if (m.fight.length) body = `<span class="grp">Fight</span><div class="pgrid">` +
+        m.fight.map(k => pick(k, STATS[k].name, STATS[k].head)).join("") + `</div>`;
+      if (m.boons.length) body += `<span class="grp">Boons</span><span class="bhint">uptime, or how much each player gives to themself, their group or the squad</span>` +
+        `<div class="bgrid">` + m.boons.map(b => `<span class="bn">${esc(STATS[`boon:${b}:up`].label)}</span>` +
+          BOON_MEAS.map(([x, text]) => pick(`boon:${b}:${x}`, text)).join("")).join("") + `</div>`;
     }
-    adder = `<div class="cpick"><div class="ph"><b>Add a column</b><span>${n} of ${C.MAX_STATS}</span>` +
+    if (!body) body = `<p class="note">No stats match “${esc(query.trim())}”.</p>`;
+    const field = t
+      ? `<span class="field focus search" data-cact="colsearch">${esc(t.value.slice(0, t.caret))}<i class="caret"></i>${esc(t.value.slice(t.caret))}</span>`
+      : `<span class="field search${query ? "" : " empty"}" data-cact="colsearch">${esc(query || "Search stats")}</span>`;
+    adder = `<div class="cpick"><div class="ph"><b>Add a column</b>${field}<span>${n} of ${C.MAX_STATS}</span>` +
       `<button data-cact="addopen">Done</button></div>` +
       (colsFull ? `<p class="note">A window shows up to ${C.MAX_STATS} columns. Remove one to add another.</p>` : "") + body + `</div>`;
   }
@@ -2508,7 +2540,12 @@ function builderAct(hw, b) {
     }
     case "addopen":
       hw.addCol = hw.addCol === id ? "" : id;
+      hw.colQuery = "";
+      if (ui.text && ui.text.id === COL_SEARCH) ui.text = null;
+      // Open: the search has focus, so typing narrows the list at once.
+      if (hw.addCol) return startText(COL_SEARCH);
       return hw.def.render(hw);
+    case "colsearch": return startText(COL_SEARCH);
     case "move": {
       const from = Number(b.dataset.from), to = Number(b.dataset.to);
       if (!(from >= 0 && to >= 0) || from === to) return;
@@ -2903,7 +2940,8 @@ const hub = defineWindow({
     w.body.addEventListener("click", e => {
       const f = ui.text && e.target.closest && e.target.closest('[data-cact="name"]');
       const card = f && f.closest("[data-c]");
-      const search = ui.text && ui.text.id === STORE_SEARCH && e.target.closest && e.target.closest("[data-search]");
+      const search = ui.text && e.target.closest && (ui.text.id === STORE_SEARCH ? e.target.closest("[data-search]")
+        : ui.text.id === COL_SEARCH && e.target.closest(".cpick") && !e.target.closest('[data-cact="addopen"]'));
       if (ui.text && !search && !(card && card.dataset.c === ui.text.id)) endText(true);
     }, true);
     q("nav").onclick = e => {
@@ -2937,41 +2975,71 @@ const hub = defineWindow({
     q('[data-act="clear"]').onclick = clearFight;
     q('[data-act="clearsession"]').onclick = () => { spanHistory.clearSession(); renderAll(); };
     q('[data-act="addtable"]').onclick = () => { w.addMenu = !w.addMenu; w.def.render(w); };
-    // Reordering a custom window's columns: press a grip, move over another row, let go.
+    // Reordering a custom window's columns: press a grip and the row lifts and follows the pointer
+    // (up and down, inside the list); the others slide aside and a dashed slot shows where it will
+    // land. Letting go glides it into the slot, then the order is saved. Esc-like cancels (the list
+    // redrawn under it, a lost pointer) glide it back.
+    let colDrag = null;
     q('section[data-tab="windows"]').addEventListener("pointerdown", e => {
       const grip = e.target.closest && e.target.closest(".grip");
       const row = grip && grip.closest(".crw");
-      if (!row || e.button) return;
-      const list = row.parentNode, from = Number(row.dataset.i);
-      let to = from;
-      row.classList.add("drag"); list.classList.add("dragging");
-      const rowAt = ev => {
-        const el = document.elementFromPoint(ev.clientX, ev.clientY);
-        const r = el && el.closest && el.closest(".crw");
-        return r && r.parentNode === list ? r : null;
+      if (!row || e.button || colDrag) return;
+      const list = row.parentNode, rows = [...list.querySelectorAll(".crw")];
+      const from = rows.indexOf(row);
+      if (from < 0) return;
+      const box = rows.map(r => r.getBoundingClientRect()), lb = list.getBoundingClientRect();
+      const mids = box.map(r => r.top + r.height / 2);
+      // Rows can differ in height; a row moves by the dragged row's height plus the gap.
+      const gap = rows.length > 1 ? box[1].top - box[0].bottom : 4, shift = box[from].height + gap;
+      const lo = box[0].top - box[from].top, hi = box[rows.length - 1].bottom - box[from].bottom;
+      const y0 = e.clientY;
+      let to = from, dy = 0;
+      const slot = document.createElement("div");
+      slot.className = "cslot";
+      slot.style.height = box[from].height + "px";
+      list.prepend(slot); // first, so the rows paint over it
+      // Where the slot sits for a drop at `i`: the top the dragged row will have there.
+      const slotTop = i => i <= from ? box[i].top : box[i].bottom - box[from].height;
+      const place = () => {
+        rows.forEach((r, i) => {
+          if (i === from) return;
+          const s = from < to && i > from && i <= to ? -shift : from > to && i >= to && i < from ? shift : 0;
+          r.style.transform = s ? `translateY(${s}px)` : "";
+        });
+        slot.style.transform = `translateY(${slotTop(to) - lb.top}px)`;
       };
-      // Off the list, nothing is marked and a release there moves nothing.
+      colDrag = {row};
+      row.classList.add("lift"); list.classList.add("dragging");
+      place();
       const move = ev => {
-        const r = rowAt(ev);
-        to = r ? Number(r.dataset.i) : from;
-        for (const c of list.children) c.classList.toggle("over", c === r && to !== from);
+        if (!row.isConnected) return end(ev);
+        dy = Math.max(lo, Math.min(hi, ev.clientY - y0));
+        row.style.transform = `translateY(${dy}px)`;
+        const next = axidpsHub.dropSlot(mids, from, mids[from] + dy);
+        if (next !== to) { to = next; place(); }
       };
       const end = ev => {
         document.removeEventListener("pointermove", move);
         document.removeEventListener("pointerup", end);
         document.removeEventListener("pointercancel", end);
-        row.classList.remove("drag"); list.classList.remove("dragging");
-        for (const c of list.children) c.classList.remove("over");
-        const r = ev.type === "pointerup" ? rowAt(ev) : null;
-        to = r ? Number(r.dataset.i) : from;
-        if (to !== from) {
-          builderAct(w, {dataset: {cact: "move", from: String(from), to: String(to)}, closest: sel => grip.closest(sel)});
-        }
+        const drop = ev.type === "pointerup" && row.isConnected ? to : from;
+        // Glide into the slot (or back home), then save; the redraw puts every row where it now is.
+        row.classList.add("settle");
+        row.style.transform = `translateY(${slotTop(drop) - box[from].top}px)`;
+        if (drop === from) for (const r of rows) if (r !== row) r.style.transform = "";
+        setTimeout(() => {
+          colDrag = null;
+          slot.remove();
+          list.classList.remove("dragging");
+          for (const r of rows) { r.classList.remove("lift", "settle"); r.style.transform = ""; }
+          if (drop !== from && row.isConnected) {
+            builderAct(w, {dataset: {cact: "move", from: String(from), to: String(drop)}, closest: sel => grip.closest(sel)});
+          }
+        }, 140);
       };
       document.addEventListener("pointermove", move);
       document.addEventListener("pointerup", end);
       document.addEventListener("pointercancel", end);
-      grip.focus();
       e.preventDefault();
     });
     q('section[data-tab="windows"]').onclick = e => {

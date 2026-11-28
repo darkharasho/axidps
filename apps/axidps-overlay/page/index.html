@@ -254,9 +254,15 @@
   .crw .as { color: var(--accent); font-variant-numeric: tabular-nums; }
   .crw .grip { cursor: grab; touch-action: none; letter-spacing: -2px; padding: 2px 5px; }
   .crw .grip:focus-visible { outline: 1px solid var(--accent); }
-  .clist.dragging, .clist.dragging .grip { cursor: grabbing; }
-  .crw.drag { opacity: .55; }
-  .crw.over { border-color: var(--accent); background: var(--accent-soft); }
+  /* A column being dragged lifts above the list; the others slide aside to open a dashed slot. */
+  .cw .clist { position: relative; }
+  .clist.dragging, .clist.dragging .grip { cursor: grabbing; user-select: none; }
+  .clist.dragging .crw { transition: transform .16s cubic-bezier(.2, .8, .3, 1); }
+  .clist.dragging .crw.lift { transition: none; position: relative; z-index: 2; border-color: var(--accent-line);
+    background: var(--raise-hi); box-shadow: 0 6px 16px rgba(0, 0, 0, .5); }
+  .clist.dragging .crw.lift.settle { transition: transform .14s ease-out; box-shadow: none; }
+  .cslot { position: absolute; left: 0; right: 0; top: 0; border: 1px dashed var(--accent-line); border-radius: var(--rs);
+    background: var(--accent-soft); pointer-events: none; transition: transform .16s cubic-bezier(.2, .8, .3, 1); }
   .crw .hd { flex: none; color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
   /* The empty slot under the columns, then the picker it opens. */
   .cw .addslot { min-height: 32px; padding: 0 10px; text-align: left; font-size: 12px; color: var(--accent);
@@ -266,8 +272,9 @@
   .cw .cpick { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border: 1px solid var(--accent-line);
     border-radius: var(--rs); background: var(--raise); }
   .cpick .ph { display: flex; align-items: center; gap: 8px; }
-  .cpick .ph b { flex: 1; color: var(--title); font-size: 12px; }
-  .cpick .ph span { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .cpick .ph b { flex: none; color: var(--title); font-size: 12px; }
+  .cpick .ph .field.search { flex: 1; width: auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; font-size: 12px; }
+  .cpick .ph > span:not(.field) { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
   .cpick .ph button { padding: 3px 10px; font-size: 11px; }
   .cpick .grp { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; margin-top: 4px; }
   .cpick .bhint { color: var(--faint); font-size: 11px; margin-top: -4px; }

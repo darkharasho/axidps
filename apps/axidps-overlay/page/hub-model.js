@@ -116,6 +116,22 @@ const axidpsHub = (() => {
     return out;
   }
 
+  // A search box's match: every word of the query appears in one of the texts (any case).
+  function textMatch(query, texts) {
+    const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+    const hay = texts.map(t => String(t || "").toLowerCase());
+    return words.every(w => hay.some(h => h.includes(w)));
+  }
+
+  // Where a dragged row lands in its list: `mids` are the rows' midpoints where they sat before
+  // the drag, `from` the dragged row's index, `y` its centre now. It takes the place of every
+  // other row whose midpoint it has passed.
+  function dropSlot(mids, from, y) {
+    let n = 0;
+    mids.forEach((m, i) => { if (i !== from && m < y) n++; });
+    return n;
+  }
+
   const selected = (id, rows) =>
     rows.onScreen.concat(rows.hidden).some(r => r.id === id) ? id : "meter";
 
@@ -164,6 +180,6 @@ const axidpsHub = (() => {
   }
 
   return {TABS, tabFor, hubSize, hubFit, hubAt, windowList, showBlock, notice, groupHead, scrollThumb, scrollForThumb,
-    pageScroll, moveItem, selected, pluginRows, optionNav, popSize, popAt, popPlace, popPage};
+    pageScroll, moveItem, textMatch, dropSlot, selected, pluginRows, optionNav, popSize, popAt, popPlace, popPage};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = axidpsHub;
