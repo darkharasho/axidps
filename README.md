@@ -5,7 +5,7 @@ program turns it into EVTC logs that Elite Insights and existing log tools read 
 read arcdps logs. It adds built-in healing and barrier stats, an in-game overlay drawn with Servo,
 plugins, and self-updates. Windows and Linux (Proton, including the Steam Deck) are both supported.
 
-Downloads: [darkharasho/axidps-releases](https://github.com/darkharasho/axidps-releases/releases).
+Downloads: [Releases](https://github.com/darkharasho/axidps/releases).
 
 ## What's in this repo
 

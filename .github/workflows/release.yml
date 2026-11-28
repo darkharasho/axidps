@@ -1,8 +1,9 @@
 name: Release
 
 # A v* tag builds the signed Windows installer and the Linux AppImage into a draft prerelease on
-# darkharasho/axidps-releases and publishes it once every build is green and verified and the
-# tagged commit passes ci.yml's tests (called from here as the `tests` job).
+# this repo and publishes it once every build is green and verified and the tagged commit passes
+# ci.yml's tests (called from here as the `tests` job). `mirror` then copies it to the old
+# darkharasho/axidps-releases, which builds up to rc.22 and AxiOM up to v0.7.8 still update from.
 # workflow_dispatch (input `version`) builds everything into a draft named test-<run id> that is
 # never published; delete it after checking.
 # Jobs hand files to each other through the draft, not workflow artifacts, so the account's
@@ -16,13 +17,17 @@ on:
   push:
     tags: ['v*']
 
+# Write, for the releases: every job hands files on through the draft, and only a token with
+# write access can see a draft.
 permissions:
-  contents: read
+  contents: write
 
 env:
   # The tag (v stripped in each job) or the dispatch input. The DLL's build.rs validates it as semver.
   AXIDPS_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
-  RELEASES_REPO: darkharasho/axidps-releases
+  RELEASES_REPO: ${{ github.repository }}
+  # Until every tester is on a build and an AxiOM that read RELEASES_REPO (see docs/RELEASING.md).
+  MIRROR_REPO: darkharasho/axidps-releases
   # Only a v* tag push publishes. A manual run is a test build even when started on a tag ref,
   # since its binaries carry the input's version, not the tag's.
   IS_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
@@ -43,7 +48,7 @@ jobs:
 
       - name: Create the draft prerelease (or reuse it on a rerun)
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if draft="$(gh release view "$RELEASE_TAG" -R "$RELEASES_REPO" --json isDraft -q .isDraft 2>/dev/null)"; then
             [ "$draft" = true ] || { echo "::error::$RELEASE_TAG is already published"; exit 1; }
@@ -56,7 +61,7 @@ jobs:
             notes="Test build of $GITHUB_REF_NAME at $GITHUB_SHA. Never published; delete it after checking."
           fi
           gh release create "$RELEASE_TAG" -R "$RELEASES_REPO" --draft --prerelease \
-            --title "$RELEASE_TAG" --notes "$notes"
+            --target "$GITHUB_SHA" --title "$RELEASE_TAG" --notes "$notes"
 
   # Builds the DLL from the private crates. The build output quotes private source, so it goes
   # to a file that is never printed or uploaded, and no target dir is cached (see ci.yml dll-check).
@@ -108,7 +113,7 @@ jobs:
 
       - name: Hand the DLL to the sign-dll job
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           cp private/target/x86_64-pc-windows-gnu/release/axidps_dll.dll dll-unsigned.dll
           gh release upload "$RELEASE_TAG" dll-unsigned.dll -R "$RELEASES_REPO" --clobber
@@ -123,7 +128,7 @@ jobs:
       - name: Fetch the unsigned DLL
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: gh release download "$RELEASE_TAG" -R "$RELEASES_REPO" -p dll-unsigned.dll -D dll
 
       - name: Sign the DLL
@@ -139,7 +144,7 @@ jobs:
       - name: Hand the signed DLL to the windows and linux jobs
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" dll/dll-signed.dll -R "$RELEASES_REPO" --clobber
 
   windows:
@@ -244,7 +249,7 @@ jobs:
       - name: Fetch the signed DLL
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: gh release download "$RELEASE_TAG" -R "$RELEASES_REPO" -p dll-signed.dll -D dll-signed
 
       - name: Stage the installed layout
@@ -322,7 +327,7 @@ jobs:
       - name: Upload the installer
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" dist/axidps-*-Setup.exe -R "$RELEASES_REPO" --clobber
 
   # Pinned to Ubuntu 24.04, not ubuntu-latest: the programs need the glibc of the system they're
@@ -406,7 +411,7 @@ jobs:
 
       - name: Fetch the signed DLL
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: gh release download "$RELEASE_TAG" -R "$RELEASES_REPO" -p dll-signed.dll -D dll-signed
 
       - name: Stage the installed layout
@@ -422,7 +427,7 @@ jobs:
 
       - name: Upload the AppImage
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" out/axidps-*.AppImage -R "$RELEASES_REPO" --clobber
 
   # Every shared library the AppImage's programs link must be bundled or present on any desktop.
@@ -439,7 +444,7 @@ jobs:
     steps:
       - name: Fetch and extract the AppImage
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh release download "$RELEASE_TAG" -R "$RELEASES_REPO" -p 'axidps-*.AppImage' -D appimage
           cd appimage
@@ -478,7 +483,7 @@ jobs:
     steps:
       - name: Add SHA256SUMS and drop the hand-off DLLs
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir release && cd release
           gh release download "$RELEASE_TAG" -R "$RELEASES_REPO" -p 'axidps-*-Setup.exe' -p 'axidps-*.AppImage'
@@ -512,7 +517,7 @@ jobs:
       # release whose binaries say another version would make every launcher update forever.
       - name: Check the built version is the tag's
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="${RELEASE_TAG#v}"
           assets="$(gh release view "$RELEASE_TAG" -R "$RELEASES_REPO" --json assets -q '.assets[].name')"
@@ -527,5 +532,33 @@ jobs:
 
       - name: Publish the release
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: gh release edit "$RELEASE_TAG" -R "$RELEASES_REPO" --draft=false
+
+  # Copies the published release to MIRROR_REPO with the notes it has now (edit both when you
+  # change them). Its own job, so an expired RELEASES_TOKEN fails only this; rerun it once the
+  # token is renewed. Drop it once nobody updates from MIRROR_REPO.
+  mirror:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Copy the release to the old releases repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIRROR_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          mkdir release && cd release
+          gh release download "$RELEASE_TAG" -R "$RELEASES_REPO"
+          notes="$(gh release view "$RELEASE_TAG" -R "$RELEASES_REPO" --json body -q .body)"
+          export GH_TOKEN="$MIRROR_TOKEN"
+          if gh release view "$RELEASE_TAG" -R "$MIRROR_REPO" >/dev/null 2>&1; then
+            # A rerun after a partial copy: fill in what is missing.
+            gh release upload "$RELEASE_TAG" ./* -R "$MIRROR_REPO" --clobber
+          else
+            # gh uploads the assets to a draft and publishes it after, so the updaters never see
+            # the release without them.
+            gh release create "$RELEASE_TAG" ./* -R "$MIRROR_REPO" --prerelease \
+              --title "$RELEASE_TAG" --notes "$notes"
+          fi
+          gh release view "$RELEASE_TAG" -R "$MIRROR_REPO" --json assets -q '.assets[].name'

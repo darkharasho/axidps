@@ -1,4 +1,4 @@
-//! Self-update from the public `darkharasho/axidps-releases` repo (GitHub's unauthenticated
+//! Self-update from this repo's releases (public `darkharasho/axidps`, GitHub's unauthenticated
 //! API; no token is ever used). The check and download run on a background thread; only the
 //! apply step runs on the run loop.
 
@@ -19,7 +19,7 @@ use crate::game::gw2_running;
 use crate::supervise::Supervisor;
 
 pub const RELEASES_URL: &str =
-    "https://api.github.com/repos/darkharasho/axidps-releases/releases?per_page=20";
+    "https://api.github.com/repos/darkharasho/axidps/releases?per_page=20";
 /// SHA-256 of the display name (CN) every Windows installer's signer must carry. Kept as a
 /// hash so the name is not in the source; the signed installer itself carries it in the clear.
 #[cfg_attr(any(not(windows), test), allow(dead_code))]
