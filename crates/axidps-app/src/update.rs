@@ -258,7 +258,7 @@ fn signature_ok(file: &Path) -> bool {
     }
 }
 
-/// Downloads `asset` to `<dir>/<name>.part`, checks it against `sums` (and, on Windows, its
+/// Downloads `asset` to `<dir>/<name>.axidps-part`, checks it against `sums` (and, on Windows, its
 /// Authenticode signature) and returns the verified file. Anything unverified is deleted.
 pub fn download_verified(
     asset: &Asset,
@@ -274,7 +274,7 @@ pub fn download_verified(
         return Err(UpdateError::VerifyFailed);
     }
     fs::create_dir_all(dir)?;
-    let part = dir.join(format!("{name}.part"));
+    let part = dir.join(format!("{name}.{PART}"));
     // A verified Linux file gets its own name so it never lands on the AppImage it replaces.
     let done = dir.join(if cfg!(windows) {
         name.to_owned()
@@ -432,7 +432,7 @@ fn replace_appimage(file: &Path, current: &Path, args: &[std::ffi::OsString]) ->
     fs::set_permissions(file, fs::Permissions::from_mode(0o755))?;
     if fs::rename(file, &target).is_err() {
         // Another filesystem: copy beside the target, then rename.
-        let part = PathBuf::from(format!("{}.part", target.display()));
+        let part = PathBuf::from(format!("{}.{PART}", target.display()));
         let copied = fs::copy(file, &part)
             .and_then(|_| fs::set_permissions(&part, fs::Permissions::from_mode(0o755)))
             .and_then(|_| fs::rename(&part, &target));
@@ -864,6 +864,10 @@ impl Updater {
     }
 }
 
+/// The suffix of a file being written: our own, not `.part`, which browsers use for their
+/// downloads (startup cleanup must not delete a download of the next AppImage).
+const PART: &str = "axidps-part";
+
 /// Deletes what an earlier run left behind: the config folder's `updates`, and half-finished
 /// or unapplied downloads beside the AppImage.
 fn cleanup_stale(config: Option<&Path>, appimage: Option<&Path>) {
@@ -873,7 +877,7 @@ fn cleanup_stale(config: Option<&Path>, appimage: Option<&Path>) {
     let Some(dir) = appimage.and_then(Path::parent) else {
         return;
     };
-    let stale = Regex::new(r"(?i)^axidps.*\.AppImage\.(new|part)$").unwrap();
+    let stale = Regex::new(r"(?i)^axidps.*\.AppImage\.(new|axidps-part)$").unwrap();
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -1461,7 +1465,9 @@ mod tests {
         for n in [
             "axidps.AppImage",
             "axidps-0.2.0.AppImage.new",
-            "axidps.AppImage.part",
+            "axidps.AppImage.axidps-part",
+            // A browser's download in progress, not ours.
+            "axidps-0.4.0.AppImage.part",
             "other.new",
         ] {
             fs::write(tmp.path().join(n), b"x").unwrap();
@@ -1473,6 +1479,9 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         left.sort();
-        assert_eq!(left, ["axidps.AppImage", "cfg", "other.new"]);
+        assert_eq!(
+            left,
+            ["axidps-0.4.0.AppImage.part", "axidps.AppImage", "cfg", "other.new"]
+        );
     }
 }
