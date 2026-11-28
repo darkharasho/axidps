@@ -56,7 +56,8 @@ impl Snapshot {
 }
 
 fn manifest_id(dir: &Path) -> Option<String> {
-    let bytes = std::fs::read(dir.join(MANIFEST_FILE)).ok()?;
+    // Capped, and never a FIFO or device: see `scan::read_manifest`.
+    let bytes = crate::scan::read_manifest(&dir.join(MANIFEST_FILE)).ok()?;
     if bytes.len() > crate::manifest::MAX_MANIFEST_BYTES {
         return None;
     }
@@ -146,6 +147,23 @@ impl Watcher {
 mod tests {
     use super::*;
     use std::fs;
+
+    /// A plugin.json that is a FIFO (from a tar or a dev tool) must not block the watcher, which
+    /// the overlay starts on its main thread.
+    #[test]
+    fn fifo_manifest_does_not_block() {
+        let t = tempfile::tempdir().unwrap();
+        let c = std::ffi::CString::new(t.path().join(MANIFEST_FILE).to_str().unwrap()).unwrap();
+        unsafe extern "C" {
+            fn mkfifo(path: *const std::ffi::c_char, mode: u32) -> i32;
+        }
+        assert_eq!(unsafe { mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = t.path().to_path_buf();
+        std::thread::spawn(move || tx.send(manifest_id(&dir)).unwrap());
+        let got = rx.recv_timeout(Duration::from_secs(5));
+        assert_eq!(got, Ok(None), "blocked or read a FIFO");
+    }
 
     fn snap(n: usize, tag: u64) -> Snapshot {
         let files = (0..n)
