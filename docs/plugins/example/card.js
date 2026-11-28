@@ -3,10 +3,10 @@
 "use strict";
 
 const dps = document.querySelector(".dps");
-let big = true, compact = false, me = null;
+let big = true, scale = 1, me = null;
 
 function render() {
-  const size = (big ? 32 : 18) * (compact ? 0.8 : 1);
+  const size = (big ? 32 : 18) * scale;
   dps.style.fontSize = size + "px";
   dps.textContent = axidps.fmt(me ? me.dps : 0);
   axidps.window.tip(dps, big ? "click for a small number" : "click for a big number");
@@ -20,7 +20,7 @@ axidps.on("fight", feed => {
   render();
 });
 
-axidps.on("look", look => { compact = look.compact; render(); });
+axidps.on("look", look => { scale = look.textScale; render(); });
 
 axidps.on("settings", s => { big = s.big !== false; render(); });
 

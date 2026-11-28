@@ -113,7 +113,7 @@ Where the log is:
   styles use the theme's CSS variables (`--title`, `--dim`), so it matches every theme.
 - `card.js` listens to `fight`: it finds your row (`me: true`), shows its `dps` with
   `axidps.fmt`, and sets the title bar status from `axidps.fightStatus(feed)`.
-- It listens to `look` to draw the number a little smaller in compact mode.
+- It listens to `look` to draw the number at the player's text size (`textScale`).
 - Clicking the number switches between big and small. The choice is saved with
   `axidps.settings.set({big})` and comes back through the `settings` event the next time the
   window loads.
@@ -236,7 +236,7 @@ don't stop other handlers.
 | --- | --- |
 | `"fight"` | The live feed (see [The live feed](#the-live-feed)), or `null` until axidps core has sent one. Only sent if the manifest names `fight`. |
 | `"players"` | The players feed (see [The players feed](#the-players-feed)), or `null` until core sends one. Only sent if the manifest names `enemies`. |
-| `"look"` | `{theme, tokens, style, opacity, compact, rows}` (see [Theming](#theming)). |
+| `"look"` | `{theme, tokens, style, opacity, compact, rows, textScale}` (see [Theming](#theming)). |
 | `"edit"` | `true` while the player is arranging windows. Your frame gets no mouse input then. |
 | `"settings"` | This window's saved settings (`{}` if none). |
 | `"perf"` | The game's performance over the last second, once a second: `{fps, ping, tick_rate}` (frames per second, ping in ms, server ticks per second, normally 25). `0` means not known yet. Needs no permission. |
@@ -486,18 +486,26 @@ Shape and type (the `look` event's `style`):
 | Variable | Use |
 | --- | --- |
 | `--font` | The font stack. IBM Plex Sans, Fira Code and Lato are included. |
-| `--fs` | Font size. |
+| `--fs` | Font size, with the player's text size applied. |
 | `--r`, `--rs` | Window and control corner radius. |
 | `--bw` | Border width. |
-| `--rh`, `--bh` | Table row height and title bar height. |
+| `--rh`, `--bh` | Table row height and title bar height, for the text size and compact mode. |
+| `--text-scale` | The text size as a factor (`1` is Normal). Multiply your own fixed sizes by it: `font-size: calc(16px * var(--text-scale))`. |
 
-The SDK also adds the class `compact` to `<body>` in compact mode (it makes `--rh`, `--bh` and
-`--fs` smaller) and `caps` for themes with uppercase titles and headers.
+The SDK also adds the class `compact` to `<body>` in compact mode and `caps` for themes with
+uppercase titles and headers. Compact mode is spacing only: it makes `--rh` and `--bh` smaller
+but leaves the text at the player's text size, so use it for padding, not font sizes.
 
 The `look` event's other fields: `theme` (the theme id), `style.bar` (`"fill"`, `"flat"` or
 `"line"`), `style.rows` (`"fill"` or `"line"`, how meter rows draw their bars), `style.caps`,
-`opacity` (0.5–1), `compact` (bool) and `rows` (the most table rows the player wants shown,
-1–50).
+`opacity` (0.5–1), `compact` (bool), `rows` (the most table rows the player wants shown,
+1–50) and `textScale` (the Text size setting as a factor: `0.8`, `0.9`, `1`, `1.15`, `1.3` or
+`1.5`, for Smallest, Small, Normal, Large, Larger and Largest). `style.fs`, `style.rh` and
+`style.bh` stay the theme's own values; the CSS variables above have the text size and compact
+mode applied.
+
+A page in the hub's Options (the `frame` event's `page`) keeps the hub's text size: its
+`--text-scale` is `1` and `--fs` is the theme's, though `textScale` still reports the setting.
 
 The SDK's base styles make the page transparent, set the font, turn off text selection, and make
 `<body>` `inline-block` and as wide as its content, so the window fits it.
@@ -562,7 +570,7 @@ Page to frame:
 | --- | --- | --- |
 | `ready` | `plugin`, `window`, `api`, `permissions` | The answer to `hello`. |
 | `settings` | `value` | The window's settings. |
-| `look` | `theme`, `tokens`, `style`, `opacity`, `compact`, `rows` | The theme and display settings. |
+| `look` | `theme`, `tokens`, `style`, `opacity`, `compact`, `rows`, `textScale` | The theme and display settings. |
 | `edit` | `on` | Arrange mode on or off. |
 | `fight` | `feed` | The live feed (only with the `fight` permission). |
 | `players` | `players` | The players feed (only with the `enemies` permission). |

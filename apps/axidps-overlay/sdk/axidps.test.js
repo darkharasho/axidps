@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { kit, makeSdk } = require("./axidps.js");
+const { kit, makeSdk, text } = require("./axidps.js");
 
 test("fightStatus texts", () => {
   assert.deepStrictEqual(kit.fightStatus(null), { text: "waiting for core", live: false });
@@ -235,4 +235,142 @@ test("sdk marks the body for a see-through window or a hub page", () => {
   assert.deepStrictEqual(got, { clear: true, page: false });
   w.fromPage({ axidps: 1, type: "frame", clear: false, page: true });
   assert.deepStrictEqual([...cls].sort(), ["axidps-page"]);
+});
+
+// ---- text size (Settings) ----
+
+test("text size steps: labels and values, Normal the default", () => {
+  assert.deepStrictEqual(text.SIZES, [[80, "Smallest"], [90, "Small"], [100, "Normal"], [115, "Large"],
+    [130, "Larger"], [150, "Largest"]]);
+});
+
+test("a stored text size round-trips; unknown or missing falls back to 100", () => {
+  for (const [v] of text.SIZES) {
+    // saved to ui.json and read back
+    assert.strictEqual(text.size(JSON.parse(JSON.stringify({textSize: v})).textSize), v);
+  }
+  for (const bad of [undefined, null, 0, 1, 1.15, 95, 200, "big", "", "115", true, {}, [], NaN, -80]) {
+    assert.strictEqual(text.size(bad), 100, String(bad));
+  }
+});
+
+const MID = {fs: 12, rh: 21, bh: 32};
+test("Normal text keeps today's sizes, compact or not", () => {
+  // Without compact: the theme's rows and bar.
+  assert.deepStrictEqual(text.metrics(MID, 1, false), {rh: 21, bh: 32, hh: 22, fh: 22, tbh: 22});
+  assert.deepStrictEqual(text.metrics({fs: 11.5, rh: 18, bh: 26}, 1, false), {rh: 18, bh: 26, hh: 22, fh: 22, tbh: 22});
+  // Compact: today's 16 px rows, 22 px bar, 16 px header and footer.
+  assert.deepStrictEqual(text.metrics(MID, 1, true), {rh: 16, bh: 22, hh: 16, fh: 16, tbh: 22});
+  assert.strictEqual(text.col(78, 1, false), 78);
+  assert.strictEqual(text.box(250, 1, false), 250);
+  assert.strictEqual(text.box(250, 1, true), 200);
+});
+
+// A line of f px text is f * 1.3 tall (the page's line-height).
+const fits = (m, s, fs) => {
+  assert.ok(m.rh >= Math.ceil(fs * s * 1.3 - 1e-6), `row ${m.rh} for ${fs * s}px`);
+  assert.ok(m.hh >= Math.ceil(10.5 * s * 1.3 - 1e-6), `header ${m.hh}`);
+  assert.ok(m.fh >= Math.ceil(11 * s * 1.3 - 1e-6), `footer ${m.fh}`);
+  assert.ok(m.bh >= Math.ceil(fs * s * 1.3 - 1e-6) && m.bh >= m.tbh, `bar ${m.bh}`);
+};
+test("rows at the smallest and largest steps, compact off and on", () => {
+  const small = text.metrics(MID, 0.8, false), large = text.metrics(MID, 1.5, false);
+  const smallC = text.metrics(MID, 0.8, true), largeC = text.metrics(MID, 1.5, true);
+  assert.deepStrictEqual(small, {rh: 18, bh: 29, hh: 19, fh: 19, tbh: 18});
+  assert.deepStrictEqual(large, {rh: 29, bh: 40, hh: 29, fh: 29, tbh: 33});
+  assert.deepStrictEqual(smallC, {rh: 13, bh: 19, hh: 13, fh: 13, tbh: 18});
+  assert.deepStrictEqual(largeC, {rh: 24, bh: 33, hh: 23, fh: 23, tbh: 33});
+  fits(small, 0.8, 12); fits(large, 1.5, 12); fits(smallC, 0.8, 12); fits(largeC, 1.5, 12);
+  // Compact is always tighter, never taller.
+  for (const k of ["rh", "bh", "hh", "fh"]) {
+    assert.ok(smallC[k] < small[k] && largeC[k] < large[k], k);
+  }
+  // Every step and theme size fits its text.
+  for (const [v] of text.SIZES) for (const st of [MID, {fs: 11.5, rh: 18, bh: 26}, {fs: 13, rh: 21, bh: 30}]) {
+    fits(text.metrics(st, v / 100, false), v / 100, st.fs);
+    fits(text.metrics(st, v / 100, true), v / 100, st.fs);
+  }
+});
+
+test("columns at the smallest and largest steps, compact off and on", () => {
+  // A 78 px column: 66 px of text and 6 px padding a side (4 in compact).
+  assert.strictEqual(text.col(78, 0.8, false), 65);
+  assert.strictEqual(text.col(78, 1.5, false), 111);
+  assert.strictEqual(text.col(78, 0.8, true), 61);
+  assert.strictEqual(text.col(78, 1.5, true), 107);
+  assert.strictEqual(text.col(78, 1, true), 74);
+  // The text part always scales with the text.
+  for (const [v] of text.SIZES) for (const c of [false, true]) {
+    assert.ok(text.col(78, v / 100, c) - (c ? 8 : 12) >= Math.floor(66 * v / 100), `${v} ${c}`);
+  }
+  // Boxes (names, bars, charts): with the text, compact 80%.
+  assert.strictEqual(text.box(170, 0.8, false), 136);
+  assert.strictEqual(text.box(170, 1.5, false), 255);
+  assert.strictEqual(text.box(170, 0.8, true), 109);
+  assert.strictEqual(text.box(170, 1.5, true), 204);
+});
+
+// A frame's document that records its CSS variables and body classes.
+function lookDoc(w) {
+  const vars = {}, cls = new Set();
+  w.document = { documentElement: { style: { setProperty: (k, v) => { vars[k] = v; } } },
+    body: { getBoundingClientRect: () => ({ width: 300, height: 40 }),
+      classList: { toggle: (c, on) => { if (on) cls.add(c); else cls.delete(c); } } } };
+  return { vars, cls };
+}
+const LOOK = { axidps: 1, type: "look", theme: "midnight", tokens: {}, style: { fs: 12, rh: 21, bh: 32 },
+  opacity: 1, compact: false, rows: 15 };
+
+test("the text size reaches plugins in look, as textScale and the CSS variables", () => {
+  const w = fakeWin();
+  const { vars, cls } = lookDoc(w);
+  const sdk = makeSdk(w);
+  let got = null;
+  sdk.on("look", l => { got = l; });
+  w.fromPage(Object.assign({}, LOOK, { textScale: 1.5 }));
+  assert.strictEqual(got.textScale, 1.5);
+  assert.strictEqual(got.compact, false);
+  assert.strictEqual(vars["--text-scale"], "1.5");
+  assert.strictEqual(vars["--fs"], "18px");
+  assert.strictEqual(vars["--rh"], "29px");
+  assert.strictEqual(vars["--bh"], "40px");
+  w.fromPage(Object.assign({}, LOOK, { compact: true, textScale: 0.8 }));
+  assert.strictEqual(got.textScale, 0.8);
+  assert.ok(cls.has("compact"));
+  assert.strictEqual(vars["--fs"], "9.6px");
+  assert.strictEqual(vars["--rh"], "13px");
+  assert.strictEqual(vars["--bh"], "19px");
+});
+
+test("a look without textScale (an older page) is Normal, and compact keeps the normal text size", () => {
+  const w = fakeWin();
+  const { vars } = lookDoc(w);
+  const sdk = makeSdk(w);
+  let got = null;
+  sdk.on("look", l => { got = l; });
+  w.fromPage(LOOK);
+  assert.strictEqual(got.textScale, 1);
+  assert.strictEqual(vars["--fs"], "12px");
+  assert.strictEqual(vars["--rh"], "21px");
+  w.fromPage(Object.assign({}, LOOK, { compact: true, textScale: 7 }));
+  assert.strictEqual(got.textScale, 1, "not a step: Normal");
+  assert.strictEqual(vars["--fs"], "12px");
+  assert.strictEqual(vars["--rh"], "16px");
+  assert.strictEqual(vars["--bh"], "22px");
+});
+
+test("a page in the hub's Options keeps the hub's text size", () => {
+  const w = fakeWin();
+  const { vars } = lookDoc(w);
+  const sdk = makeSdk(w);
+  let got = null;
+  sdk.on("look", l => { got = l; });
+  w.fromPage({ axidps: 1, type: "frame", clear: false, page: true });
+  w.fromPage(Object.assign({}, LOOK, { textScale: 1.3 }));
+  assert.strictEqual(got.textScale, 1.3, "the plugin still hears the setting");
+  assert.strictEqual(vars["--text-scale"], "1");
+  assert.strictEqual(vars["--fs"], "12px");
+  // Back in a window: the meter size.
+  w.fromPage({ axidps: 1, type: "frame", clear: false, page: false });
+  assert.strictEqual(vars["--fs"], "15.6px");
 });

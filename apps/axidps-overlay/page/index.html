@@ -35,12 +35,18 @@
   .win { background: var(--bg); border: var(--bw) solid var(--line); position: relative; flex: none;
     border-radius: var(--r); overflow: hidden; }
   .win.closed { display: none; }
+  /* The meter windows (everything with a title bar; the hub, Arrange's banner and the axidps button
+     are bare): the text size (Settings) as --ts, the factor every text size below is multiplied
+     by, and the row, title bar, header, footer and tool button heights ui.js works out from the
+     text size and compact mode (--m-*, set on :root; these fallbacks are Normal, not compact). */
+  .win:not(.bare) { --ts: var(--text-scale, 1); --rh: var(--m-rh, 21px); --bh: var(--m-bh, 32px);
+    --hh: var(--m-hh, 22px); --fh: var(--m-fh, 22px); --tbh: var(--m-tbh, 22px); font-size: calc(var(--fs) * var(--ts)); }
   /* A plugin window's body: its sandboxed frame, sized by what the plugin reports. */
   .win iframe.plugin { display: block; border: 0; background: transparent; }
   body.editing .win iframe.plugin { pointer-events: none; }
   .tip { position: absolute; display: none; padding: 3px 8px; background: var(--tip); color: var(--text);
     border: 1px solid var(--line-hi); border-radius: var(--rs); white-space: pre; pointer-events: none;
-    font-size: 11px; z-index: 10; }
+    font-size: calc(11px * var(--ts, 1)); z-index: 10; }
   .bar { height: var(--bh); display: flex; align-items: center; padding: 0 6px 0 12px; gap: 8px;
     background: var(--bar); border-bottom: 1px solid var(--line); }
   .bar b { color: var(--title); white-space: nowrap; letter-spacing: .01em; }
@@ -50,10 +56,10 @@
   body.bar-line .bar b { color: var(--accent); }
   body.caps .bar b, body.caps .hub h3 { text-transform: uppercase; letter-spacing: .1em; font-size: .88em; }
   /* Fight state: a small chip after the title. */
-  .bar .state { flex: 1; white-space: nowrap; overflow: hidden; color: var(--faint); font-size: 11px; }
+  .bar .state { flex: 1; white-space: nowrap; overflow: hidden; color: var(--faint); font-size: calc(11px * var(--ts, 1)); }
   .bar .state.live { color: var(--good); }
   /* Developer mode: a plugin window's errors since its frame last loaded. */
-  .bar .errs { color: var(--bad); font-size: 11px; font-weight: 600; }
+  .bar .errs { color: var(--bad); font-size: calc(11px * var(--ts, 1)); font-weight: 600; }
   .bar .state.live::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 3px;
     background: var(--good); margin-right: 5px; vertical-align: 1px; }
   .tools { display: flex; justify-content: flex-end; gap: 2px; }
@@ -61,7 +67,7 @@
     border-radius: var(--rs); padding: 3px 9px; font: inherit; }
   button:hover { background: var(--btn-hi); }
   /* Window tools: quiet until hovered or on. */
-  .tools button { background: transparent; color: var(--dim); padding: 1px 6px; font-size: 11px; height: 22px; }
+  .tools button { background: transparent; color: var(--dim); padding: 1px 6px; font-size: calc(11px * var(--ts, 1)); height: var(--tbh, 22px); }
   .tools button:hover { background: var(--raise-hi); color: var(--text); }
   .tools button.on { color: var(--accent); background: var(--accent-soft); }
   button.x { padding: 0 6px; display: inline-flex; align-items: center; }
@@ -71,32 +77,30 @@
 
   /* ---- tables ---- */
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  th { height: 22px; color: var(--faint); font-weight: 600; font-size: 10.5px; text-align: right;
+  th { height: var(--hh, 22px); color: var(--faint); font-weight: 600; font-size: calc(10.5px * var(--ts, 1)); text-align: right;
     padding: 0 6px; white-space: nowrap; text-transform: uppercase; letter-spacing: .05em; }
   th:hover { color: var(--text); }
   th.sort { color: var(--accent); }
   th.l, td.l { text-align: left; }
   td { height: var(--rh); padding: 0 6px; text-align: right; white-space: nowrap; overflow: hidden;
     font-variant-numeric: tabular-nums; }
-  tr.p td:first-child { color: var(--faint); font-size: 11px; }
+  tr.p td:first-child { color: var(--faint); font-size: calc(11px * var(--ts, 1)); }
   tr.p:hover td { background: var(--accent-soft); }
   tr.me td { color: var(--title); }
   tr.me td:first-child { color: var(--accent); }
   td.name { padding-left: 8px; border-left: 3px solid #888; }
-  td.name img { width: 14px; height: 14px; vertical-align: -3px; margin-right: 5px; }
+  td.name img { width: calc(14px * var(--ts, 1)); height: calc(14px * var(--ts, 1)); vertical-align: -3px; margin-right: 5px; }
   .empty { padding: 22px 12px; color: var(--dim); text-align: center; }
-  .foot { height: 22px; padding: 0 12px; color: var(--faint); display: flex; justify-content: space-between;
-    border-top: 1px solid var(--line); font-size: 11px; align-items: center; }
-  /* Compact (Settings): smaller rows, type and title bar; ui.js narrows the columns. */
-  body.compact .win:not(.modal) { --rh: 16px; --bh: 22px; --fs: 10.5px; font-size: var(--fs); }
+  .foot { height: var(--fh, 22px); padding: 0 12px; color: var(--faint); display: flex; justify-content: space-between;
+    border-top: 1px solid var(--line); font-size: calc(11px * var(--ts, 1)); align-items: center; }
+  /* Compact (Settings): spacing only, tighter padding; the text keeps the text size. Row, bar,
+     header and footer heights come from ui.js (--m-*), and it narrows the columns. */
   body.compact .bar { padding: 0 4px 0 8px; gap: 6px; }
-  body.compact .bar .state { font-size: 10px; }
-  body.compact th { height: 16px; font-size: 9px; padding: 0 4px; }
+  body.compact th { padding: 0 4px; }
   body.compact td { padding: 0 4px; }
-  body.compact tr.p td:first-child { font-size: 9.5px; }
   body.compact td.name { padding-left: 5px; border-left-width: 2px; }
-  body.compact td.name img { width: 11px; height: 11px; vertical-align: -2px; margin-right: 3px; }
-  body.compact .foot { height: 16px; padding: 0 8px; font-size: 9.5px; }
+  body.compact td.name img { width: calc(11px * var(--ts, 1)); height: calc(11px * var(--ts, 1)); vertical-align: -2px; margin-right: 3px; }
+  body.compact .foot { padding: 0 8px; }
   body.compact .empty { padding: 10px 8px; }
   .good { color: var(--good); } .bad { color: var(--bad); }
 
@@ -293,7 +297,7 @@
   .th .rows i { height: 6px; display: block; }
   .seg { display: flex; gap: 2px; background: var(--raise); border: 1px solid var(--line); border-radius: var(--rs);
     padding: 2px; }
-  .seg button { flex: 1; padding: 3px 0; font-size: 11px; color: var(--dim); background: transparent; }
+  .seg button { flex: 1; padding: 3px 0; font-size: calc(11px * var(--ts, 1)); color: var(--dim); background: transparent; }
   .seg button:hover { color: var(--text); background: var(--raise-hi); }
   .seg button.on { color: var(--title); background: var(--btn-hi); }
   .note { color: var(--faint); font-size: 11px; margin: 10px 0 0; }
@@ -323,7 +327,7 @@
   .badge { font-size: 10px; border: 1px solid var(--line-hi); border-radius: var(--rs); padding: 0 5px;
     line-height: 15px; white-space: nowrap; flex: none; }
   .badge.dev { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
-  .bar .badge { font-size: 9.5px; line-height: 13px; }
+  .bar .badge { font-size: calc(9.5px * var(--ts, 1)); line-height: calc(13px * var(--ts, 1)); }
   /* Plugins tab: a filter column, then one list of rows, each with a 3px trust bar at the left
      (green verified, grey unverified, red revoked). */
   .store-top { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -433,36 +437,35 @@
   .bl { height: var(--rh); display: flex; align-items: center; gap: 8px; padding: 0 8px; border-left: 3px solid #888;
     font-variant-numeric: tabular-nums; }
   .bl .n { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bl .n img { width: 14px; height: 14px; vertical-align: -3px; margin-right: 5px; }
+  .bl .n img { width: calc(14px * var(--ts, 1)); height: calc(14px * var(--ts, 1)); vertical-align: -3px; margin-right: 5px; }
   .bl .v { white-space: nowrap; }
   .bl .v.part { color: var(--faint); }
   .bl.me .n { color: var(--title); }
   body.compact .bl { padding: 0 5px; border-left-width: 2px; }
-  body.compact .bl .n img { width: 11px; height: 11px; vertical-align: -2px; margin-right: 3px; }
+  body.compact .bl .n img { width: calc(11px * var(--ts, 1)); height: calc(11px * var(--ts, 1)); vertical-align: -2px; margin-right: 3px; }
   .big { padding: 12px 14px 14px; text-align: center; }
-  .big b { display: block; font-size: 30px; line-height: 1.15; color: var(--title); font-variant-numeric: tabular-nums;
+  .big b { display: block; font-size: calc(30px * var(--ts, 1)); line-height: 1.15; color: var(--title); font-variant-numeric: tabular-nums;
     white-space: nowrap; }
-  .big small { display: block; color: var(--dim); font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; }
+  .big small { display: block; color: var(--dim); font-size: calc(11px * var(--ts, 1)); margin-top: 2px; white-space: nowrap; overflow: hidden; }
   body.compact .big { padding: 6px 8px 8px; }
-  body.compact .big b { font-size: 22px; }
   canvas.chart { display: block; }
-  .fcard { display: grid; grid-template-columns: auto auto; gap: 4px 16px; padding: 10px 12px; width: 220px; }
+  .fcard { display: grid; grid-template-columns: auto auto; gap: 4px 16px; padding: 10px 12px; width: calc(220px * var(--ts, 1)); }
   .fcard span { color: var(--dim); }
   .fcard b { text-align: right; font-variant-numeric: tabular-nums; }
-  body.compact .fcard { gap: 2px 12px; padding: 6px 8px; width: 180px; font-size: 10.5px; }
+  body.compact .fcard { gap: 2px 12px; padding: 6px 8px; width: calc(180px * var(--ts, 1)); }
   .foot .good { color: var(--good); } .foot .bad { color: var(--bad); }
   /* Details window */
   tr[data-acct] { cursor: pointer; }
   .dhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px 6px; }
   .dhead .who { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; }
-  .dhead .who img { width: 18px; height: 18px; }
+  .dhead .who img { width: calc(18px * var(--ts, 1)); height: calc(18px * var(--ts, 1)); }
   .dhead .who b { color: var(--title); }
   .dhead .who small { color: var(--faint); }
-  .dhead .seg { width: 170px; }
+  .dhead .seg { width: calc(170px * var(--ts, 1)); }
   .win[data-id="details"] .seg.views { margin: 0 12px 6px; }
   .win[data-id="details"] .seg.views button { padding: 3px 0; }
   /* Skill and buff icons in the Details window (an empty slot until the icon is known). */
-  .win[data-id="details"] .sk { display: inline-block; width: 16px; height: 16px; margin-right: 6px; vertical-align: -3px;
+  .win[data-id="details"] .sk { display: inline-block; width: calc(16px * var(--ts, 1)); height: calc(16px * var(--ts, 1)); margin-right: 6px; vertical-align: -3px;
     border-radius: 2px; }
   .win[data-id="details"] canvas.chart { display: block; }
   .win[data-id="details"] tr.p td:first-child { color: var(--text); font-size: inherit; }
@@ -476,20 +479,20 @@
   .dside.on { display: block; }
   .dside .din { position: absolute; inset: 0; display: flex; flex-direction: column; }
   .dside .dtop { padding: 8px 10px 6px; border-bottom: 1px solid var(--line); text-align: left; }
-  .dside h4 { margin: 0 0 4px; display: flex; align-items: center; font-size: 13px; color: var(--title); font-weight: 600;
+  .dside h4 { margin: 0 0 4px; display: flex; align-items: center; font-size: calc(13px * var(--ts, 1)); color: var(--title); font-weight: 600;
     white-space: nowrap; overflow: hidden; }
   .dside h4 span { overflow: hidden; text-overflow: ellipsis; }
-  .dside .dbig { font-size: 16px; color: var(--title); font-variant-numeric: tabular-nums; }
-  .dside .dbig small { font-size: 11px; color: var(--faint); white-space: nowrap; }
+  .dside .dbig { font-size: calc(16px * var(--ts, 1)); color: var(--title); font-variant-numeric: tabular-nums; }
+  .dside .dbig small { font-size: calc(11px * var(--ts, 1)); color: var(--faint); white-space: nowrap; }
   .dside .dscroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 8px; }
   .dside .dscroll::-webkit-scrollbar { width: 5px; }
   .dside .dscroll::-webkit-scrollbar-thumb { background: var(--cls, var(--accent)); opacity: .5; border-radius: 3px; }
-  .dside .sec { color: var(--cls, var(--accent)); font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  .dside .sec { color: var(--cls, var(--accent)); font-size: calc(10px * var(--ts, 1)); text-transform: uppercase; letter-spacing: .06em;
     margin: 8px 0 3px; }
   .dside .kv { display: grid; grid-template-columns: 1fr auto; row-gap: 2px; column-gap: 8px; }
   .dside .kv span { color: var(--dim); } .dside .kv b { text-align: right; color: var(--text); font-weight: 500;
     font-variant-numeric: tabular-nums; }
-  .dside .cbl { color: var(--faint); font-size: 11px; margin-top: 5px; }
+  .dside .cbl { color: var(--faint); font-size: calc(11px * var(--ts, 1)); margin-top: 5px; }
   .dside .cb { height: 5px; background: var(--raise); border-radius: 3px; overflow: hidden; margin-top: 2px; }
   .dside .cb div { height: 100%; background: var(--cls, var(--accent)); }
 </style>
