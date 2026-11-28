@@ -1276,3 +1276,24 @@ test("a window opened beside goes back to its own spot once the asker is closed"
   state.closed.add(sum.w);
   assert.deepStrictEqual(h.at(bd)([1920, 1080], {}), [7, 7]);
 });
+
+test("two windows that open each other still get a spot", () => {
+  const { h, sum, bd } = toggleHost();
+  // A real besideWin asks the asker's spot, which is the plugin's at() again.
+  h.env.besideWin = (src) => { const e = h.entries.find(x => x.w === src); const [x, y] = h.at(e)([1920, 1080], {}); return [x + 100, y]; };
+  h.handle(sum, toggle("breakdown", null));
+  h.handle(bd, toggle("summary", null));
+  assert.deepStrictEqual(h.at(sum)([1920, 1080], {}).length, 2);
+  assert.deepStrictEqual(h.at(bd)([1920, 1080], {}).length, 2);
+});
+
+test("a toggle the window cap refuses changes nothing", () => {
+  const { h, sum, bd, state } = toggleHost();
+  h.env.setOpen = () => {}; // refused: stays closed
+  h.env.saved().pos["a.tb/breakdown"] = [3, 4];
+  h.handle(sum, toggle("breakdown", { team: "squad" }));
+  assert.deepStrictEqual(h.env.saved().pos["a.tb/breakdown"], [3, 4]);
+  assert.strictEqual(bd.beside, null);
+  assert.strictEqual(bd.posted.filter(m => m.type === "opened").length, 0);
+  assert.ok(state.closed.has(bd.w));
+});

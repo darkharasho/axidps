@@ -133,6 +133,9 @@
 
   // What the player grants a plugin by enabling it: its permissions and one "net:<host>" per
   // network entry.
+  // Plugin windows being placed beside another right now (at()), against loops.
+  const placing = new Set();
+
   function grantsOf(p) {
     const perms = Array.isArray(p && p.permissions) ? p.permissions : [];
     const net = Array.isArray(p && p.network) ? p.network : [];
@@ -687,12 +690,20 @@
         env.setOpen(t.w, false);
         return;
       }
+      const was = t.beside || null, pos = env.saved().pos;
+      const had = pos && own(pos, t.fullId) ? pos[t.fullId] : undefined;
       t.beside = {from: ent.win.id, fullId: ent.fullId, data, key};
-      const pos = env.saved().pos;
-      if (pos && own(pos, t.fullId)) delete pos[t.fullId];
-      if (t.hello) this.post(t, "opened", {from: ent.win.id, data});
+      if (had !== undefined) delete pos[t.fullId];
       if (!env.isOpen(t.w)) env.setOpen(t.w, true);
-      else env.renderAll();
+      if (!env.isOpen(t.w)) {
+        // Refused (the window cap): as it was.
+        t.beside = was;
+        if (had !== undefined) pos[t.fullId] = had;
+        return;
+      }
+      if (had !== undefined) env.save();
+      if (t.hello) this.post(t, "opened", {from: ent.win.id, data});
+      env.renderAll();
     },
     srcOf(w) {
       const path = w.win.entry.split("/").map(encodeURIComponent).join("/");
@@ -705,8 +716,11 @@
       const asker = () => ent.beside && this.entries.find(e => e.fullId === ent.beside.fullId && e.w && env.isOpen(e.w));
       const base = this.defaultAt(ent);
       return (sc, el) => {
-        const a = asker();
-        return a ? env.besideWin(a.w, ent.w, sc) : base(sc, el);
+        // Windows that opened each other (or a longer ring): the one asked again keeps its own spot.
+        const a = placing.has(ent) ? null : asker();
+        if (!a) return base(sc, el);
+        placing.add(ent);
+        try { return env.besideWin(a.w, ent.w, sc); } finally { placing.delete(ent); }
       };
     },
     defaultAt(ent) {
