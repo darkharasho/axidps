@@ -679,6 +679,10 @@ pub fn grant_game_folder(path: &Path, user: Option<&str>, store: &Store) -> Exit
     let user = user
         .map(str::to_owned)
         .unwrap_or_else(elevate::current_user);
+    if let Err(e) = crate::gw2path::check_grant_target(path, &user) {
+        eprintln!("axidps: not granting access: {e}");
+        return ExitCode::FAILURE;
+    }
     match elevate::icacls_grant(path, &user) {
         Ok(()) => {
             let mut state = store.load_state();

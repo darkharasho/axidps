@@ -16,6 +16,22 @@ fn has_gw2_exe(dir: &Path) -> bool {
     })
 }
 
+/// Whether the elevated `--grant-game-folder` may give `user` write access to `path`: `path`
+/// must be a folder that holds `Gw2-64.exe` (after following links), and `user` a bare account
+/// name, so that a UAC prompt approved for the game folder cannot be turned into write access
+/// to another folder, or into other rights through the `icacls` argument.
+pub fn check_grant_target(path: &Path, user: &str) -> Result<(), String> {
+    let real = std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !real.is_dir() || !has_gw2_exe(&real) {
+        return Err(format!("{} is not a Guild Wars 2 folder", path.display()));
+    }
+    let bad = |c: char| c.is_control() || matches!(c, ':' | '(' | ')' | '"' | ',' | '*');
+    if user.trim().is_empty() || user.chars().any(bad) {
+        return Err(format!("{user:?} is not an account name"));
+    }
+    Ok(())
+}
+
 /// The game folder for `dir`: `dir` itself when it holds `Gw2-64.exe`, or its parent when
 /// `dir` is a `bin64` folder whose parent holds it.
 fn game_dir(dir: &Path) -> Option<PathBuf> {
@@ -392,6 +408,23 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("Gw2-64.exe"), b"exe").unwrap();
         dir
+    }
+
+    /// The elevated grant runs on whatever command line it is given, so it checks for itself that
+    /// the folder is a game folder and that the account name is only a name.
+    #[test]
+    fn grant_target_must_be_a_game_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gw2 = game(tmp.path(), "Guild Wars 2");
+        assert_eq!(check_grant_target(&gw2, "PC\\player"), Ok(()));
+        let other = tmp.path().join("Program Files");
+        fs::create_dir_all(&other).unwrap();
+        assert!(check_grant_target(&other, "player").is_err(), "no Gw2-64.exe");
+        assert!(check_grant_target(&gw2.join("Gw2-64.exe"), "player").is_err(), "a file");
+        assert!(check_grant_target(&tmp.path().join("missing"), "player").is_err());
+        for user in ["", "Everyone:(F)", "a\"b", "x)(OI)", "tab\tname"] {
+            assert!(check_grant_target(&gw2, user).is_err(), "{user:?}");
+        }
     }
 
     #[test]
