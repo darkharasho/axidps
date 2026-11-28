@@ -505,7 +505,8 @@
 
   // env (from ui.js): {hosted, test (?test: send debug reports), defineWindow(def), removeWindow(w), wins,
   //   saved(), ui, toHost(text), besideMeter(after, dy), posOf(w), save(), saveNow(), renderAll(), scheduleReport(),
-  //   look(), feed(), isOpen(w)}
+  //   look(), feed(), isOpen(w), hubPage(fullId) (the element in the hub's Options tab that holds a hub
+  //   window's frame; made once per fullId and never rebuilt)}
   const host = {
     env: null,
     list: [],
@@ -555,7 +556,7 @@
       this.want = validManifestWindows(this.list, on);
       for (const ent of this.entries.slice()) {
         const w = this.want.find(x => x.fullId === ent.fullId);
-        if (!w || w.alias !== ent.alias || w.win.entry !== ent.win.entry) this.drop(ent);
+        if (!w || w.alias !== ent.alias || w.win.entry !== ent.win.entry || isHub(w.win) !== !!ent.hub) this.drop(ent);
         else { ent.plugin = w.plugin; ent.win = w.win; this.applyOpts(ent); }
       }
       for (const w of this.want) {
@@ -665,7 +666,8 @@
     },
     add(w) {
       const env = this.env;
-      const taken = nameTaken(env.wins, w);
+      const hub = isHub(w.win);
+      const taken = !hub && nameTaken(env.wins, w);
       if (taken) {
         console.warn(`plugin window ${w.fullId}: ${taken}; not shown`);
         return;
@@ -678,6 +680,15 @@
       const title = String(w.win.title || w.plugin.name || w.plugin.id).slice(0, MAX_TEXT);
       const glyph = ICONS.includes(w.win.icon) ? w.win.icon : "plug";
       ent.title = title;
+      if (hub) {
+        // A hub page: its frame lives in a holder in the hub's Options tab (env.hubPage), which
+        // is never rebuilt, so it keeps running while the hub is closed. No window, no bar.
+        ent.hub = true;
+        this.mount(ent, {body: env.hubPage(w.fullId)});
+        this.entries.push(ent);
+        this.debug();
+        return;
+      }
       ent.w = env.defineWindow({
         id: w.alias, key: w.fullId, title, plugin: true, open: w.win.open === true,
         blurb: [title, String(w.win.description || "").slice(0, MAX_TEXT), glyph],
@@ -748,8 +759,9 @@
       const f = document.createElement("iframe");
       f.setAttribute("sandbox", "allow-scripts");
       f.className = "plugin";
-      f.style.width = ent.size[0] + "px";
-      f.style.height = ent.size[1] + "px";
+      // A hub page's frame is as wide as the page and fills it until the plugin asks for a height.
+      f.style.width = ent.hub ? "100%" : ent.size[0] + "px";
+      f.style.height = ent.hub ? "" : ent.size[1] + "px";
       f.style.pointerEvents = this.env.ui.editing ? "none" : "";
       f.src = ent.src;
       win.body.appendChild(f);
@@ -767,6 +779,7 @@
         this.setOutline(ent.plugin.id, null);
       }
       if (ent.w) this.env.removeWindow(ent.w);
+      if (ent.hub && ent.frame && ent.frame.parentNode) ent.frame.parentNode.removeChild(ent.frame);
       const i = this.entries.indexOf(ent);
       if (i >= 0) this.entries.splice(i, 1);
       this.debug();
@@ -863,7 +876,8 @@
             const wait = ent.sizeGate(Date.now());
             if (wait > 0) { ent.sizeTimer = setTimeout(apply, wait); return; }
             ent.size = s;
-            if (ent.frame) { ent.frame.style.width = s[0] + "px"; ent.frame.style.height = s[1] + "px"; }
+            if (ent.frame && ent.hub) ent.frame.style.height = s[1] + "px";
+            else if (ent.frame) { ent.frame.style.width = s[0] + "px"; ent.frame.style.height = s[1] + "px"; }
             env.scheduleReport();
           };
           apply();
