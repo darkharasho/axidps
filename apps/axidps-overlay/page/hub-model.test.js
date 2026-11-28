@@ -191,3 +191,9 @@ test("pageScroll moves one page toward a click on the track", () => {
   assert.strictEqual(H.pageScroll({view: 400, content: 1600, top: 1100, at: 390, thumb}), 1200);
   assert.strictEqual(H.pageScroll({view: 400, content: 1600, top: 100, at: 10, thumb}), 0);
 });
+
+test("rows under a standing approval aren't unchecked", () => {
+  const {rows} = H.pluginRows([sc("x", "install", {trust: "approved"})], [], "all", "");
+  assert.strictEqual(rows[0].unchecked, false);
+  assert.strictEqual(rows[0].trust, "approved");
+});

@@ -20,6 +20,16 @@ pub struct Approval {
     pub grant: Vec<String>,
 }
 
+/// A standing approval: plugin `id` may have the deeper permissions in `grant`, in every
+/// listed version, without a per-version approval ("Permissions approved").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Standing {
+    pub id: String,
+    pub grant: Vec<String>,
+    /// Its signature, which names this exact object in `revoked.json`.
+    pub sig: String,
+}
+
 /// A developer pass: deeper permissions for the holder of `key`'s private half, on the
 /// author's own plugins (`ids`, exact or `prefix.*`), until `expires` (`YYYY-MM-DD`, UTC).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +53,8 @@ pub struct Revoked {
     pub ids: Vec<(String, String)>,
     /// (login, key, reason): that pass no longer counts.
     pub passes: Vec<(String, [u8; 32], String)>,
+    /// (id, sig, reason): that standing approval object no longer counts.
+    pub standing: Vec<(String, String, String)>,
 }
 
 /// The approver-signed items of an index, each checked on its own.
@@ -50,14 +62,31 @@ pub struct Revoked {
 pub struct Signed {
     pub approvals: Vec<Approval>,
     pub passes: Vec<Pass>,
+    pub standing: Vec<Standing>,
     pub revoked: Option<Revoked>,
+    /// (id, version, tree) of the index's versions a standing approval covers (see
+    /// `index::Listing::cleared`), filled by `Signed::cover`. A standing approval grants nothing
+    /// to files that aren't one of these.
+    pub covered: HashSet<(String, String, String)>,
 }
 
 impl Signed {
-    /// The approvals, passes and revocation in index `v` that verify against `keys.approvers`.
-    /// A bad item is skipped with a log line naming it; a `revoked` older than `min_seq` is
-    /// ignored (an old copy can't undo a revocation), and when `min_seq > 0` and no `revoked`
-    /// at least that new is accepted, the approvals and passes are dropped too.
+    /// The standing approval for `id` that hasn't been revoked, if any.
+    pub fn live_standing(&self, id: &str) -> Option<&Standing> {
+        self.standing.iter().filter(|s| s.id == id).find(|s| self.standing_revoked(s).is_none())
+    }
+
+    /// Why `s` was revoked, if it was.
+    pub fn standing_revoked(&self, s: &Standing) -> Option<&str> {
+        let r = self.revoked.as_ref()?;
+        r.standing.iter().find(|(id, sig, _)| *id == s.id && *sig == s.sig).map(|(.., why)| why.as_str())
+    }
+
+    /// The approvals, standing approvals, passes and revocation in index `v` that verify
+    /// against `keys.approvers`. A bad item is skipped with a log line naming it; a `revoked`
+    /// older than `min_seq` is ignored (an old copy can't undo a revocation), and when
+    /// `min_seq > 0` and no `revoked` at least that new is accepted, the approvals, standing
+    /// approvals and passes are dropped too.
     pub fn from_index(v: &Value, keys: &Keys, min_seq: u64) -> (Signed, Vec<String>) {
         let mut s = Signed::default();
         let mut log = Vec::new();
@@ -66,6 +95,12 @@ impl Signed {
             match checked(item, "approval", k, parse_approval) {
                 Ok(a) => s.approvals.push(a),
                 Err(e) => log.push(refused(item, "approval", &["id", "version"], &e)),
+            }
+        }
+        for item in items(v, "standing", &mut log) {
+            match checked(item, "standing", k, parse_standing) {
+                Ok(a) => s.standing.push(a),
+                Err(e) => log.push(refused(item, "standing", &["id"], &e)),
             }
         }
         for item in items(v, "passes", &mut log) {
@@ -86,13 +121,14 @@ impl Signed {
         }
         // Fail closed: an index without a revocation at least as new as the last one seen
         // (missing, stale or refused) could be an old copy from before something was revoked,
-        // so its approvals and passes unlock nothing.
+        // so its approvals, standing approvals and passes unlock nothing.
         if min_seq > 0 && s.revoked.is_none() {
             log.push(format!(
                 "index is older than the last revocation seen (seq {min_seq}): \
-                 its approvals and passes are ignored"
+                 its approvals, standing approvals and passes are ignored"
             ));
             s.approvals.clear();
+            s.standing.clear();
             s.passes.clear();
         }
         (s, log)
@@ -186,6 +222,10 @@ fn parse_approval(o: &Map<String, Value>) -> Result<Approval, String> {
     })
 }
 
+fn parse_standing(o: &Map<String, Value>) -> Result<Standing, String> {
+    Ok(Standing { id: str_of(o, "id")?, grant: list_of(o, "grant")?, sig: str_of(o, "sig")? })
+}
+
 fn parse_pass(o: &Map<String, Value>) -> Result<Pass, String> {
     let expires = str_of(o, "expires")?;
     if !is_date(&expires) {
@@ -212,6 +252,9 @@ fn parse_revoked(o: &Map<String, Value>) -> Result<Revoked, String> {
         ids: entries(o, "ids", |e| Ok((str_of(e, "id")?, str_of(e, "reason")?)))?,
         passes: entries(o, "passes", |e| {
             Ok((str_of(e, "login")?, key_of(e, "key")?, str_of(e, "reason")?))
+        })?,
+        standing: entries(o, "standing", |e| {
+            Ok((str_of(e, "id")?, str_of(e, "sig")?, str_of(e, "reason")?))
         })?,
     })
 }
@@ -241,6 +284,8 @@ impl Ctx {
 pub enum Trust {
     Bundled,
     Verified,
+    /// A standing approval covers it: its permissions were approved, this version wasn't read.
+    Approved,
     #[default]
     Unverified,
     Dev,
@@ -253,6 +298,7 @@ impl Trust {
         match self {
             Trust::Bundled => "bundled",
             Trust::Verified => "verified",
+            Trust::Approved => "approved",
             Trust::Unverified => "unverified",
             Trust::Dev => "dev",
             Trust::Revoked => "revoked",
@@ -317,6 +363,21 @@ pub fn decide(p: &Plugin, tree: Option<&str>, ctx: &Ctx) -> Decision {
         match lost {
             None => return decision(Trust::Verified, within(&approvals), None),
             Some((.., why)) => reason = Some(format!("Verification revoked: {why}")),
+        }
+    }
+
+    // A standing approval covers only versions the index lists, with these exact files.
+    let listed = (m.id.clone(), m.version.clone(), tree.to_string());
+    match ctx.signed.live_standing(&m.id) {
+        Some(st) if ctx.signed.covered.contains(&listed) => {
+            return decision(Trust::Approved, within(&[&st.grant]), None);
+        }
+        Some(_) => {}
+        None => {
+            let why = ctx.signed.standing.iter().filter(|s| s.id == m.id).find_map(|s| ctx.signed.standing_revoked(s));
+            if let Some(why) = why {
+                reason = Some(format!("Permission approval revoked: {why}"));
+            }
         }
     }
 
@@ -502,6 +563,106 @@ mod tests {
 
     fn dev_ctx(signed: Signed) -> Ctx {
         Ctx { dev: true, dev_key: Some(dev_pk()), ..ctx(signed) }
+    }
+
+    fn standing(id: &str, grant: &[&str]) -> Value {
+        sign("standing", json!({"id": id, "grant": grant, "signed": "2026-11-27"}))
+    }
+
+    /// `signed(index)` with 1.0.0 of `id` at `TREE` listed and covered by its standing approval.
+    fn covered(index: Value, id: &str) -> Signed {
+        let mut s = signed(index);
+        s.covered.insert((id.into(), "1.0.0".into(), TREE.into()));
+        s
+    }
+
+    #[test]
+    fn standing_needs_a_listed_version() {
+        // Same id, but not a version the index lists (a hand-made folder): nothing granted.
+        let s = signed(json!({"standing": [standing("example.x", &["textures"])]}));
+        let p = decided(plugin("example.x", false, &["textures"]), Some(TREE), &ctx(s));
+        assert_eq!(p.trust.level, Trust::Unverified);
+        assert!(p.trust.granted.is_empty());
+    }
+
+    #[test]
+    fn revoking_one_standing_object_spares_its_replacement() {
+        let old = standing("example.x", &["textures", "world"]);
+        let new = standing("example.x", &["textures"]);
+        let gone = json!([{"id": "example.x", "sig": old["sig"], "reason": "replaced"}]);
+        let s = covered(json!({"standing": [old.clone()], "revoked": revoked(1, json!({"standing": gone}))}), "example.x");
+        let p = decided(plugin("example.x", false, &["textures"]), Some(TREE), &ctx(s));
+        assert_eq!(p.trust.level, Trust::Unverified, "the old object is revoked");
+        let s = covered(json!({"standing": [new], "revoked": revoked(1, json!({"standing": gone}))}), "example.x");
+        let p = decided(plugin("example.x", false, &["textures"]), Some(TREE), &ctx(s));
+        assert_eq!(p.trust.level, Trust::Approved, "the new one still counts");
+    }
+
+    #[test]
+    fn standing_grants_approved() {
+        let s = covered(json!({"standing": [standing("example.x", &["textures"])]}), "example.x");
+        let p = decided(plugin("example.x", false, &["fight", "textures"]), Some(TREE), &ctx(s));
+        assert_eq!(p.trust.level, Trust::Approved);
+        assert_eq!(p.trust.level.as_str(), "approved");
+        assert_eq!(p.trust.granted, ["textures"]);
+        assert!(loadable(&p));
+    }
+
+    #[test]
+    fn standing_only_grants_what_it_lists() {
+        let s = covered(json!({"standing": [standing("example.x", &["textures"])]}), "example.x");
+        let p = decided(plugin("example.x", false, &["textures", "world"]), Some(TREE), &ctx(s));
+        assert_eq!(p.trust.level, Trust::Approved);
+        assert_eq!(p.trust.granted, ["textures"]);
+        assert!(!loadable(&p), "world isn't granted");
+    }
+
+    #[test]
+    fn exact_approval_wins_over_standing() {
+        let s = covered(json!({"approvals": [approval("example.x", TREE, &["textures"])],
+                               "standing": [standing("example.x", &["textures"])]}), "example.x");
+        let p = decided(plugin("example.x", false, &["textures"]), Some(TREE), &ctx(s.clone()));
+        assert_eq!(p.trust.level, Trust::Verified);
+        // Other files under the same version aren't what the index lists: nothing.
+        let p = decided(plugin("example.x", false, &["textures"]), Some(OTHER_TREE), &ctx(s));
+        assert_eq!(p.trust.level, Trust::Unverified);
+    }
+
+    #[test]
+    fn revoked_standing_unlocks_nothing() {
+        let st = standing("example.x", &["textures"]);
+        let gone = json!([{"id": "example.x", "sig": st["sig"], "reason": "taken over"}]);
+        let s = covered(json!({"standing": [st], "revoked": revoked(1, json!({"standing": gone}))}), "example.x");
+        let p = decided(plugin("example.x", false, &["textures"]), Some(TREE), &ctx(s));
+        assert_eq!(p.trust.level, Trust::Unverified);
+        assert!(p.trust.granted.is_empty());
+        assert_eq!(p.trust.reason.as_deref(), Some("Permission approval revoked: taken over"));
+    }
+
+    #[test]
+    fn standing_dropped_with_old_revoked() {
+        let index = json!({"standing": [standing("example.x", &["textures"])],
+                           "revoked": revoked(1, json!({}))});
+        let (s, log) = Signed::from_index(&index, &keys(), 2);
+        assert!(s.standing.is_empty());
+        assert!(log.iter().any(|l| l.contains("standing approvals")), "{log:?}");
+    }
+
+    #[test]
+    fn standing_other_id_ignored() {
+        let s = signed(json!({"standing": [standing("example.y", &["textures"])]}));
+        let p = decided(plugin("example.x", false, &["textures"]), Some(TREE), &ctx(s));
+        assert_eq!(p.trust.level, Trust::Unverified);
+    }
+
+    #[test]
+    fn standing_bad_sig_refused() {
+        let mut bad = standing("example.x", &["textures"]);
+        bad["grant"] = json!(["textures", "world"]);
+        let (s, log) = Signed::from_index(&json!({"standing": [bad]}), &keys(), 0);
+        assert!(s.standing.is_empty());
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(log[0].starts_with("standing example.x refused"), "{log:?}");
     }
 
     #[test]

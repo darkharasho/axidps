@@ -687,7 +687,7 @@ test("cardModel label per trust level, the revoked reason shown", () => {
 test("sampleStore covers every kind of row", () => {
   const m = ph.storeModel(ph.sampleStore(), "", ph.sampleStoreList());
   assert.deepStrictEqual([...new Set(m.cards.map(c => c.action))].sort(), ["install", "installed", "replace", "revoked", "update"]);
-  assert.deepStrictEqual([...new Set(m.cards.map(c => c.trust))].sort(), ["revoked", "unverified", "verified"]);
+  assert.deepStrictEqual([...new Set(m.cards.map(c => c.trust))].sort(), ["approved", "revoked", "unverified", "verified"]);
   assert.ok(m.cards.some(c => c.uses.some(u => u.deep)));
   assert.ok(m.counts.updates >= 1 && m.counts.installed >= 2);
   // Every listing the store marks installed has its plugin entry (the demo's Installed filter).
@@ -933,4 +933,10 @@ test("outline: only a bundled plugin naming the permission reaches the host; dro
 });
 test("permission text names outline", () => {
   assert.deepStrictEqual(ph.permissionLines({ permissions: ["outline"] }), ["Outlines your character"]);
+});
+
+test("a plugin under a standing approval reads Permissions approved", () => {
+  const s = storePayload([listing("a.one", { trust: "approved" }), listing("b.two", { trust: "made-up" })]);
+  assert.deepStrictEqual(ph.storeModel(s, "").cards.map(c => c.trust), ["approved", "unverified"]);
+  assert.strictEqual(ph.cardModel(plugin("x.y", { trust: "approved" }), {}).label, "Permissions approved");
 });

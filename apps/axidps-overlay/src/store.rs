@@ -317,8 +317,9 @@ impl Core {
         if let (Ok(bytes), Ok(sig)) = (read("index.json"), read("index.json.sig")) {
             match index::parse(&bytes, &String::from_utf8_lossy(&sig), &self.keys) {
                 Ok(idx) => {
-                    let (signed, log) = Signed::from_index(&idx.raw, &self.keys, self.seq);
+                    let (mut signed, log) = Signed::from_index(&idx.raw, &self.keys, self.seq);
                     print_log(&log);
+                    signed.cover(&idx.plugins);
                     self.signed = signed;
                     self.cache = Some(idx);
                     self.fetched = std::fs::metadata(self.store_dir.join("index.json"))
@@ -410,6 +411,8 @@ impl Core {
                 Err(e) => println!("store: can't save revoked-seq: {}", clean(&e)),
             }
         }
+        let mut signed = signed;
+        signed.cover(&idx.plugins);
         self.cache = Some(idx);
         self.signed = signed;
         self.fetched = Some(now_ms());
@@ -521,7 +524,7 @@ impl Core {
             if !newer(&new.version, &have.version) {
                 continue;
             }
-            let level = if l.approved(&new, &self.signed) { Trust::Verified } else { Trust::Unverified };
+            let level = l.cleared(&new, &self.signed).unwrap_or(Trust::Unverified);
             if !install::auto_update_ok(m, p.trust.level, &new, level) {
                 println!("store: {id} {} needs the player's OK to update", new.version);
                 continue;
@@ -562,7 +565,7 @@ impl Core {
                 "id": id, "name": raw.name, "author": raw.author, "description": raw.description,
                 "icon": raw.icon, "repo": raw.repo,
                 "version": shown.map(|s| s.version.clone()),
-                "trust": if offer.is_some_and(|o| l.approved(o, &self.signed)) { "verified" } else { "unverified" },
+                "trust": offer.and_then(|o| l.cleared(o, &self.signed)).unwrap_or(Trust::Unverified).as_str(),
                 "awaiting": l.awaiting_review(&self.signed),
                 "permissions": shown.map(|s| s.permissions.clone()).unwrap_or_default(),
                 "network": shown.map(|s| s.network.clone()).unwrap_or_default(),
@@ -727,9 +730,14 @@ mod tests {
 
         /// A package for `ID` `version` asking for `network`, downloadable; its index entry.
         fn publish(&self, version: &str, network: &[&str]) -> Value {
+            self.publish_as(version, &["fight"], network)
+        }
+
+        /// As `publish`, asking for `permissions` too.
+        fn publish_as(&self, version: &str, permissions: &[&str], network: &[&str]) -> Value {
             let manifest = json!({
                 "id": ID, "name": "Card", "version": version, "api": 1,
-                "permissions": ["fight"], "network": network,
+                "permissions": permissions, "network": network,
                 "windows": [{"id": "card", "title": "Card", "entry": "card.html"}],
             });
             let files: Vec<(String, Vec<u8>)> = vec![
@@ -746,7 +754,7 @@ mod tests {
             let v = json!({
                 "version": version, "url": url, "sha256": install::sha256_hex(&zip),
                 "tree": axidps_plugins::tree::hex(&axidps_plugins::tree::hash_files(&files)),
-                "permissions": ["fight"], "network": network, "api": 1,
+                "permissions": permissions, "network": network, "api": 1,
             });
             self.net.set(&url, zip);
             v
@@ -1004,6 +1012,50 @@ mod tests {
         let ev = ask(&mut s, json!({"update": ID}));
         assert_eq!(t.record().plugins[ID].version, "1.3.0");
         assert_eq!(rescans(&ev), 1);
+    }
+
+    fn standing(grant: &[&str]) -> Value {
+        approver_signed("standing", json!({"id": ID, "grant": grant, "signed": "2026-11-27"}))
+    }
+
+    #[test]
+    fn card_trust_approved_under_standing() {
+        let t = t();
+        let v = t.publish_as("1.0.0", &["fight", "textures"], &[]);
+        t.serve(vec![v], json!({"standing": [standing(&["textures"])]}));
+        let mut s = t.store();
+        let p = page(&ask(&mut s, json!("refresh")));
+        assert_eq!(card(&p)["trust"], "approved");
+    }
+
+    #[test]
+    fn auto_update_installs_standing_covered_bump() {
+        let t = t();
+        let v1 = t.publish_as("1.0.0", &["fight", "textures"], &[]);
+        t.serve(vec![v1.clone()], json!({"approvals": [approval(&v1)]}));
+        let mut s = t.store();
+        ask(&mut s, json!("refresh"));
+        ask(&mut s, json!({"install": ID}));
+        assert_eq!(t.record().plugins[ID].version, "1.0.0");
+
+        // 1.1.0 isn't read by anyone, but the standing approval covers it: it goes live.
+        let v11 = t.publish_as("1.1.0", &["fight", "textures"], &[]);
+        t.serve(vec![v1.clone(), v11.clone()],
+                json!({"approvals": [approval(&v1)], "standing": [standing(&["textures"])]}));
+        let ev = ask(&mut s, json!("refresh"));
+        assert_eq!(t.record().plugins[ID].version, "1.1.0");
+        assert_eq!(card(&page(&ev))["trust"], "approved");
+        // And the loader grants it: the scan's context covers exactly that listed version.
+        let listed = (ID.to_string(), "1.1.0".to_string(), v11["tree"].as_str().unwrap().to_string());
+        assert!(s.ctx(false).signed.covered.contains(&listed));
+
+        // 1.2.0 asks for world too: offered only once someone approves it.
+        let v12 = t.publish_as("1.2.0", &["fight", "textures", "world"], &[]);
+        t.serve(vec![v1.clone(), v11, v12],
+                json!({"approvals": [approval(&v1)], "standing": [standing(&["textures"])]}));
+        let ev = ask(&mut s, json!("refresh"));
+        assert_eq!(t.record().plugins[ID].version, "1.1.0");
+        assert_eq!(card(&page(&ev))["update"], Value::Null);
     }
 
     #[test]
